@@ -1,0 +1,153 @@
+---
+engagement_id: {{ run.id }}
+agent: {{ run.agent }}
+target: {{ run.target }}
+status: {{ run.status }}
+start: {{ run.start_time.strftime("%Y-%m-%d %H:%M UTC") }}
+end: {{ run.end_time.strftime("%Y-%m-%d %H:%M UTC") if run.end_time else "N/A" }}
+generated: {{ generated_at }}
+---
+
+# Penetration Test Report — {{ run.target }}
+
+*Written by: {{ run.agent }} agent  |  Delivered: {{ generated_at }}*
+
+{% if is_draft %}
+> ⚠ **DRAFT — generated without the report-writer pass** (the engagement was paused or stopped before the reporting phase). The executive summary and technical details are assembled from raw run data and may be incomplete. Resume the engagement to reporting for the synthesized version.
+{% endif %}
+
+---
+
+## Executive Summary
+
+{% if run.executive_summary %}
+{{ run.executive_summary | trim }}
+{% elif run.summary %}
+{{ run.summary | replace("```json", "") | replace("```", "") | trim }}
+{% else %}
+A penetration test was conducted against `{{ run.target }}`. {{ run.findings | length }} finding(s) were identified, including {{ severity_counts.critical }} critical and {{ severity_counts.high }} high severity issues.
+{% endif %}
+
+---
+
+## Limitations & Constraints
+
+{% if limitations and limitations.ended_early %}⚠ **This engagement did not run to completion — coverage below is partial.**
+
+{% endif %}{{ limitations.text if limitations else "The engagement ran to completion." }}
+
+---
+
+## Findings Summary
+
+| # | Finding | Severity | CVSS Base | CVSS Temporal | Status |
+|---|---------|----------|-----------|---------------|--------|
+{% for f in findings -%}
+| {{ loop.index }} | {{ f.title }} | **{{ f.severity | upper }}** | {{ f.cvss.base_score if f.cvss else "N/A" }} | {{ f.cvss.temporal_score if f.cvss else "N/A" }} | Open |
+{% endfor %}
+
+**Risk Distribution:** Critical: {{ severity_counts.critical }} | High: {{ severity_counts.high }} | Medium: {{ severity_counts.medium }} | Low: {{ severity_counts.low }} | Informational: {{ severity_counts.info }}
+
+---
+
+## Testing Scope
+
+- **Target:** `{{ run.target }}`
+- **Agent:** {{ run.agent }}
+- **Engagement ID:** `{{ run.id }}`
+- **Testing Period:** {{ run.start_time.strftime("%Y-%m-%d %H:%M") }} – {{ run.end_time.strftime("%Y-%m-%d %H:%M UTC") if run.end_time else "In Progress" }}
+
+---
+
+## Technical Details
+
+{% if run.technical_overview %}
+{{ run.technical_overview }}
+{% else %}
+*No technical details were generated for this engagement.*
+{% endif %}
+
+---
+
+## Findings
+
+{% if findings %}
+{% for f in findings %}
+---
+
+### Finding {{ loop.index }}: {{ f.title }}
+
+**Severity:** {{ f.severity | upper }}
+**Type:** {{ f.type }}
+**Target:** `{{ f.target }}`
+**ID:** `{{ f.id }}`
+**Verified:** {{ "Yes" if f.verified else "No" }}
+
+#### Description
+
+{{ f.description }}
+
+{% if f.impact %}
+#### Impact
+
+{{ f.impact }}
+{% endif %}
+
+{% if f.cvss %}
+#### Severity Calculation
+
+[`{{ f.cvss.vector }}`]({{ f.cvss.vector | nist_cvss_url }})
+
+| Metric Group | Score |
+|---|---|
+| Base Score | {{ f.cvss.base_score }} |
+| Temporal Score | {{ f.cvss.temporal_score }} |
+| Environmental Score | {{ f.cvss.environmental_score }} |
+
+**Overall Severity: {{ f.severity | capitalize }}** (Base: {{ f.cvss.base_score }}, Temporal: {{ f.cvss.temporal_score }}, Environmental: {{ f.cvss.environmental_score }})
+{% endif %}
+
+{% if f.evidence %}
+#### Evidence
+
+{% for b in f.evidence | evidence_blocks %}
+{% if b.kind == 'inline' %}
+**{{ b.label }}:** {{ b.text }}
+{% elif b.kind == 'json' %}
+**{{ b.label }}**
+
+```json
+{{ b.text }}
+```
+{% else %}
+**{{ b.label }}**
+
+```
+{{ b.text }}
+```
+{% endif %}
+{% endfor %}
+{% endif %}
+
+{% if f.remediation %}
+#### Remediation Recommendations
+
+{% for item in f.remediation -%}
+- {{ item }}
+{% endfor %}
+{% endif %}
+
+{% endfor %}
+{% else %}
+*No findings recorded.*
+{% endif %}
+
+---
+
+## Appendix — Tool Execution Log
+
+| Tool | Timestamp | Result |
+|------|-----------|--------|
+{% for tc in run.tool_calls -%}
+| `{{ tc.tool_name }}` | {{ tc.timestamp.strftime("%H:%M:%S") }} | {{ ("ERROR: " + tc.error) if tc.error else "OK" }} |
+{% endfor %}

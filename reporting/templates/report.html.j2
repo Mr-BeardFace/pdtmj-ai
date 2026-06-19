@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Penetration Test Report — {{ run.target }}</title>
+<style>
+  :root {
+    --bg:        #0d1117;
+    --bg2:       #161b22;
+    --bg3:       #1c2128;
+    --border:    #30363d;
+    --text:      #e6edf3;
+    --dim:       #8b949e;
+    --accent:    #58a6ff;
+    --green:     #3fb950;
+    --critical:  #ff7b72;
+    --high:      #f78166;
+    --medium:    #e3b341;
+    --low:       #58a6ff;
+    --info:      #8b949e;
+    --font:      -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    --mono:      "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 14px;
+    line-height: 1.6;
+  }
+  a { color: var(--accent); text-decoration: none; }
+
+  /* ── Layout ── */
+  .page { max-width: 1100px; margin: 0 auto; padding: 40px 32px; }
+
+  /* ── Header ── */
+  .report-header {
+    border-bottom: 2px solid var(--border);
+    padding-bottom: 24px;
+    margin-bottom: 32px;
+  }
+  .report-header h1 {
+    font-size: 26px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 8px;
+  }
+  .report-header .meta {
+    color: var(--dim);
+    font-size: 13px;
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+  }
+  .report-header .meta span strong { color: var(--text); }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .badge-critical { background: rgba(255,123,114,0.2); color: var(--critical); border: 1px solid rgba(255,123,114,0.4); }
+  .badge-high     { background: rgba(247,129,102,0.2); color: var(--high);     border: 1px solid rgba(247,129,102,0.4); }
+  .badge-medium   { background: rgba(227,179,65,0.2);  color: var(--medium);   border: 1px solid rgba(227,179,65,0.4); }
+  .badge-low      { background: rgba(88,166,255,0.2);  color: var(--low);      border: 1px solid rgba(88,166,255,0.4); }
+  .badge-info     { background: rgba(139,148,158,0.2); color: var(--info);     border: 1px solid rgba(139,148,158,0.4); }
+
+  /* ── Sections ── */
+  section { margin-bottom: 40px; }
+  h2 {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  h3 {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+    margin: 16px 0 8px;
+  }
+  p { margin-bottom: 12px; color: var(--text); }
+
+  /* ── Risk scorecard ── */
+  .risk-cards {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 24px;
+  }
+  .risk-card {
+    flex: 1;
+    min-width: 100px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    text-align: center;
+  }
+  .risk-card .count {
+    font-size: 32px;
+    font-weight: 700;
+    line-height: 1;
+    margin-bottom: 4px;
+  }
+  .risk-card .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--dim); }
+  .risk-card.critical .count { color: var(--critical); }
+  .risk-card.high     .count { color: var(--high); }
+  .risk-card.medium   .count { color: var(--medium); }
+  .risk-card.low      .count { color: var(--low); }
+  .risk-card.info     .count { color: var(--info); }
+
+  /* ── Summary table ── */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    margin-bottom: 16px;
+  }
+  th {
+    background: var(--bg2);
+    color: var(--dim);
+    font-weight: 600;
+    text-align: left;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
+  td {
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    vertical-align: top;
+  }
+  tr:nth-child(even) td { background: var(--bg2); }
+  tr:hover td { background: var(--bg3); }
+
+  /* ── Finding cards ── */
+  .finding {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 20px;
+    overflow: hidden;
+  }
+  .finding-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg3);
+  }
+  .finding-header .finding-num {
+    font-size: 12px;
+    color: var(--dim);
+    min-width: 24px;
+  }
+  .finding-header h3 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+    flex: 1;
+  }
+  .finding-meta {
+    display: flex;
+    gap: 16px;
+    padding: 10px 18px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--dim);
+    flex-wrap: wrap;
+  }
+  .finding-meta span strong { color: var(--text); }
+  .verified-yes { color: var(--green); }
+  .finding-body { padding: 16px 18px; }
+  .finding-body h3 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--dim);
+    margin: 16px 0 6px;
+    border: none;
+  }
+  .finding-body h3:first-child { margin-top: 0; }
+  .finding-body p, .finding-body ul { font-size: 13px; margin-bottom: 8px; }
+  .finding-body ul { padding-left: 20px; }
+  .finding-body li { margin-bottom: 4px; }
+  pre {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text);
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 8px 0;
+  }
+  .cvss-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin: 8px 0;
+  }
+  .cvss-cell {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px 12px;
+    font-size: 12px;
+  }
+  .cvss-cell .cv-label { color: var(--dim); font-size: 11px; }
+  .cvss-cell .cv-val { font-size: 18px; font-weight: 700; }
+  code {
+    font-family: var(--mono);
+    font-size: 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 5px;
+  }
+  .ev-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    color: var(--dim);
+    margin: 12px 0 2px;
+  }
+  .ev-inline { margin: 6px 0; font-size: 13px; }
+  .ev-inline .ev-k { color: var(--dim); font-weight: 700; }
+  .draft-banner {
+    background: #4a2a00;
+    border: 1px solid #b8860b;
+    color: #ffd479;
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin: 8px 0 14px;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .limitation-flag { color: #ffb454; font-weight: 700; margin: 0 0 6px; }
+  .narrative-code {
+    position: relative;
+    border-left: 3px solid var(--accent, #4a9eff);
+  }
+  .narrative-code[data-lang]::before {
+    content: attr(data-lang);
+    position: absolute;
+    top: 4px; right: 8px;
+    font-size: 10px;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    color: var(--dim);
+  }
+
+  /* ── Tool log ── */
+  .tool-log td:first-child { font-family: var(--mono); font-size: 12px; }
+  .tool-log .ok  { color: var(--green); }
+  .tool-log .err { color: var(--critical); }
+
+  /* ── Footer ── */
+  footer {
+    border-top: 1px solid var(--border);
+    margin-top: 48px;
+    padding-top: 16px;
+    font-size: 12px;
+    color: var(--dim);
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- Header -->
+  <div class="report-header">
+    <h1>Penetration Test Report</h1>
+    {% if is_draft %}
+    <div class="draft-banner">⚠ DRAFT — generated without the report-writer pass (the engagement was paused or stopped before the reporting phase). The executive summary and technical details are assembled from raw run data and may be incomplete. Resume the engagement to reporting for the synthesized version.</div>
+    {% endif %}
+    <div style="font-size:20px; color:var(--accent); margin: 4px 0 12px;">{{ run.target }}</div>
+    <div class="meta">
+      <span><strong>Engagement ID</strong> {{ run.id }}</span>
+      <span><strong>Status</strong> {{ run.status | capitalize }}</span>
+      <span><strong>Period</strong> {{ run.start_time.strftime("%Y-%m-%d %H:%M") }} – {{ run.end_time.strftime("%Y-%m-%d %H:%M UTC") if run.end_time else "In Progress" }}</span>
+      <span><strong>Generated</strong> {{ generated_at }}</span>
+      {% if run.estimated_cost_usd %}<span><strong>Model Cost</strong> ${{ "%.4f" | format(run.estimated_cost_usd) }}</span>{% endif %}
+    </div>
+  </div>
+
+  <!-- Risk Scorecard -->
+  <section>
+    <h2>Risk Overview</h2>
+    <div class="risk-cards">
+      <div class="risk-card critical"><div class="count">{{ severity_counts.critical }}</div><div class="label">Critical</div></div>
+      <div class="risk-card high">   <div class="count">{{ severity_counts.high }}</div>    <div class="label">High</div></div>
+      <div class="risk-card medium"> <div class="count">{{ severity_counts.medium }}</div>  <div class="label">Medium</div></div>
+      <div class="risk-card low">    <div class="count">{{ severity_counts.low }}</div>     <div class="label">Low</div></div>
+      <div class="risk-card info">   <div class="count">{{ severity_counts.info }}</div>    <div class="label">Info</div></div>
+    </div>
+  </section>
+
+  <!-- Executive Summary -->
+  <section>
+    <h2>Executive Summary</h2>
+    {% if run.executive_summary %}
+      {% for para in run.executive_summary.strip().split('\n\n') %}
+        <p>{{ para }}</p>
+      {% endfor %}
+    {% elif run.summary %}
+      {% set clean = run.summary | replace("```json","") | replace("```","") | trim %}
+      {% for para in clean.split('\n\n') %}
+        <p>{{ para }}</p>
+      {% endfor %}
+    {% else %}
+      <p>A penetration test was conducted against <code>{{ run.target }}</code>. {{ run.findings | length }} finding(s) were identified across {{ severity_counts.critical }} critical, {{ severity_counts.high }} high, {{ severity_counts.medium }} medium, and {{ severity_counts.low }} low severity categories.</p>
+    {% endif %}
+  </section>
+
+  <!-- Limitations & Constraints -->
+  {% if limitations %}
+  <section>
+    <h2>Limitations &amp; Constraints</h2>
+    {% if limitations.ended_early %}
+    <p class="limitation-flag">⚠ This engagement did not run to completion — coverage below is partial.</p>
+    {% endif %}
+    <p>{{ limitations.text }}</p>
+  </section>
+  {% endif %}
+
+  <!-- Findings Summary Table -->
+  <section>
+    <h2>Findings Summary</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Finding</th>
+          <th>Severity</th>
+          <th>Type</th>
+          <th>Target</th>
+          <th>CVSS Base</th>
+          <th>Verified</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for f in findings %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td><a href="#finding-{{ f.id }}">{{ f.title }}</a></td>
+          <td><span class="badge badge-{{ f.severity }}">{{ f.severity | upper }}</span></td>
+          <td>{{ f.type }}</td>
+          <td><code>{{ f.target }}</code></td>
+          <td>{{ f.cvss.base_score if f.cvss else "—" }}</td>
+          <td>{% if f.verified %}<span class="verified-yes">✓ Yes</span>{% else %}No{% endif %}</td>
+        </tr>
+        {% endfor %}
+        {% if not findings %}
+        <tr><td colspan="7" style="text-align:center; color:var(--dim)">No findings recorded.</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </section>
+
+  <!-- Technical Details -->
+  {% if run.technical_overview %}
+  <section>
+    <h2>Technical Details</h2>
+    {% for b in run.technical_overview | narrative_blocks %}
+      {% if b.kind == 'code' %}
+        <pre class="narrative-code"{% if b.lang %} data-lang="{{ b.lang }}"{% endif %}>{{ b.content }}</pre>
+      {% elif b.kind == 'heading' %}
+        <h3 class="narrative-phase">{{ b.content }}</h3>
+      {% else %}
+        <p>{{ b.content }}</p>
+      {% endif %}
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  <!-- Detailed Findings -->
+  <section>
+    <h2>Findings — Detail</h2>
+    {% for f in findings %}
+    <div class="finding" id="finding-{{ f.id }}">
+      <div class="finding-header">
+        <span class="finding-num">{{ loop.index }}</span>
+        <h3>{{ f.title }}</h3>
+        <span class="badge badge-{{ f.severity }}">{{ f.severity | upper }}</span>
+        {% if f.verified %}<span class="badge" style="background:rgba(63,185,80,0.2);color:var(--green);border:1px solid rgba(63,185,80,0.4)">Verified</span>{% endif %}
+      </div>
+      <div class="finding-meta">
+        <span><strong>ID</strong> <code>{{ f.id }}</code></span>
+        <span><strong>Type</strong> {{ f.type }}</span>
+        <span><strong>Target</strong> <code>{{ f.target }}</code></span>
+        <span><strong>Timestamp</strong> {{ f.timestamp.strftime("%Y-%m-%d %H:%M UTC") }}</span>
+      </div>
+      <div class="finding-body">
+        <h3>Description</h3>
+        {% for para in f.description.strip().split('\n\n') %}
+          <p>{{ para }}</p>
+        {% endfor %}
+
+        {% if f.impact %}
+        <h3>Impact</h3>
+        {% for para in f.impact.strip().split('\n\n') %}
+          <p>{{ para }}</p>
+        {% endfor %}
+        {% endif %}
+
+        {% if f.cvss %}
+        <h3>Severity Calculation</h3>
+        <p style="font-family:var(--mono);font-size:12px;word-break:break-all">
+          <a href="{{ f.cvss.vector | nist_cvss_url }}" target="_blank" rel="noopener">{{ f.cvss.vector }}</a>
+        </p>
+        <div class="cvss-grid">
+          <div class="cvss-cell"><div class="cv-label">Base Score</div><div class="cv-val">{{ f.cvss.base_score }}</div></div>
+          <div class="cvss-cell"><div class="cv-label">Temporal</div><div class="cv-val">{{ f.cvss.temporal_score }}</div></div>
+          <div class="cvss-cell"><div class="cv-label">Environmental</div><div class="cv-val">{{ f.cvss.environmental_score }}</div></div>
+        </div>
+        <p style="font-size:13px;margin-top:6px"><strong>Overall Severity: {{ f.severity | capitalize }}</strong>
+          (Base: {{ f.cvss.base_score }}, Temporal: {{ f.cvss.temporal_score }}, Environmental: {{ f.cvss.environmental_score }})</p>
+        {% endif %}
+
+        {% if f.evidence %}
+        <h3>Evidence</h3>
+        {% for b in f.evidence | evidence_blocks %}
+          {% if b.kind == 'inline' %}
+        <p class="ev-inline"><span class="ev-k">{{ b.label }}:</span> {{ b.text }}</p>
+          {% else %}
+        <div class="ev-label">{{ b.label }}</div>
+        <pre>{{ b.text }}</pre>
+          {% endif %}
+        {% endfor %}
+        {% endif %}
+
+        {% if f.remediation %}
+        <h3>Remediation</h3>
+        <ul>
+          {% for item in f.remediation %}
+          <li>{{ item }}</li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+    {% if not findings %}
+    <p style="color:var(--dim)">No findings recorded.</p>
+    {% endif %}
+  </section>
+
+  <!-- Cleanup / Persistence -->
+  {% if persistence %}
+  <section>
+    <h2>Cleanup Required — Persistence Planted</h2>
+    <p style="color:var(--dim)">The following footholds were established during testing and <strong>must be removed</strong> by the operator.</p>
+    <table>
+      <thead>
+        <tr><th>Type</th><th>Host</th><th>OS</th><th>Detail</th><th>Removal</th></tr>
+      </thead>
+      <tbody>
+        {% for p in persistence %}
+        <tr>
+          <td>{{ p.kind }}</td>
+          <td><code>{{ p.host }}</code></td>
+          <td>{{ p.os }}</td>
+          <td>{{ p.detail }}</td>
+          <td>{% if p.cleanup %}<code>{{ p.cleanup }}</code>{% else %}<span style="color:var(--dim)">—</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+  <!-- Tool Log Appendix -->
+  {% if run.tool_calls %}
+  <section>
+    <h2>Appendix — Tool Execution Log</h2>
+    <table class="tool-log">
+      <thead>
+        <tr><th>Tool</th><th>Time</th><th>Result</th></tr>
+      </thead>
+      <tbody>
+        {% for tc in run.tool_calls %}
+        <tr>
+          <td>{{ tc.tool_name }}</td>
+          <td>{{ tc.timestamp.strftime("%H:%M:%S") }}</td>
+          <td>
+            {% if tc.error %}
+              <span class="err">{{ tc.error }}</span>
+            {% elif tc.command_str %}
+              <span class="ok" style="font-family:var(--mono);font-size:11px">{{ tc.command_str[:120] }}</span>
+            {% else %}
+              <span class="ok">OK</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+  <footer>
+    <span>PDTMJ-AI  ·  Engagement {{ run.id }}  ·  Target {{ run.target }}</span>
+    <span>Generated {{ generated_at }}</span>
+  </footer>
+
+</div>
+</body>
+</html>

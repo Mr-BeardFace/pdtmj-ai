@@ -1,0 +1,34 @@
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ── Tooling caches ──────────────────────────────────────────────────────────
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ── Secrets & local config ──────────────────────────────────────────────────
+# API keys live in the OS keyring, never in the repo. .env / config.yaml are
+# local and runtime-mutated — ship the .example templates instead.
+.env
+config.yaml
+
+# ── Runtime output — ENGAGEMENT DATA, never commit ──────────────────────────
+# These hold target recon, findings, state snapshots, reports, captured output,
+# and scratch files for live assessments. Keep them out of version control.
+assessments/
+results/
+logs/
+artifacts/
+work/
+*.log
+
+# ── OS / editor cruft ───────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

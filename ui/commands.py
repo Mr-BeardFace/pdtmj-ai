@@ -1,0 +1,953 @@
+"""Slash command system for the PDTMJ-AI TUI.
+
+All / commands are routed here regardless of whether an agent is running.
+Each handler returns (output_lines: list[str], success: bool).
+"""
+from __future__ import annotations
+
+import os
+
+from core.llm_client import (
+    PROVIDERS, get_provider, resolve_provider_key, provider_for_key,
+    auth_headers, _KEYRING_SERVICE,
+)
+
+# Provider names, derived from the llm_client registry — used for command
+# completions and validation so a new provider needs no edits here.
+_PROVIDER_NAMES = tuple(PROVIDERS)
+
+# ── Command registry ──────────────────────────────────────────────────────────
+# Single source of truth. Parsing, tab-completion, the grouped /help overview,
+# and per-command help (/help <cmd>) are all derived from this — so adding or
+# renaming a command means editing one place, not four lists that drift apart.
+#
+# A command is either a GROUP (several subcommands: /key set|list|clear) or a
+# LEAF (stands alone, optionally with args: /turns <n|off>). A leaf is modelled
+# as a single Sub with an empty name.
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Sub:
+    name: str                          # subcommand word ("set"); "" for a leaf
+    desc: str                          # one-line description
+    args: str = ""                     # arg hint shown after the path, e.g. "<api-key>"
+    complete: tuple[str, ...] = ()     # extra completion suffixes (arg values)
+
+
+@dataclass(frozen=True)
+class Command:
+    name: str                          # "/key"
+    summary: str                       # family one-liner (grouped overview)
+    subs: tuple[Sub, ...]              # subcommands; a lone Sub(name="") = leaf
+    detail: tuple[str, ...] = ()       # extra lines for per-command help
+
+    @property
+    def is_leaf(self) -> bool:
+        return len(self.subs) == 1 and self.subs[0].name == ""
+
+
+COMMANDS: list[Command] = [
+    Command("/info", "Show all current settings — persona, provider, models, keys, loop caps",
+            (Sub("", "Show all current settings — persona, provider, models, keys, loop caps"),)),
+    Command("/key", "Manage API keys (stored in the system keychain)", (
+        Sub("set",   "Store a key — provider auto-detected from its prefix", "<api-key>"),
+        Sub("list",  "Show API key status for all providers"),
+        Sub("clear", "Remove key(s) from the keychain",
+            f"[{'|'.join(_PROVIDER_NAMES)}]", _PROVIDER_NAMES),
+    )),
+    Command("/models", "List available models for a provider", (
+        Sub("list", "List models (free-only for OpenRouter)",
+            f"[{'|'.join(_PROVIDER_NAMES)}]", _PROVIDER_NAMES),
+    )),
+    Command("/agent", "Inspect and override per-agent models and temperatures", (
+        Sub("set model", "Override the model for one agent (or 'global')",
+            "<name|global> <model-id>", ("global",)),
+        Sub("set temp", "Override the sampling temperature for one agent (or 'global')",
+            "<name|global> <0.0-1.0|default>", ("global",)),
+        Sub("list", "List all agents with their current model and temperature"),
+    )),
+    Command("/cred", "Pre-load or manage engagement credentials", (
+        Sub("add",    "Pre-load a credential", "<user> <secret> [service]"),
+        Sub("list",   "List credentials (operator + agent-discovered), numbered"),
+        Sub("remove", "Remove a credential by its number from /cred list", "<n>"),
+        Sub("clear",  "Remove all manually added credentials"),
+    )),
+    Command("/persona", "Switch the engagement persona", (
+        Sub("set",  "Set the engagement persona", "<persona-name>"),
+        Sub("list", "List available personas"),
+    )),
+    Command("/provider", "Switch the active LLM provider", (
+        Sub("set",  "Switch active provider",
+            f"<{'|'.join(_PROVIDER_NAMES)}>", _PROVIDER_NAMES),
+        Sub("list", "Show current provider and key status"),
+    )),
+    Command("/scope", "Manage the engagement's in-scope targets", (
+        Sub("add",    "Approve a target for agent followups", "<target>"),
+        Sub("remove", "Take a host/IP/CIDR out of scope (and keep it out)", "<target>"),
+        Sub("list",   "Show approved (and excluded) scope targets"),
+    )),
+    Command("/exploit", "Enable/disable the exploitation phase (default on)",
+            (Sub("", "Enable/disable the exploitation phase (default on)", "<on|off>",
+                 ("on", "off")),)),
+    Command("/websearch", "Enable/disable web research (web_search + fetch_url)",
+            (Sub("", "Enable/disable the web-research tools (web_search + fetch_url)", "<on|off>",
+                 ("on", "off")),)),
+    Command("/turns", "Set the per-agent turn budget (default 60; off = unlimited)",
+            (Sub("", "Set the per-agent turn budget (default 60; off = unlimited)", "<n|off>"),)),
+    Command("/parallel", "Parallel mode: work surfaces + hypotheses concurrently (default off)",
+            (Sub("", "on|off|status, or set a fan-out width: agents|surfaces|hypotheses <n>",
+                 "<on|off|status|agents N|surfaces N|hypotheses N>",
+                 ("on", "off", "status", "agents", "surfaces", "hypotheses")),)),
+    Command("/job", "List running background jobs (and recent finished) or kill one by id",
+            (Sub("list", "List running jobs plus the last few finished"),
+             Sub("kill", "Terminate a running job and its process by id (or 'all')", "<id|all>",
+                 ("all",)))),
+    Command("/abort", "Hard-stop the current agent: kill every in-flight process and hold it for guidance",
+            (Sub("", "Kill all in-flight processes and hold the agent — then /continue or /skip"),)),
+    Command("/skip", "Abandon a held agent (after /abort) and advance to the next agent",
+            (Sub("", "Abandon a held agent (after /abort) and advance to the next agent"),)),
+    Command("/pause", "Temporarily pause the engagement after the current agent — resume with /continue",
+            (Sub("", "Temporarily pause the engagement after the current agent — resume with /continue"),)),
+    Command("/end", "Stop the pipeline, run always-last agents, generate the report",
+            (Sub("", "Stop the pipeline, run always-last agents, generate the report"),)),
+    Command("/continue", "Resume a held agent (after /abort), a paused engagement, or one halted by an account limit",
+            (Sub("", "Resume a held agent (after /abort) with your guidance, or resume a paused/halted engagement"),)),
+    Command("/assessment", "List, load, or start a fresh assessment", (
+        Sub("list", "List saved assessments (id, date, target, status)"),
+        Sub("load", "Reload a saved assessment into the panels by id", "<assessment-id>"),
+        Sub("new",  "Clear the board to start a fresh assessment"),
+    )),
+    Command("/report", "Generate a report now, or on|off to toggle auto-reporting",
+            (Sub("", "No arg generates a report now; on|off toggles auto-reporting at engagement end",
+                 "[on|off]", ("on", "off")),)),
+    Command("/clear", "Reset to a blank window — panels, agent log, and token meter (saved files on disk are kept)",
+            (Sub("", "Reset to a blank window — panels, agent log, and token meter (saved files on disk are kept)"),)),
+    Command("/help", "Show this help — '/help <command>' for one command in detail",
+            (Sub("", "Show this help — '/help <command>' for one command in detail",
+                 "[command]"),)),
+    Command("/exit", "Exit PDTMJ-AI", (Sub("", "Exit PDTMJ-AI"),)),
+    Command("/quit", "Exit PDTMJ-AI", (Sub("", "Exit PDTMJ-AI"),)),
+]
+
+_BY_NAME: dict[str, Command] = {c.name: c for c in COMMANDS}
+GROUP_NAMES: frozenset[str] = frozenset(c.name for c in COMMANDS if not c.is_leaf)
+
+
+def _sub_path(cmd: Command, sub: Sub) -> str:
+    return f"{cmd.name} {sub.name}".rstrip()
+
+
+def _sub_sig(cmd: Command, sub: Sub) -> str:
+    path = _sub_path(cmd, sub)
+    return f"{path} {sub.args}".rstrip()
+
+
+def _build_paths() -> list[str]:
+    """Every recognizable command path. Group base names are included so a bare
+    '/key' parses (and routes to that group's help)."""
+    paths: list[str] = []
+    for c in COMMANDS:
+        paths.append(c.name)
+        for s in c.subs:
+            if s.name:
+                paths.append(_sub_path(c, s))
+    return paths
+
+
+def _build_completions() -> list[str]:
+    out: list[str] = []
+    for c in COMMANDS:
+        for s in c.subs:
+            path = _sub_path(c, s)          # leaf → "/turns", group sub → "/key set"
+            out.append(path)
+            for x in s.complete:
+                out.append(f"{path} {x}")
+    return out
+
+
+# Derived views (kept for backward-compat with parse()/usage() and completion.py)
+COMMAND_PATHS: list[str] = _build_paths()
+COMPLETIONS: list[str] = _build_completions()
+COMMAND_HELP: dict[str, str] = {
+    _sub_path(c, s): s.desc for c in COMMANDS for s in c.subs
+}
+
+
+# ── Parser ────────────────────────────────────────────────────────────────────
+
+def parse(text: str) -> tuple[str, list[str]] | None:
+    """Parse a slash command string.
+
+    Returns (command_path, args_list) for a recognized command prefix,
+    or (raw_word, []) for an unknown /command so the caller can show help.
+    Returns None if text doesn't start with /.
+    """
+    text = text.strip()
+    if not text.startswith("/"):
+        return None
+
+    lower = text.lower()
+    for path in sorted(COMMAND_PATHS, key=len, reverse=True):
+        if lower.startswith(path + " ") or lower == path:
+            rest = text[len(path):].strip()
+            args = rest.split() if rest else []
+            return path, args
+
+    # Unknown / command — return the first word
+    return text.split()[0], []
+
+
+def usage(cmd_path: str) -> str:
+    return COMMAND_HELP.get(cmd_path, f"Unknown command: {cmd_path}")
+
+
+# ── Help rendering ────────────────────────────────────────────────────────────
+
+# Command families for the grouped /help overview. Every command name MUST appear
+# in exactly one group (a startup check in _overview_lines guards against drift).
+_HELP_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Setup & config",        ("/info", "/key", "/models", "/agent", "/persona", "/provider")),
+    ("Engagement setup",      ("/scope", "/cred", "/exploit", "/websearch", "/turns", "/parallel")),
+    ("Control (while running)", ("/abort", "/skip", "/pause", "/continue", "/end", "/job")),
+    ("Assessments & reports", ("/assessment", "/report")),
+    ("Session",               ("/clear", "/help", "/exit", "/quit")),
+)
+
+
+def _overview_lines() -> list[str]:
+    """Grouped overview: commands organised by family. Group commands show their
+    subcommands in parens; leaf args are omitted here (they live in /help <cmd>)
+    so every summary aligns in one clean column regardless of arg length."""
+    lines = ["Slash commands (work anytime, even while an agent is running):", ""]
+
+    # Forms: group → "/name (sub | sub)", leaf → just "/name" (args go to /help).
+    def _form(c: Command) -> str:
+        if c.is_leaf:
+            return c.name
+        return f"{c.name} ({' | '.join(s.name for s in c.subs)})"
+
+    width = max(len(_form(c)) for c in COMMANDS) + 2
+    for title, names in _HELP_GROUPS:
+        lines.append(f"[bold]{title}[/bold]")
+        for name in names:
+            c = _BY_NAME.get(name)
+            if c is None:                       # group references a missing command
+                continue
+            lines.append(f"  [cyan]{_form(c):<{width}}[/cyan] {c.summary}")
+        lines.append("")
+    lines += [
+        "[dim]/help <command>[/dim]  — detail + arguments for one command  (e.g. /help parallel)",
+        "While an agent runs, anything without / is sent to the agent as an instruction.",
+        "",
+        "Keyboard shortcuts:",
+        "  Ctrl+L          Full activity log modal",
+        "  Ctrl+D          Toggle command pane",
+        "  Ctrl+←/→        Resize left/right pane split",
+        "  Ctrl+↑/↓        Resize findings/info-tabs split",
+        "  ↑/↓             Command history",
+    ]
+    return lines
+
+
+def _command_help(arg: str) -> list[str] | None:
+    """Detailed help for one command. Accepts 'scope', '/scope', etc."""
+    word = arg.lstrip("/").lower().split()
+    cmd = _BY_NAME.get("/" + word[0]) if word else None
+    if cmd is None:
+        return None
+    if cmd.is_leaf:
+        sub = cmd.subs[0]
+        head = f"{cmd.name} {sub.args}".rstrip()
+        lines = [f"[cyan]{head}[/cyan] — {cmd.summary}"]
+    else:
+        lines = [f"[cyan]{cmd.name}[/cyan] — {cmd.summary}", ""]
+        width = max(len(_sub_sig(cmd, s)) for s in cmd.subs) + 2
+        for s in cmd.subs:
+            lines.append(f"  [cyan]{_sub_sig(cmd, s):<{width}}[/cyan] {s.desc}")
+    if cmd.detail:
+        lines += [""] + [f"  {d}" for d in cmd.detail]
+    return lines
+
+
+# ── API key helpers ───────────────────────────────────────────────────────────
+# NOTE: the keyring service name "pentest-ai" below is kept literal through the
+# PDTMJ-AI rebrand on purpose — it is the lookup key for already-stored API keys,
+# so renaming it would orphan the operator's saved credentials. Leave it as-is.
+
+def get_api_key() -> str | None:
+    """Resolve the Anthropic API key (keychain → env). Kept as a named helper for
+    the common case; other providers resolve via resolve_provider_key(spec)."""
+    return resolve_provider_key(PROVIDERS["anthropic"])
+
+
+# ── Handlers ─────────────────────────────────────────────────────────────────
+
+def _masked_key_source(spec) -> str:
+    """'keychain (sk-...123)' / 'env var (...)' / 'not set' for one provider."""
+    try:
+        import keyring
+        stored = keyring.get_password(_KEYRING_SERVICE, spec.keyring_key)
+    except Exception:
+        stored = None
+    if stored:
+        return f"keychain  ({stored[:8]}...{stored[-4:]})"
+    env = os.environ.get(spec.env_var)
+    if env:
+        return f"env var   ({env[:8]}...{env[-4:]})"
+    return "not set"
+
+
+def handle_key_list() -> tuple[list[str], bool]:
+    from core.config import get
+    lines = ["API key status:", ""]
+    for spec in PROVIDERS.values():
+        lines.append(f"  {spec.label:<12} {_masked_key_source(spec)}")
+    lines += ["", f"  Active provider: {get('active_provider', 'anthropic')}"]
+    return lines, True
+
+
+def handle_key_clear(args: list[str]) -> tuple[list[str], bool]:
+    """Remove API key(s) from keychain. Target: a provider name, or all if omitted."""
+    target = args[0].lower() if args else "all"
+    if target != "all" and target not in PROVIDERS:
+        return [f"Unknown provider: {target!r}",
+                f"  Supported: {', '.join(_PROVIDER_NAMES)}, all"], False
+    results: list[str] = []
+    try:
+        import keyring
+        for spec in PROVIDERS.values():
+            if target in (spec.name, "all"):
+                try:
+                    keyring.delete_password(_KEYRING_SERVICE, spec.keyring_key)
+                    results.append(f"{spec.label} key removed.")
+                except Exception:
+                    results.append(f"{spec.label} key not found in keychain.")
+        return results, True
+    except Exception as e:
+        return [f"Keychain error: {e}"], False
+
+
+def handle_key_set(new_key: str) -> tuple[list[str], bool]:
+    """Store a new API key — provider auto-detected from its key prefix."""
+    spec = provider_for_key(new_key)
+    if spec is None:
+        lines = ["Unknown key format."]
+        for s in PROVIDERS.values():
+            lines.append(f"  {s.label} keys start with  {s.key_prefixes[0]}")
+        return lines, False
+    try:
+        import keyring
+        keyring.set_password(_KEYRING_SERVICE, spec.keyring_key, new_key)
+        masked = new_key[:8] + "..." + new_key[-4:]
+        return [f"{spec.label} API key stored in system keychain  ({masked})"], True
+    except Exception as e:
+        return [f"Keychain error: {e}"], False
+
+
+def handle_models_list(provider: str = "") -> tuple[list[str], bool]:
+    """List available models for a provider (defaults to the active one). Fully
+    registry-driven: endpoint, auth, and the OpenRouter free-only filter all come
+    from the provider's ProviderSpec, so a new provider is listable for free."""
+    from core.config import get
+    provider = (provider or get("active_provider", "anthropic")).lower()
+    spec = PROVIDERS.get(provider)
+    if spec is None:
+        return [f"Unknown provider: {provider!r}  (supported: {', '.join(_PROVIDER_NAMES)})"], False
+    if not spec.models_url:
+        return [f"{spec.label} does not expose a model list."], False
+
+    key = resolve_provider_key(spec)
+    if not key:
+        pfx = spec.key_prefixes[0] if spec.key_prefixes else ""
+        return [f"No {spec.label} API key set. Run: /key set {pfx}..."], False
+
+    try:
+        import httpx
+        r = httpx.get(spec.models_url, headers=auth_headers(spec, key), timeout=10)
+        r.raise_for_status()
+        models = r.json().get("data", [])
+    except Exception as e:
+        return [f"API error: {e}"], False
+
+    if spec.free_only:
+        # Free models: both prompt and completion cost must be "0".
+        models = [
+            m for m in models
+            if str(m.get("pricing", {}).get("prompt", "1"))      == "0"
+            and str(m.get("pricing", {}).get("completion", "1")) == "0"
+        ]
+        if not models:
+            return [f"No free models found on {spec.label}."], False
+
+    if not models:
+        return [f"No models returned by {spec.label}."], False
+
+    header = (f"Free {spec.label} models ({len(models)} total — use these with /agent set model):"
+              if spec.free_only else
+              f"Available {spec.label} models ({len(models)} total):")
+    lines = [header, ""]
+    for m in sorted(models, key=lambda x: x.get("id", "")):
+        mid     = m.get("id", "?")
+        name    = m.get("name") or m.get("display_name") or ""
+        ctx     = m.get("context_length", 0)
+        ctx_str = f"{ctx // 1000}k ctx" if ctx else ""
+        lines.append(f"  {mid:<50}  {name}  {ctx_str}".rstrip())
+    if spec.free_only:
+        lines.append("")
+        lines.append("  All listed models are free (no prompt or completion cost).")
+    lines += ["", "  Set one with: /agent set model global <model-id>"]
+    return lines, True
+
+
+def handle_agent_list() -> tuple[list[str], bool]:
+    try:
+        import re as re_mod
+        import yaml
+        from pathlib import Path
+        from core.config import load_config
+
+        from core.config import get_temperature_for_agent
+
+        agents_dir = Path(__file__).parent.parent / "agents"
+        cfg = load_config()
+        overrides: dict = cfg.get("agent_models", {})
+        temps: dict = cfg.get("agent_temperatures", {}) or {}
+        global_model = overrides.get("global", "—")
+
+        lines = [f"{'Agent':<34} {'Model override':<28} {'Temp':<6} Source", ""]
+        for af in sorted(agents_dir.rglob("*.md")):
+            if af.name == "base-instructions.md":
+                continue
+            content = af.read_text(encoding="utf-8")
+            m = re_mod.match(r"^---\n(.*?)\n---", content, re_mod.DOTALL)
+            if not m:
+                continue
+            try:
+                meta = yaml.safe_load(m.group(1))
+                name    = meta.get("name", af.stem)
+                override = overrides.get(name, "")
+                model_str = f"→ {override}" if override else f"({meta.get('model', '—')})"
+                eff = get_temperature_for_agent(name)
+                temp_str = "default" if eff is None else f"{eff:g}"
+                src = "override" if name in temps else "default"
+                lines.append(f"  {name:<32} {model_str:<28} {temp_str:<6} {src}")
+            except Exception:
+                pass
+
+        td = cfg.get("temperature_default")
+        lines += [
+            "",
+            f"  global model override:  {global_model}",
+            f"  temperature_default:    {'provider default' if td is None else td}"
+            "   (/agent set temp <name|global> <0.0-1.0>)",
+        ]
+        return lines, True
+    except Exception as e:
+        return [f"Error: {e}"], False
+
+
+def handle_agent_set_model(args: list[str]) -> tuple[list[str], bool]:
+    """
+    Args: [<agent_name|global>, <model_id>]
+    """
+    if len(args) < 2:
+        return [
+            "Usage: /agent set model <agent-name|global> <model-id>",
+            "",
+            "Examples:",
+            "  /agent set model global claude-sonnet-4-6",
+            "  /agent set model pentest/exploitation claude-opus-4-7",
+            "  /agent set model pentest/enumeration claude-haiku-4-5-20251001",
+        ], False
+
+    agent_name, model_id = args[0], args[1]
+
+    try:
+        from core.config import load_config, save_config, get
+        cfg = load_config()
+        overrides: dict = cfg.setdefault("agent_models", {})
+        overrides[agent_name] = model_id
+        save_config(cfg)
+
+        lines = []
+        if agent_name == "global":
+            lines.append(f"Global default model set to: {model_id}")
+        else:
+            lines.append(f"Model for '{agent_name}' set to: {model_id}")
+
+        # Warn if using OpenRouter with a model that doesn't look free
+        if get("active_provider", "anthropic") == "openrouter" and not model_id.endswith(":free"):
+            lines += [
+                "",
+                "  Warning: OpenRouter model does not end with :free — this may incur cost.",
+                "  Run /models list openrouter to see available free models.",
+            ]
+        return lines, True
+    except Exception as e:
+        return [f"Error writing config: {e}"], False
+
+
+def handle_agent_set_temp(args: list[str]) -> tuple[list[str], bool]:
+    """
+    Args: [<agent_name|global>, <0.0-1.0 | default>]
+
+    Per-agent override, or 'global' to set the baseline (temperature_default).
+    'default' clears: a per-agent override falls back to the baseline; 'global default'
+    falls back to the provider default (no temperature sent).
+    """
+    if len(args) < 2:
+        return [
+            "Usage: /agent set temp <agent-name|global> <0.0-1.0|default>",
+            "",
+            "Examples:",
+            "  /agent set temp global 0.4                  (baseline for all agents)",
+            "  /agent set temp pentest/rce 0.5             (override one agent)",
+            "  /agent set temp pentest/report 0.2",
+            "  /agent set temp pentest/rce default         (clear the override)",
+            "",
+            "Lower = focused/deterministic (tool-heavy work, reports); higher = more "
+            "exploratory (helps an agent break out of a rut).",
+        ], False
+
+    agent_name, val = args[0], args[1].lower()
+    clearing = val in ("default", "off", "none", "clear")
+
+    t = None
+    if not clearing:
+        try:
+            t = float(val)
+        except ValueError:
+            return ["Temperature must be a number between 0.0 and 1.0 (or 'default' to clear).",
+                    "Example: /agent set temp pentest/rce 0.5"], False
+        if not (0.0 <= t <= 1.0):
+            return [f"Temperature must be between 0.0 and 1.0 (got {t})."], False
+
+    try:
+        from core.config import load_config, save_config
+        cfg = load_config()
+        temps: dict = cfg.setdefault("agent_temperatures", {})
+
+        if agent_name == "global":
+            cfg["temperature_default"] = None if clearing else t
+            save_config(cfg)
+            if clearing:
+                return ["Baseline temperature cleared — agents now use the provider default "
+                        "(1.0) unless individually overridden."], True
+            return [f"Baseline temperature set to {t} (every agent without its own override)."], True
+
+        if clearing:
+            temps.pop(agent_name, None)
+            save_config(cfg)
+            td = cfg.get("temperature_default")
+            return [f"Temperature override for '{agent_name}' cleared — it now uses the baseline "
+                    f"({'provider default' if td is None else td})."], True
+
+        temps[agent_name] = t
+        save_config(cfg)
+        return [f"Temperature for '{agent_name}' set to {t}."], True
+    except Exception as e:
+        return [f"Error writing config: {e}"], False
+
+
+def handle_exploit(args: list[str]) -> tuple[list[str], bool]:
+    from core.config import get, set_value
+    if not args:
+        cur = get("exploitation_enabled", True)
+        return [f"Exploitation phase is {'ON' if cur else 'OFF'}.",
+                "Use /exploit on  or  /exploit off  to change."], True
+    val = args[0].lower()
+    if val in ("on", "true", "enable", "enabled", "yes", "1"):
+        set_value("exploitation_enabled", True)
+        return ["Exploitation ENABLED — plan → exploit → validate will run."], True
+    if val in ("off", "false", "disable", "disabled", "no", "0"):
+        set_value("exploitation_enabled", False)
+        return ["Exploitation DISABLED — assessment only (enumeration + reporting)."], True
+    return ["Usage: /exploit on|off"], False
+
+
+def handle_websearch(args: list[str]) -> tuple[list[str], bool]:
+    """Enable/disable the web-research tools (web_search + fetch_url) for all agents."""
+    from core.config import get, set_value
+    if not args:
+        cur = get("allow_web_search", True)
+        return [f"Web research (web_search + fetch_url) is {'ON' if cur else 'OFF'}.",
+                "Use /websearch on | /websearch off."], True
+    val = args[0].lower()
+    if val in ("on", "true", "enable", "enabled", "yes", "1"):
+        set_value("allow_web_search", True)
+        return ["Web research ENABLED — web_search + fetch_url are available."], True
+    if val in ("off", "false", "disable", "disabled", "no", "0"):
+        set_value("allow_web_search", False)
+        return ["Web research DISABLED — web_search + fetch_url blocked for all agents."], True
+    return ["Usage: /websearch on|off"], False
+
+
+def handle_report(args: list[str]) -> tuple[list[str], bool]:
+    """Toggle auto-reporting at engagement end. (A bare /report generates one NOW;
+    that's handled in the app, which holds the run state.)"""
+    from core.config import get, set_value
+    if not args:
+        cur = get("reporting_enabled", True)
+        return [f"Auto-reporting is {'ON' if cur else 'OFF'}.",
+                "Use /report on | /report off; a bare /report makes one on demand."], True
+    val = args[0].lower()
+    if val in ("on", "true", "enable", "enabled", "yes", "1"):
+        set_value("reporting_enabled", True)
+        return ["Auto-reporting ENABLED — a report is generated at engagement end."], True
+    if val in ("off", "false", "disable", "disabled", "no", "0"):
+        set_value("reporting_enabled", False)
+        return ["Auto-reporting DISABLED — no report at end. Run /report to make one on demand."], True
+    return ["Usage: /report [on|off]   (no arg = generate a report now)"], False
+
+
+def handle_parallel(args: list[str]) -> tuple[list[str], bool]:
+    """Toggle parallel mode and tune the fan-out widths. Takes effect on the next
+    engagement (it picks the driver at start)."""
+    from core.config import get, set_value
+
+    def _status() -> list[str]:
+        return [
+            f"Parallel mode is {'ON' if get('parallel_enabled', False) else 'OFF'}.",
+            f"  max agents (global cap):  {get('max_parallel_agents', 3)}   (/parallel agents <n>)",
+            f"  surfaces at once:         {get('surface_fanout', 3)}   (/parallel surfaces <n>)",
+            f"  hypotheses per exploit:   {get('hypothesis_fanout', 3)}   (/parallel hypotheses <n>)",
+            f"  per-hypothesis turns:     {get('hypothesis_worker_turns', 12)}",
+            "Note: K parallel agents reach the account rate limit ~K× faster — keep the cap modest.",
+        ]
+
+    if not args:
+        return _status(), True
+    sub = args[0].lower()
+    if sub in ("on", "true", "enable", "enabled", "yes", "1"):
+        set_value("parallel_enabled", True)
+        return ["Parallel mode ENABLED — surfaces and hypotheses run concurrently "
+                "next engagement."] + _status()[1:], True
+    if sub in ("off", "false", "disable", "disabled", "no", "0"):
+        set_value("parallel_enabled", False)
+        return ["Parallel mode DISABLED — back to the serial driver."], True
+    if sub == "status":
+        return _status(), True
+    # numeric tuners
+    key_map = {"agents": "max_parallel_agents", "surfaces": "surface_fanout",
+               "hypotheses": "hypothesis_fanout"}
+    if sub in key_map and len(args) >= 2:
+        try:
+            n = max(1, int(args[1]))
+        except ValueError:
+            return [f"Usage: /parallel {sub} <positive integer>"], False
+        set_value(key_map[sub], n)
+        return [f"Set {key_map[sub]} = {n}."], True
+    return ["Usage: /parallel on|off|status  |  /parallel agents|surfaces|hypotheses <n>"], False
+
+
+def _fmt_turns(n: int) -> str:
+    return "unlimited (no cap)" if n <= 0 else str(n)
+
+
+def handle_turns(args: list[str]) -> tuple[list[str], bool]:
+    """Show or set the per-agent turn budget. 0/off = unlimited."""
+    from core.config import get, set_value
+    if not args:
+        cur = int(get("max_turns_default", 60))
+        return [f"Max turns per agent: {_fmt_turns(cur)}.",
+                "Set with /turns <n>  (e.g. /turns 60)  ·  /turns off for unlimited."], True
+    val = args[0].strip().lower()
+    if val in ("off", "unlimited", "none", "0", "inf"):
+        set_value("max_turns_default", 0)
+        return ["Max turns per agent: UNLIMITED — an agent runs until it stops on its own.",
+                "Loop caps (cycles/surfaces) still bound the overall engagement."], True
+    try:
+        n = int(val)
+    except ValueError:
+        return ["Usage: /turns <number>  or  /turns off", f"  '{args[0]}' is not a number."], False
+    if n < 1:
+        return ["Usage: /turns <number ≥ 1>  or  /turns off (unlimited)."], False
+    set_value("max_turns_default", n)
+    return [f"Max turns per agent set to {n}.",
+            "Applies to the next engagement you start."], True
+
+
+def handle_info() -> tuple[list[str], bool]:
+    """Single-screen overview of the active configuration."""
+    from core.config import load_config, get_global_model
+
+    cfg      = load_config()
+    persona  = cfg.get("active_persona", "pentest")
+    provider = cfg.get("active_provider", "anthropic")
+    gmodel   = get_global_model()
+
+    def _row(label: str, value: str, hint: str = "") -> str:
+        # Fixed label + value columns so the trailing command hints line up
+        # regardless of how long the value is.
+        line = f"  {label:<17}{value:<24}"
+        return (line + hint).rstrip()
+
+    lines = [
+        "Current configuration",
+        "",
+        _row("Persona", persona, "(/persona set)"),
+        _row("Provider", provider, "(/provider set)"),
+        _row("Global model", gmodel or "— (per-agent defaults)", "(/agent set model global)"),
+        _row("Max turns/agent", _fmt_turns(int(cfg.get("max_turns_default", 60))), "(/turns <n|off>)"),
+        _row("Exploitation", "ON" if cfg.get("exploitation_enabled", True) else "OFF", "(/exploit on|off)"),
+        _row("Reporting", "ON" if cfg.get("reporting_enabled", True) else "OFF", "(/report on|off)"),
+        _row("Web research", "ON" if cfg.get("allow_web_search", True) else "OFF", "(/websearch on|off)"),
+        _row("Confirm exploit", str(cfg.get("confirm_exploitation", True))),
+        _row("Loop caps", f"{cfg.get('max_cycles_per_surface', 4)} cycles/surface"
+                           f"  ·  {cfg.get('max_total_cycles', 40)} total"
+                           f"  ·  {cfg.get('max_surfaces', 50)} surfaces"),
+        _row("LLM routing", f"{'ON' if cfg.get('llm_routing', True) else 'OFF (keyword heuristics)'}"
+                            f"  ·  loop nudge @ {cfg.get('repeat_nudge_threshold', 3)} repeats"),
+        "",
+        "  API keys:",
+        *(f"    {spec.label:<12} {_masked_key_source(spec)}" for spec in PROVIDERS.values()),
+        "",
+    ]
+
+    overrides = {k: v for k, v in (cfg.get("agent_models", {}) or {}).items() if k != "global"}
+    if overrides:
+        lines.append("  Per-agent model overrides:")
+        for name, model in overrides.items():
+            lines.append(f"    {name:<28} → {model}")
+    else:
+        lines.append("  Per-agent model overrides: none")
+
+    return lines, True
+
+
+def handle_help(args: list[str] | None = None) -> tuple[list[str], bool]:
+    """No arg → grouped overview. '/help <command>' → that command in detail."""
+    if args:
+        detail = _command_help(args[0])
+        if detail is not None:
+            return detail, True
+        return [f"No such command: /{args[0].lstrip('/')}", ""] + _overview_lines(), False
+    return _overview_lines(), True
+
+
+# ── Credential handlers ───────────────────────────────────────────────────────
+# Session-level manual creds (list[dict]) stored in the app and injected into
+# EngagementState when a pipeline/run starts. Not persisted to disk.
+
+def handle_cred_add(args: list[str]) -> tuple[list[str], bool, dict | None]:
+    """Always returns a 3-tuple — cred dict is None on usage errors."""
+    if len(args) < 2:
+        return [
+            "Usage: /cred add <username> <secret> [service]",
+            "",
+            "Examples:",
+            "  /cred add administrator Password123! smb",
+            "  /cred add root toor ssh",
+            "  /cred add admin 'P@ssw0rd' http",
+        ], False, None
+    username = args[0]
+    secret   = args[1]
+    service  = args[2] if len(args) > 2 else ""
+    # Return the cred dict — caller stores it in app state
+    return [f"Credential added: {username}  service={service or 'any'}"], True, {
+        "username": username,
+        "secret":   secret,
+        "service":  service,
+    }
+
+
+def handle_cred_list(creds: list[dict]) -> tuple[list[str], bool]:
+    if not creds:
+        return ["No manual credentials loaded.  Use /cred add <user> <pass> [service]"], True
+    from core.utils import mask_secret
+    lines = [f"{'Username':<20} {'Secret':<20} Service", ""]
+    for c in creds:
+        lines.append(f"  {c['username']:<18} {mask_secret(c['secret']):<20} {c.get('service', '')}")
+    return lines, True
+
+
+def handle_cred_clear() -> tuple[list[str], bool]:
+    # Returns sentinel — caller clears their cred list
+    return ["Manual credentials cleared."], True
+
+
+# ── Persona handlers ──────────────────────────────────────────────────────────
+
+def handle_persona_list() -> tuple[list[str], bool]:
+    try:
+        from pathlib import Path
+        agents_dir = Path(__file__).parent.parent / "agents"
+        personas = []
+        for persona_file in agents_dir.rglob("persona.md"):
+            namespace = persona_file.parent.name
+            personas.append(namespace)
+
+        if not personas:
+            return [
+                "No persona files found.",
+                "Expected: agents/<namespace>/persona.md",
+                "Personas will be created when you run /persona set.",
+            ], True
+
+        from core.config import load_config
+        current = load_config().get("active_persona", "pentest")
+        lines = ["Available personas:", ""]
+        for p in sorted(personas):
+            active_marker = "  ← active" if p == current else ""
+            lines.append(f"  {p}{active_marker}")
+        lines += ["", f"Active: {current}"]
+        return lines, True
+    except Exception as e:
+        return [f"Error: {e}"], False
+
+
+def handle_persona_set(args: list[str]) -> tuple[list[str], bool]:
+    if not args:
+        return [
+            "Usage: /persona set <persona-name>",
+            "",
+            "Examples:",
+            "  /persona set pentest",
+            "  /persona set pentest-ctf",
+        ], False
+
+    persona = args[0].lower()
+    import re as _re
+    if not _re.match(r'^[a-zA-Z0-9_-]+$', persona):
+        return ["Persona name may only contain letters, digits, hyphens, and underscores."], False
+    try:
+        from pathlib import Path
+        from core.config import set_value
+        agents_base  = (Path(__file__).parent.parent / "agents").resolve()
+        persona_path = (agents_base / persona / "persona.md").resolve()
+        if not str(persona_path).startswith(str(agents_base)):
+            return ["Invalid persona name."], False
+        if not persona_path.exists():
+            return [
+                f"Persona '{persona}' not found  ({persona_path})",
+                "Use /persona list to see available personas.",
+            ], False
+        set_value("active_persona", persona)
+        return [f"Active persona set to: {persona}"], True
+    except Exception as e:
+        return [f"Error: {e}"], False
+
+
+# ── Provider handlers ────────────────────────────────────────────────────────
+
+def handle_provider_list() -> tuple[list[str], bool]:
+    from core.config import get
+    lines = [f"Active provider: {get('active_provider', 'anthropic')}", ""]
+    for spec in PROVIDERS.values():
+        is_set = bool(resolve_provider_key(spec))
+        lines.append(f"  {spec.label:<12} {'set' if is_set else 'not set'}")
+    lines += ["", f"  Switch with: /provider set <{'|'.join(_PROVIDER_NAMES)}>"]
+    return lines, True
+
+
+def handle_provider_set(args: list[str]) -> tuple[list[str], bool]:
+    if not args:
+        return [f"Usage: /provider set <{'|'.join(_PROVIDER_NAMES)}>"], False
+    provider = args[0].lower()
+    spec = PROVIDERS.get(provider)
+    if spec is None:
+        return [
+            f"Unknown provider: {provider!r}",
+            f"  Supported: {', '.join(_PROVIDER_NAMES)}",
+        ], False
+    from core.config import set_value, get_global_model
+    set_value("active_provider", provider)
+
+    # Warn if the provider's key isn't set yet.
+    if not resolve_provider_key(spec):
+        pfx = spec.key_prefixes[0] if spec.key_prefixes else ""
+        return [
+            f"Provider set to: {provider}",
+            f"  Warning: no {spec.label} API key found — set one with /key set {pfx}...",
+        ], True
+    # Non-native providers use OpenAI-style model IDs, so the per-agent Anthropic
+    # defaults won't resolve — remind the operator to pin a global model.
+    if not spec.native and not get_global_model():
+        return [
+            f"Provider set to: {provider}",
+            f"  Note: set a model for this provider — /agent set model global <id>"
+            f"  (list them with /models list {provider}).",
+        ], True
+    return [f"Provider set to: {provider}"], True
+
+
+# ── Main dispatcher ───────────────────────────────────────────────────────────
+
+def dispatch(text: str) -> tuple[list[str], bool] | None:
+    """Dispatch a slash command string.
+
+    Returns (output_lines, success) or None if text is not a slash command.
+    Caller is responsible for rendering output_lines.
+    """
+    parsed = parse(text)
+    if parsed is None:
+        return None
+
+    cmd, args = parsed
+
+    # A bare "/" (nothing typed after it) is a request for the command list, not
+    # an unknown command — show the overview.
+    if cmd == "/":
+        return handle_help()
+
+    # A bare group name ("/key", "/scope", …) shows that group's detailed help.
+    if cmd in GROUP_NAMES:
+        return handle_help([cmd])
+
+    if cmd == "/help":
+        return handle_help(args)
+    if cmd == "/info":
+        return handle_info()
+    if cmd == "/exploit":
+        return handle_exploit(args)
+    if cmd == "/websearch":
+        return handle_websearch(args)
+    if cmd == "/parallel":
+        return handle_parallel(args)
+    if cmd == "/turns":
+        return handle_turns(args)
+    if cmd == "/key list":
+        return handle_key_list()
+    if cmd == "/key clear":
+        return handle_key_clear(args)
+    if cmd == "/key set":
+        if args:
+            return handle_key_set(args[0])
+        return [
+            "Usage: /key set <api-key>",
+            "  Anthropic keys:   sk-ant-...",
+            "  OpenRouter keys:  sk-or-...",
+            "  Key will be stored in your system keychain, not on disk.",
+        ], False
+    if cmd == "/models list":
+        provider = args[0] if args else ""
+        return handle_models_list(provider)
+    if cmd == "/agent list":
+        return handle_agent_list()
+    if cmd == "/agent set model":
+        return handle_agent_set_model(args)
+    if cmd == "/agent set temp":
+        return handle_agent_set_temp(args)
+    if cmd == "/cred add":
+        # Cred injection requires app state — dispatch() only returns the message.
+        lines, ok, _cred = handle_cred_add(args)
+        return lines, ok
+    if cmd == "/cred clear":
+        return handle_cred_clear()
+    if cmd == "/persona list":
+        return handle_persona_list()
+    if cmd == "/persona set":
+        return handle_persona_set(args)
+    if cmd == "/provider list":
+        return handle_provider_list()
+    if cmd == "/provider set":
+        return handle_provider_set(args)
+
+    # Unknown command
+    return [
+        f"Unknown command: {cmd}",
+        "",
+        *handle_help()[0],
+    ], False

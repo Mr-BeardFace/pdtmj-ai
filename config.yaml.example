@@ -1,0 +1,42 @@
+confirm_exploitation: true
+exploitation_enabled: true
+global_model: null
+max_turns_default: 60
+extend_turns_on_progress: true
+max_turns_progress_factor: 5
+agent_models: {}
+temperature_default: 0.4
+agent_temperatures:
+  pentest/report: 0.2
+active_provider: anthropic
+max_cycles_per_surface: 4
+max_dry_cycles_per_surface: 2
+max_total_cycles: 40
+max_surfaces: 50
+parallel_enabled: false
+max_parallel_agents: 3
+surface_fanout: 3
+hypothesis_fanout: 3
+hypothesis_worker_turns: 12
+frontier_max_actions: null
+frontier_attempts_cap: 3
+validation_enabled: false
+llm_routing: true
+router_model: null
+repeat_nudge_threshold: 3
+nudge_exempt_tools:
+- oob_listener
+- check_jobs
+- list_shells
+- wait
+pivot_nudge_after_failures: 4
+run_script_volume_nudge: 10
+grind_nudge_after_scripts: 12
+kill_exempt_tools:
+- apt_install
+- pip_install
+allow_package_install: true
+allow_web_search: false
+hashcat_wordlist: /usr/share/wordlists/rockyou.txt
+hashcat_rules: /usr/share/hashcat/rules/OneRuleToRuleThemAll.rule
+hashcat_binary: hashcat
