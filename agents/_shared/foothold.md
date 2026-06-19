@@ -6,7 +6,7 @@ When your work lands a **command-execution primitive** — any way to run a comm
 Often you can run a command but not see its output (web command injection, SSTI, deserialization). Step zero is a feedback channel, in priority order:
 
 1. **HTTP exfil (most reliable):** start an `oob_listener`, then run a command that encodes its own output and sends it back over an outbound HTTP (or DNS) callback; read the decoded result from the listener. Drive each command through `web_exec` or `http_request`.
-2. **Reverse shell:** if arbitrary outbound is allowed, `start_listener`, trigger a reverse-shell payload, and drive the caught session with `shell_exec` (it frames output for you). New shells are announced automatically.
+2. **Raw reverse shell:** if arbitrary outbound is allowed, hold a listener with `nc` and trigger a reverse-shell payload through the primitive. A caught raw shell is interactive and awkward — keep commands non-interactive, and prefer a *connect-in* framed session (below) for anything sustained.
 3. **Write to a readable location** the target already serves, then retrieve it.
 
 Confirm the primitive actually executes (a single callback ping) before building on it.

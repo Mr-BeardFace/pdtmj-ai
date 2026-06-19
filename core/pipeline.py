@@ -431,17 +431,19 @@ class EngagementDriver:
                            self._findings_desc(surface), candidates, fallback)
 
     def _exploit_agent_for(self, surface: Surface) -> str:
-        """Pick the exploitation agent. The generic exploitation agent owns
-        code-exec → foothold; an AD/domain surface adds the AD specialist as a
-        candidate (kerberoast/AS-REP/DCSync/relay/PtH are its kill chain). The LLM
-        picks among the candidates; the heuristic (AD surface, else exploitation)
-        is the floor."""
+        """Pick the exploitation agent. The surface's DOMAIN SPECIALIST owns its own
+        exploitation (web RCE → web, kerberoast/DCSync → AD, xp_cmdshell → database,
+        a service exploit → network) — each carries the shared foothold methodology
+        and toolkit. The generic exploitation agent is the catch-all floor for a
+        surface with no loaded specialist. Reasoning-first: when a specialist is
+        loaded the LLM picks between it and the generic agent; the service map is the
+        floor, never a hard switch."""
         spec = _SERVICE_SPECIALISTS.get((surface.service or "").lower()) if surface else None
-        ad_surface = spec == AD_AGENT and AD_AGENT in self.agents
-        fallback = AD_AGENT if ad_surface else EXPLOIT_AGENT
-        if not self._llm_routing() or not ad_surface:
+        spec_loaded = spec if (spec and spec in self.agents) else None
+        fallback = spec_loaded or EXPLOIT_AGENT
+        if not self._llm_routing() or not spec_loaded:
             return fallback
-        cand_names = {EXPLOIT_AGENT, AD_AGENT}
+        cand_names = {EXPLOIT_AGENT, spec_loaded}
         candidates = [(n, getattr(self.agents[n], "description", ""))
                       for n in cand_names if n in self.agents]
         return self._route("exploitation of this surface", surface,

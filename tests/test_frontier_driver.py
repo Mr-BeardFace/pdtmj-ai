@@ -111,6 +111,19 @@ def test_raw_code_exec_routes_to_exploitation_not_local_enum():
     assert agent == EXPLOIT_AGENT
 
 
+def test_exploit_routes_to_domain_specialist_when_loaded():
+    # A surface's own specialist owns its exploitation: an http surface → web when
+    # web is loaded; a surface with no loaded specialist → the generic exploitation
+    # agent (the catch-all floor).
+    WEB = "pentest/web"
+    d = _driver(agents=_agents(extra=[WEB]))
+    web_surface = d.state.add_surface("10.0.0.5", service="http", origin="initial")
+    assert d._exploit_agent_for(web_surface) == WEB
+
+    db_surface = d.state.add_surface("10.0.0.5", service="mysql", origin="initial")
+    assert d._exploit_agent_for(db_surface) == EXPLOIT_AGENT   # no db specialist loaded
+
+
 def test_ad_routing_inert_without_ad_agent():
     # If the AD agent isn't loaded, AD leads fall back to exploitation (no crash, no None).
     d = _driver()                                  # no AD agent
