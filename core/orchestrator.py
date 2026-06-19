@@ -107,6 +107,10 @@ _ALWAYS_BACKGROUND = {
 # only what is handed back to the LLM is trimmed.
 _FIELD_OFFLOAD_CHARS  = 3000
 _RESULT_OFFLOAD_CHARS = 6000
+# read_artifact/grep_artifact slices are returned directly (already line-bounded) and
+# only TRUNCATED if pathologically large — never re-offloaded to a new artifact, which
+# would loop (the agent asked to read this very slice).
+_ARTIFACT_VIEW_CAP    = 16000
 
 FINDINGS_SCHEMA_INSTRUCTIONS = """
 
@@ -1163,7 +1167,7 @@ class Orchestrator:
                         tool_results.append({
                             "type":        "tool_result",
                             "tool_use_id": tb.id,
-                            "content":     json.dumps(self._offload_for_llm(result, tb.name)),
+                            "content":     json.dumps(self._cap_artifact_view(result)),
                         })
                         continue
 
@@ -1833,6 +1837,23 @@ class Orchestrator:
         return self._artifacts.read(
             aid, offset=inputs.get("offset", 0), limit=inputs.get("limit", 200),
         )
+
+    def _cap_artifact_view(self, result):
+        """Bound a read_artifact/grep_artifact result for the prompt by truncating its
+        content IN PLACE — never re-offloading it to a new artifact. The agent
+        explicitly asked to read this slice; storing it again and pointing back at it
+        creates an infinite read→offload→read loop (this is what left the report agent
+        spinning on artifacts and never synthesising)."""
+        if not isinstance(result, dict):
+            return result
+        content = result.get("content")
+        if isinstance(content, str) and len(content) > _ARTIFACT_VIEW_CAP:
+            out = dict(result)
+            out["content"] = content[:_ARTIFACT_VIEW_CAP]
+            out["_truncated"] = (f"content truncated to {_ARTIFACT_VIEW_CAP} chars — read "
+                                 "a smaller window with offset/limit, or use grep_artifact.")
+            return out
+        return result
 
     def _offload_for_llm(self, result, tool_name: str):
         """Return a context-safe view of a tool result.
