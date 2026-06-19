@@ -30,6 +30,9 @@ PLAN_AGENT     = "pentest/planning"
 EXPLOIT_AGENT  = "pentest/exploitation"
 RCE_AGENT      = "pentest/rce"
 AD_AGENT       = "pentest/active-directory"
+# The post-foothold owner: local enumeration + privilege escalation, run FROM an
+# existing session. The destination once any specialist lands a shell or creds.
+POST_EXPLOIT_AGENT = "pentest/post-exploitation"
 VALIDATE_AGENT = "pentest/validation"
 REPORT_AGENT   = "pentest/report"
 

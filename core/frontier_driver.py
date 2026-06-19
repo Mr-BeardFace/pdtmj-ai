@@ -25,7 +25,9 @@ from __future__ import annotations
 from typing import Optional
 
 from core.parallel_driver import ParallelDriver
-from core.pipeline import ENUM_AGENT, RCE_AGENT, AD_AGENT, REPORT_AGENT, is_ad_lead
+from core.pipeline import (
+    ENUM_AGENT, RCE_AGENT, AD_AGENT, POST_EXPLOIT_AGENT, REPORT_AGENT, is_ad_lead,
+)
 from core.frontier import FrontierController, WorkResult
 from core.leads import Lead, LeadStore, objective_for, level_of
 from core.ingest import (
@@ -330,11 +332,23 @@ class FrontierDriver(ParallelDriver):
 
     def _foothold_agent_for(self, lead: Lead, surface: Optional[Surface],
                             have_rce: bool) -> str:
-        """Foothold/escalation routing. An AD kill chain (kerberoast → crack → PtH →
-        DCSync) is the AD specialist's, not generic RCE's — route domain leads there
-        first; otherwise the RCE/foothold specialist, falling back to exploitation."""
-        return (self._domain_specialist_for(lead, surface)
-                or (RCE_AGENT if have_rce else self._exploit_agent_for(surface)))
+        """Route a foothold/escalation lead to its owner:
+          • an AD domain kill chain (kerberoast → crack → PtH → DCSync) → AD specialist
+          • work that runs FROM an existing session (privesc, local enum) → local-enum
+          • turning raw code-exec into a stable session → RCE/foothold specialist
+
+        The local-enum step is reasoning-friendly, not a hard switch: it only fires
+        once the lead has actually reached a session (foothold+) or is explicitly an
+        escalation, so 'I have access, now escalate' goes to the post-exploitation
+        owner while 'I have exec, get me a shell' still goes to the foothold specialist."""
+        ad = self._domain_specialist_for(lead, surface)
+        if ad:
+            return ad
+        post_access = (lead.kind == "escalation"
+                       or level_of(lead.reach_level) >= level_of("foothold"))
+        if post_access and POST_EXPLOIT_AGENT in self.agents:
+            return POST_EXPLOIT_AGENT
+        return RCE_AGENT if have_rce else self._exploit_agent_for(surface)
 
     def _surface_for(self, lead: Lead) -> Optional[Surface]:
         """Find (or register) the surface a lead pertains to, so the existing

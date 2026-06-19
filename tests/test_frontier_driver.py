@@ -83,6 +83,34 @@ def test_non_ad_escalation_still_routes_to_rce():
     assert agent == RCE_AGENT
 
 
+def test_post_access_escalation_routes_to_local_enum():
+    # Once a session exists (foothold+) or the lead is an escalation, post-foothold
+    # work goes to the local-enum / privesc owner — not the foothold specialist.
+    from core.pipeline import POST_EXPLOIT_AGENT
+    d = _driver(agents=_agents(extra=[POST_EXPLOIT_AGENT]))
+
+    agent, _, _ = d._plan_lead(
+        Lead(kind="escalation", description="enumerate sudo -l and SUID for root",
+             reach_level="privesc", target="10.0.0.5"))
+    assert agent == POST_EXPLOIT_AGENT
+
+    agent, _, _ = d._plan_lead(
+        Lead(kind="exploit", description="abuse a writable root cron from the shell",
+             reach_level="foothold", target="10.0.0.5"))
+    assert agent == POST_EXPLOIT_AGENT
+
+
+def test_raw_code_exec_still_routes_to_rce_not_local_enum():
+    # Code-exec without a session yet (reach 'exploited') is the foothold specialist's
+    # job — turn exec into a shell — even when local-enum is loaded.
+    from core.pipeline import POST_EXPLOIT_AGENT
+    d = _driver(agents=_agents(extra=[POST_EXPLOIT_AGENT]))
+    agent, _, _ = d._plan_lead(
+        Lead(kind="exploit", description="prove command execution via file upload",
+             reach_level="exploited", target="10.0.0.5"))
+    assert agent == RCE_AGENT
+
+
 def test_ad_routing_inert_without_ad_agent():
     # If the AD agent isn't loaded, AD leads fall back to RCE (no crash, no None).
     d = _driver()                                  # no AD agent
