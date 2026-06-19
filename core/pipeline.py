@@ -640,8 +640,15 @@ class EngagementDriver:
             "CVE/EDB-ID in the evidence. A version match is plausible, not proven, so it stays "
             "verified=false until exploitation actually confirms it — but it MUST be recorded so the "
             "next phase has the lead.\n"
-            "Do NOT deep-fuzz, brute-force, or exploit — just build an accurate, recorded service "
-            "map. The deep dive into each service happens per-surface next, in priority order."
+            "  4. **Run the ONE cheap, non-modifying safe check for that service** and flag whatever "
+            "responds: anonymous/null/guest/default-credential access (anon FTP, null SMB session + "
+            "share list, anonymous LDAP bind, default SNMP community, unauth Redis/Mongo, a single "
+            "default-cred check on a login), then read-only listing of what it exposes. Annotate any "
+            "hit (`annotate_finding`) and `register_surface` so the specialist inherits a concrete "
+            "access lead.\n"
+            "Stay observe-only: NO deep-fuzz, NO brute-force/spraying, NO exploitation, and nothing "
+            "that modifies the target — just an accurate service map plus the safe-access hits. The "
+            "deep dive and any exploitation happen per-surface next, in priority order."
         )
 
     def _enum_objective(self, surface: Optional[Surface], target: str) -> str:
