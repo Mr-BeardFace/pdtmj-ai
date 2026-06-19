@@ -9,11 +9,11 @@ from core.engagement_state import EngagementState
 from core.models import EngagementBrief, EngagementRun, Finding
 from core.leads import Lead
 from core.frontier_driver import FrontierDriver
-from core.pipeline import ENUM_AGENT, EXPLOIT_AGENT, RCE_AGENT, AD_AGENT, REPORT_AGENT
+from core.pipeline import ENUM_AGENT, EXPLOIT_AGENT, AD_AGENT, REPORT_AGENT
 
 
 def _agents(extra=()):
-    names = [ENUM_AGENT, EXPLOIT_AGENT, RCE_AGENT, REPORT_AGENT, *extra]
+    names = [ENUM_AGENT, EXPLOIT_AGENT, REPORT_AGENT, *extra]
     return {n: SimpleNamespace(name=n, description="d", scope=[], system_prompt="",
                                model="", metadata={}) for n in names}
 
@@ -32,11 +32,11 @@ def _driver(persona="pentest-ctf", agents=None):
 
 def test_plan_lead_routes_by_kind_and_reach():
     d = _driver()
-    # escalation / root → foothold specialist with a full (kill-chain) budget
+    # escalation / root → exploitation (foothold owner) with a full kill-chain budget
     agent, obj, budget = d._plan_lead(
         Lead(kind="escalation", description="exploit root flowise", reach_level="root",
              prior=0.6, target="10.0.0.5"))
-    assert agent == RCE_AGENT and "PRIORITY LEAD" in obj and budget >= 20
+    assert agent == EXPLOIT_AGENT and "PRIORITY LEAD" in obj and budget >= 20
 
     # surface / service → deep enumeration
     agent, obj, _ = d._plan_lead(
@@ -74,13 +74,13 @@ def test_ad_leads_route_to_ad_specialist_when_loaded():
     assert agent == AD_AGENT
 
 
-def test_non_ad_escalation_still_routes_to_rce():
-    # A plain Linux/web RCE foothold is unchanged — RCE specialist, not AD.
+def test_non_ad_escalation_routes_to_exploitation():
+    # A plain Linux/web foothold-class lead goes to the exploitation agent, not AD.
     d = _driver(agents=_agents(extra=[AD_AGENT]))
     agent, _, _ = d._plan_lead(
         Lead(kind="escalation", description="abuse sudo entry for root shell",
              reach_level="root", target="10.0.0.5"))
-    assert agent == RCE_AGENT
+    assert agent == EXPLOIT_AGENT
 
 
 def test_post_access_escalation_routes_to_local_enum():
@@ -100,24 +100,24 @@ def test_post_access_escalation_routes_to_local_enum():
     assert agent == POST_EXPLOIT_AGENT
 
 
-def test_raw_code_exec_still_routes_to_rce_not_local_enum():
-    # Code-exec without a session yet (reach 'exploited') is the foothold specialist's
-    # job — turn exec into a shell — even when local-enum is loaded.
+def test_raw_code_exec_routes_to_exploitation_not_local_enum():
+    # Code-exec without a session yet (reach 'exploited') is get-the-shell work — the
+    # exploitation agent's job (it carries the foothold methodology), NOT local-enum.
     from core.pipeline import POST_EXPLOIT_AGENT
     d = _driver(agents=_agents(extra=[POST_EXPLOIT_AGENT]))
     agent, _, _ = d._plan_lead(
         Lead(kind="exploit", description="prove command execution via file upload",
              reach_level="exploited", target="10.0.0.5"))
-    assert agent == RCE_AGENT
+    assert agent == EXPLOIT_AGENT
 
 
 def test_ad_routing_inert_without_ad_agent():
-    # If the AD agent isn't loaded, AD leads fall back to RCE (no crash, no None).
+    # If the AD agent isn't loaded, AD leads fall back to exploitation (no crash, no None).
     d = _driver()                                  # no AD agent
     agent, _, _ = d._plan_lead(
         Lead(kind="escalation", description="kerberoast and DCSync",
              technique="kerberoast", reach_level="privesc", target="10.0.0.5"))
-    assert agent == RCE_AGENT
+    assert agent == EXPLOIT_AGENT
 
 
 # ── work_lead classifier on a real worked lead ────────────────────────────────

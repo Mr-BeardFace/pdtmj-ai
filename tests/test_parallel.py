@@ -363,8 +363,7 @@ def test_is_foothold_hypothesis_classifier():
     assert not cls("idor", "enumerate other users' objects")
 
 
-def test_foothold_hypothesis_runs_rce_agent_full_budget():
-    from core.pipeline import RCE_AGENT
+def test_foothold_hypothesis_runs_exploit_agent_full_budget():
     state = EngagementState(target="10.0.0.5")
 
     def enum(st, objective):
@@ -385,17 +384,19 @@ def test_foothold_hypothesis_runs_rce_agent_full_budget():
 
     orch = ForkFakeOrch(state, {ENUM_AGENT: enum, PLAN_AGENT: plan})
     agents = _agents()
-    agents[RCE_AGENT] = _Agent(RCE_AGENT)
     driver = ParallelDriver(
         orch, agents, state, _brief(exploit=True), confirm_exploitation=False,
         max_cycles_per_surface=1, gate=AgentGate(4),
         surface_fanout=1, hypothesis_fanout=2, hypothesis_worker_turns=5, max_turns=40)
     driver.run()
 
-    foot = [d for d in orch.detail if d["agent"] == RCE_AGENT]
-    assert foot, "the command-injection hypothesis should run the rce foothold agent"
-    assert foot[0]["max_turns"] == 40                       # full budget, not the bounded 5
+    # Both hypotheses run on the exploitation agent now (RCE was folded in); the
+    # foothold one is distinguished by a FULL kill-chain budget + objective, the
+    # other stayed a bounded prove/refute worker.
+    runs = [d for d in orch.detail if d["agent"] == EXPLOIT_AGENT]
+    foot = [d for d in runs if d["max_turns"] == 40]
+    assert foot, "the command-injection hypothesis should run with the full foothold budget"
     assert "CARRY IT THROUGH" in foot[0]["objective"]       # kill-chain objective, not prove/refute
     # the default-creds hypothesis stayed a bounded prove/refute worker
-    bounded = [d for d in orch.detail if d["agent"] == EXPLOIT_AGENT]
-    assert bounded and bounded[0]["max_turns"] == 5
+    bounded = [d for d in runs if d["max_turns"] == 5]
+    assert bounded

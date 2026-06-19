@@ -28,7 +28,6 @@ from core.models import EngagementBrief, EngagementRun, Surface
 ENUM_AGENT     = "pentest/enumeration"
 PLAN_AGENT     = "pentest/planning"
 EXPLOIT_AGENT  = "pentest/exploitation"
-RCE_AGENT      = "pentest/rce"
 AD_AGENT       = "pentest/active-directory"
 # The post-foothold owner: local enumeration + privilege escalation, run FROM an
 # existing session. The destination once any specialist lands a shell or creds.
@@ -59,12 +58,6 @@ def is_ad_lead(technique: str = "", description: str = "", *extra: str) -> bool:
     technique. Used to route domain leads to the AD specialist rather than RCE."""
     blob = " ".join(s for s in (technique, description, *extra) if s).lower()
     return any(h in blob for h in _AD_LEAD_HINTS)
-
-# When findings indicate a code-execution primitive to convert into a foothold,
-# the exploit slot routes to the RCE/foothold specialist instead of the generic
-# exploitation agent.
-_RCE_HINTS = ("rce", "remote code execution", "command injection", "code execution",
-              "deserial", "ssti", "template injection", "file upload", "ssrf")
 
 # Service/product fingerprint → preferred-tool guidance. Matched (substring, any)
 # against "<service> <fingerprint>". First match wins. Keeps the agent from
@@ -379,7 +372,7 @@ class EngagementDriver:
         top hypotheses instead."""
         plan = self.state.get_plan_for(surface.id)
         exploit_agent = self._exploit_agent_for(surface)
-        spec = "  [rce/foothold]" if exploit_agent == RCE_AGENT else ""
+        spec = "" if exploit_agent == EXPLOIT_AGENT else f"  [{exploit_agent.split('/')[-1]}]"
         self._banner(f"Exploitation — {surface.label}{spec}")
         self._run_agent(exploit_agent, surface.host,
                         self._exploit_objective(surface, plan))
@@ -422,15 +415,6 @@ class EngagementDriver:
             return specialist
         return ENUM_AGENT
 
-    def _exploit_heuristic(self) -> str:
-        """Keyword fallback: RCE/foothold agent when a finding looks code-exec-ish."""
-        if RCE_AGENT in self.agents:
-            for f in self.all_findings:
-                blob = f"{f.title} {f.type}".lower()
-                if any(h in blob for h in _RCE_HINTS):
-                    return RCE_AGENT
-        return EXPLOIT_AGENT
-
     def _enum_agent_for(self, surface: Surface) -> str:
         """Pick the deep-enumeration agent for a surface. The LLM reasons over the
         service/fingerprint and the candidate specialists; the keyword map is the
@@ -447,19 +431,17 @@ class EngagementDriver:
                            self._findings_desc(surface), candidates, fallback)
 
     def _exploit_agent_for(self, surface: Surface) -> str:
-        """Pick the exploitation agent. The LLM decides whether the findings give a
-        code-execution primitive worth handing to the foothold specialist; the
-        keyword scan of finding titles is the fallback. An AD/domain surface adds
-        the AD specialist as a candidate — kerberoast/AS-REP/DCSync/relay/PtH are
-        its kill chain, not generic RCE's."""
+        """Pick the exploitation agent. The generic exploitation agent owns
+        code-exec → foothold; an AD/domain surface adds the AD specialist as a
+        candidate (kerberoast/AS-REP/DCSync/relay/PtH are its kill chain). The LLM
+        picks among the candidates; the heuristic (AD surface, else exploitation)
+        is the floor."""
         spec = _SERVICE_SPECIALISTS.get((surface.service or "").lower()) if surface else None
         ad_surface = spec == AD_AGENT and AD_AGENT in self.agents
-        fallback = AD_AGENT if ad_surface else self._exploit_heuristic()
-        if not self._llm_routing() or RCE_AGENT not in self.agents:
+        fallback = AD_AGENT if ad_surface else EXPLOIT_AGENT
+        if not self._llm_routing() or not ad_surface:
             return fallback
-        cand_names = {EXPLOIT_AGENT, RCE_AGENT}
-        if ad_surface:
-            cand_names.add(AD_AGENT)
+        cand_names = {EXPLOIT_AGENT, AD_AGENT}
         candidates = [(n, getattr(self.agents[n], "description", ""))
                       for n in cand_names if n in self.agents]
         return self._route("exploitation of this surface", surface,

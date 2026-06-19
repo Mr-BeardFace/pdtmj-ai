@@ -44,6 +44,23 @@ def load_agent(agent_name: str, agents_dir: Path) -> AgentDefinition:
     metadata = yaml.safe_load(match.group(1))
     system_prompt = match.group(2).strip()
 
+    # Shared methodology partials. `includes: [foothold, ...]` pulls in
+    # agents/_shared/<name>.md and appends it to this agent's prompt, so common
+    # methodology lives in one place instead of being duplicated across agents.
+    includes = metadata.get("includes") or []
+    if includes:
+        shared_dir = (agents_dir / "_shared").resolve()
+        blocks: List[str] = []
+        for inc in includes:
+            inc_path = (shared_dir / f"{inc}.md").resolve()
+            if not str(inc_path).startswith(str(shared_dir)):
+                raise FileNotFoundError(f"Include escapes shared directory: {inc!r}")
+            if not inc_path.exists():
+                raise FileNotFoundError(f"Shared include not found: {inc_path}")
+            blocks.append(inc_path.read_text(encoding="utf-8").strip())
+        if blocks:
+            system_prompt = system_prompt + "\n\n" + "\n\n".join(blocks)
+
     return AgentDefinition(
         name=metadata.get("name", agent_name),
         description=metadata.get("description", ""),
@@ -63,6 +80,10 @@ def discover_agents(agents_dir: Path) -> Dict[str, AgentDefinition]:
     agents: Dict[str, AgentDefinition] = {}
     for path in sorted(agents_dir.rglob("*.md")):
         if path.name in ("base-instructions.md", "persona.md"):
+            continue
+        # Shared partials (agents/_shared/…) are included into agents, not loaded
+        # as standalone agents. Skip any path under a "_"-prefixed directory.
+        if any(part.startswith("_") for part in path.relative_to(agents_dir).parts):
             continue
         rel = path.relative_to(agents_dir).with_suffix("")
         name_key = rel.as_posix()

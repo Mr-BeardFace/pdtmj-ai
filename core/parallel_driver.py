@@ -39,7 +39,7 @@ from typing import Optional
 from core.concurrency import AgentGate, fan_out
 from core.engagement_state import surface_priority
 from core.models import Surface, TestPlan
-from core.pipeline import EngagementDriver, EXPLOIT_AGENT, RCE_AGENT
+from core.pipeline import EngagementDriver, EXPLOIT_AGENT
 
 
 # Cost → EV discount. An attractive-but-expensive path (offline crack, prior 0.5,
@@ -184,10 +184,9 @@ class ParallelDriver(EngagementDriver):
 
         chosen = hyps[: self._hyp_fanout]
         exploit_agent = self._exploit_agent_for(surface)
-        have_rce = RCE_AGENT in self.agents
         self._banner(f"Exploitation — {surface.label}  (parallel ×{len(chosen)} hypotheses)")
         for h in chosen:
-            tag = "  [foothold→kill-chain]" if self._is_foothold_hypothesis(h) and have_rce else ""
+            tag = "  [foothold→kill-chain]" if self._is_foothold_hypothesis(h) else ""
             self._activity(f"   • EV {h.ev:.2f} [{h.cost:>9}] {h.technique}: {h.action[:80]}{tag}")
 
         marks = self.state.merge_marks()
@@ -202,10 +201,10 @@ class ParallelDriver(EngagementDriver):
 
             # A code-exec / foothold hypothesis is NOT a prove-then-stop question —
             # confirming the vector is only step one of the kill chain. Run it on the
-            # foothold specialist with a full budget and the stabilise→escalate→flag
+            # exploitation agent with a full budget and the stabilise→escalate→flag
             # objective. Everything else stays a bounded prove/refute worker.
-            if self._is_foothold_hypothesis(h) and have_rce:
-                agent = RCE_AGENT
+            if self._is_foothold_hypothesis(h):
+                agent = exploit_agent
                 budget = self._foothold_budget()
                 objective = self._foothold_objective(surface, h)
             else:

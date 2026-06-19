@@ -104,9 +104,9 @@ def test_tools_registered_and_in_research_agent_scope():
     reg = build_registry()
     agents = load_all_agents()
     enum = {t.name for t in reg.get_by_scope(agents["pentest/enumeration"].scope)}
-    rce  = {t.name for t in reg.get_by_scope(agents["pentest/rce"].scope)}
+    exploit = {t.name for t in reg.get_by_scope(agents["pentest/exploitation"].scope)}
     # Enumeration keeps web_search (flag a CVE lead) but NOT fetch_url — pulling
     # full PoC pages is deep research that belongs to the exploitation phases.
     assert "web_search" in enum
     assert "fetch_url" not in enum
-    assert "fetch_url" in rce
+    assert "fetch_url" in exploit
