@@ -61,6 +61,23 @@ _AUTH_TOOLS = {"ssh_exec", "netexec", "ftp", "smbclient"}
 # never carry engagement specifics off the box. Scrubbed against live state below.
 _WEB_TOOLS = {"web_search", "fetch_url"}
 
+# Active scanning / enumeration / exploitation tools that take an explicit target
+# host and therefore must respect the authorized scope — they are HARD-BLOCKED
+# against any target not in scope (a DC's DNS often points at extra IPs/interfaces;
+# that does not authorize them). Deliberately excludes web-research tools (external
+# targets), and channel/foothold tools (oob_listener, nc, ssh_exec, web_exec,
+# port_forward, http_request) which legitimately reference the attacker host.
+_SCOPE_GATED_TOOLS = {
+    "nmap_scan", "masscan", "netexec", "smbclient", "rpcclient",
+    "ldapsearch_query", "snmp_enum", "enum4linux_ng", "kerbrute",
+    "nuclei_scan", "gobuster_dir", "ffuf", "dalfox", "sqlmap_scan",
+    "iis_shortname", "tls_inspect", "redis_query", "mongosh_query",
+    "bloodhound_python", "certipy_ad", "impacket_kerberos",
+    "impacket_mssql", "hydra", "ftp", "telnet",
+}
+# Input keys a gated tool's target may arrive under (first match wins).
+_TARGET_KEYS = ("target", "host", "rhost", "ip", "url")
+
 # Usernames generic enough to be normal search terms ("tomcat default creds admin")
 # — not treated as a leak. A discovered, non-generic account name still is.
 _GENERIC_USERS = {"admin", "administrator", "root", "user", "guest", "test", "sa",
@@ -591,6 +608,25 @@ class Orchestrator:
             lines.append(f"  • {a.get('artifact_id')} — {a.get('label', 'output')} "
                          f"({a.get('lines', '?')} lines)")
         return "\n".join(lines)
+
+    def _scope_block(self, tool_name: str, inputs) -> Optional[str]:
+        """Hard-block reason if a scanning/enum tool is aimed at a target outside the
+        authorized scope, else None. Scope is a contract boundary: the agent is told
+        to stay in scope, but this ENFORCES it at the tool boundary so a discovered
+        IP (e.g. a DC's second DNS A record, or a PTR-leaked host) cannot be scanned
+        just because the model decided to pivot."""
+        if not self.state or tool_name not in _SCOPE_GATED_TOOLS or not isinstance(inputs, dict):
+            return None
+        target = next((str(inputs[k]).strip() for k in _TARGET_KEYS
+                       if isinstance(inputs.get(k), str) and inputs[k].strip()), None)
+        if not target or self.state.in_scope(target):
+            return None
+        scope = ", ".join(self.state.scope_targets) or "(the authorized target only)"
+        return (f"{target!r} is OUTSIDE the engagement scope — {tool_name} was NOT run "
+                f"(hard-blocked). Authorized scope: {scope}. A domain controller's DNS "
+                f"often points at extra IPs/interfaces; that does not put them in scope. "
+                f"Do not scan or probe this target. If it genuinely belongs in scope, "
+                f"annotate it as a recon finding so the operator can add it with /scope add.")
 
     def _web_research_block(self, inputs) -> Optional[str]:
         """Reason string if a web_search/fetch_url call would leak engagement specifics
@@ -1205,6 +1241,19 @@ class Orchestrator:
                     # argument — strip it before the tool ever sees it.
                     inputs = dict(tb.input)
                     want_bg = bool(inputs.pop("background", False)) or tb.name in _ALWAYS_BACKGROUND
+
+                    # ── scope gate (hard-block out-of-scope targets) ───────────
+                    scope_reason = self._scope_block(tb.name, inputs)
+                    if scope_reason:
+                        self._print(f"\n[red]⛔ {tb.name}[/red]  blocked — out of scope")
+                        self._emit("tool_blocked", name=tb.name, reason=scope_reason)
+                        tool_results.append({
+                            "type":        "tool_result",
+                            "tool_use_id": tb.id,
+                            "content":     json.dumps({"error": scope_reason, "blocked": True}),
+                            "is_error":    True,
+                        })
+                        continue
 
                     # ── scan cache check ───────────────────────────────────────
                     if self.state:
