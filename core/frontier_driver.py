@@ -342,11 +342,25 @@ class FrontierDriver(ParallelDriver):
         ad = self._domain_specialist_for(lead, surface)
         if ad:
             return ad
+        # Local-enum escalates FROM a session — so only route there once a foothold
+        # actually exists. Otherwise an 'escalation' lead (often just a privesc CVE
+        # flagged during enumeration, before any access) would skip straight to
+        # post-exploitation with nothing to escalate from; send it to the specialist
+        # to ESTABLISH access first.
         post_access = (lead.kind == "escalation"
                        or level_of(lead.reach_level) >= level_of("foothold"))
-        if post_access and POST_EXPLOIT_AGENT in self.agents:
+        if post_access and self._have_foothold() and POST_EXPLOIT_AGENT in self.agents:
             return POST_EXPLOIT_AGENT
         return self._exploit_agent_for(surface)
+
+    def _have_foothold(self) -> bool:
+        """True once there is an actual session to escalate from: a live caught
+        reverse shell, or a CONFIRMED frontier that has reached foothold (e.g. a
+        verified credential that established access)."""
+        shells = getattr(self.orch, "_shells", None)
+        if shells is not None and any(s.get("alive") for s in shells.sessions()):
+            return True
+        return self.store.current_frontier() >= level_of("foothold")
 
     def _surface_for(self, lead: Lead) -> Optional[Surface]:
         """Find (or register) the surface a lead pertains to, so the existing

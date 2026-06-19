@@ -83,11 +83,11 @@ def test_non_ad_escalation_routes_to_exploitation():
     assert agent == EXPLOIT_AGENT
 
 
-def test_post_access_escalation_routes_to_local_enum():
-    # Once a session exists (foothold+) or the lead is an escalation, post-foothold
-    # work goes to the local-enum / privesc owner — not the foothold specialist.
+def test_post_access_escalation_routes_to_local_enum_with_a_foothold():
+    # WITH a foothold established, post-foothold escalation goes to local-enum.
     from core.pipeline import POST_EXPLOIT_AGENT
     d = _driver(agents=_agents(extra=[POST_EXPLOIT_AGENT]))
+    d._have_foothold = lambda: True                  # a session exists
 
     agent, _, _ = d._plan_lead(
         Lead(kind="escalation", description="enumerate sudo -l and SUID for root",
@@ -98,6 +98,21 @@ def test_post_access_escalation_routes_to_local_enum():
         Lead(kind="exploit", description="abuse a writable root cron from the shell",
              reach_level="foothold", target="10.0.0.5"))
     assert agent == POST_EXPLOIT_AGENT
+
+
+def test_escalation_without_a_foothold_goes_to_specialist_not_local_enum():
+    # Regression: a privesc/escalation lead with NO session yet (e.g. a "Local
+    # Privilege Escalation" CVE flagged during enumeration) must NOT jump to
+    # post-exploitation — there is nothing to escalate from. It goes to the
+    # specialist to establish access first.
+    from core.pipeline import POST_EXPLOIT_AGENT
+    d = _driver(agents=_agents(extra=[POST_EXPLOIT_AGENT]))
+    assert d._have_foothold() is False               # fresh engagement, no session
+    agent, _, _ = d._plan_lead(
+        Lead(kind="escalation", description="Foo 1.2 - Local Privilege Escalation (CVE-2024-9)",
+             reach_level="privesc", target="10.0.0.5"))
+    assert agent == EXPLOIT_AGENT
+    assert agent != POST_EXPLOIT_AGENT
 
 
 def test_raw_code_exec_routes_to_exploitation_not_local_enum():
