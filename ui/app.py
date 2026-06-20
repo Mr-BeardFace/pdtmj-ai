@@ -669,7 +669,22 @@ class PentestApp(App):
 
     def _current_suggestion(self, value: str) -> Optional[str]:
         from ui.completion import suggest
-        return suggest(value, self._known_agents, self._known_models)
+        # Refresh the saved-assessment ids only when the user is actually completing
+        # an /assessment load — cheap dir scan, kept off the hot path otherwise.
+        assessments = (self._known_assessment_ids()
+                       if value.lower().startswith("/assessment load") else None)
+        return suggest(value, self._known_agents, self._known_models, assessments)
+
+    def _known_assessment_ids(self) -> list[str]:
+        """Saved assessment ids (newest first), parsed from the assessment folder/file
+        names — for /assessment load <id> tab-completion."""
+        ids: list[str] = []
+        for f in self._assessment_files():
+            name = f.parent.name if f.parent.name.startswith("assessment_") else f.stem
+            parts = name.split("_")
+            if len(parts) >= 2 and parts[0] == "assessment":
+                ids.append(parts[1])
+        return list(dict.fromkeys(ids))
 
     def action_accept_completion(self) -> None:
         try:
@@ -1083,8 +1098,8 @@ class PentestApp(App):
                 self._show_cmd_output(["Skipping agent — advancing to the next."], True)
             return
 
-        # /pause (alias: /stop) — temporarily pause; resume with /continue
-        if parsed and parsed[0] in ("/pause", "/stop"):
+        # /pause — temporarily pause the engagement; resume with /continue
+        if parsed and parsed[0] == "/pause":
             if not self._is_running:
                 self._show_cmd_output(["No engagement running."], False)
             else:

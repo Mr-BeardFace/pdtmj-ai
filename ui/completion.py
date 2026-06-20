@@ -14,13 +14,18 @@ from ui.commands import COMPLETIONS
 _AGENT_SET_MODEL = "/agent set model"
 
 
-def compute_candidates(value: str, agents: list[str], models: list[str]) -> list[str]:
+def compute_candidates(value: str, agents: list[str], models: list[str],
+                       assessments: list[str] | None = None) -> list[str]:
     """Return the full-line completion candidates for the current input.
 
     Candidates are whole command lines (prefix + token) so a suggestion can be
     accepted by replacing the input value wholesale.
     """
     low = value.lower()
+
+    # /assessment load <id> — complete saved assessment ids
+    if low.startswith("/assessment load"):
+        return [f"/assessment load {a}" for a in (assessments or [])]
 
     # /agent set model <agent|global> <model-id>
     if low.startswith(_AGENT_SET_MODEL):
@@ -54,8 +59,9 @@ def best_suggestion(value: str, candidates: list[str]) -> str | None:
     return None
 
 
-def suggest(value: str, agents: list[str], models: list[str]) -> str | None:
-    return best_suggestion(value, compute_candidates(value, agents, models))
+def suggest(value: str, agents: list[str], models: list[str],
+            assessments: list[str] | None = None) -> str | None:
+    return best_suggestion(value, compute_candidates(value, agents, models, assessments))
 
 
 # ── parsing model ids out of `/models list` output ────────────────────────────

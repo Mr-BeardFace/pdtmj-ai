@@ -112,7 +112,7 @@ class ParallelDriver(EngagementDriver):
             ctrl = self._check_control()
             if ctrl == "stop":
                 self._stopped = True
-                self._activity("⏸ Engagement paused (/stop).")
+                self._activity("⏸ Engagement paused (/pause).")
                 break
             if ctrl == "end":
                 self._ended_early = True

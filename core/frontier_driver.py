@@ -467,7 +467,7 @@ class FrontierDriver(ParallelDriver):
         ctrl = self._check_control()
         if ctrl == "stop":
             self._stopped = True
-            self._activity("⏸ Engagement paused (/stop).")
+            self._activity("⏸ Engagement paused (/pause).")
             return False
         if ctrl == "end":
             self._ended_early = True

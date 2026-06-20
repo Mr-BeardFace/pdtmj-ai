@@ -27,6 +27,21 @@ def test_second_arg_partial_model_completion():
     assert s == "/agent set model global claude-opus-4-7"
 
 
+def test_assessment_load_completes_ids():
+    ids = ["b379cccd-8c4", "4df70cec-050"]
+    cands = compute_candidates("/assessment load ", AGENTS, MODELS, ids)
+    assert "/assessment load b379cccd-8c4" in cands
+    assert "/assessment load 4df70cec-050" in cands
+    # partial id completes to the matching saved id
+    s = suggest("/assessment load b37", AGENTS, MODELS, ids)
+    assert s == "/assessment load b379cccd-8c4"
+
+
+def test_assessment_load_with_no_saved_assessments():
+    assert compute_candidates("/assessment load ", AGENTS, MODELS, []) == []
+    assert suggest("/assessment load x", AGENTS, MODELS, None) is None
+
+
 def test_models_list_provider_completion():
     s = suggest("/models list open", AGENTS, MODELS)
     assert s == "/models list openrouter"
