@@ -9,6 +9,11 @@ temperature_default: 0.4
 agent_temperatures:
   pentest/report: 0.2
 active_provider: anthropic
+# Base URL for the `local` provider (Ollama, LM Studio, llama.cpp, vLLM — anything
+# OpenAI-compatible). Set it with `/provider set local <url>` or here directly.
+#   Ollama:    http://localhost:11434/v1
+#   LM Studio: http://localhost:1234/v1
+local_base_url: null
 max_cycles_per_surface: 4
 max_dry_cycles_per_surface: 2
 max_total_cycles: 40

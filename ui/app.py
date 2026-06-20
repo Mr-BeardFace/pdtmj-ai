@@ -1232,7 +1232,8 @@ class PentestApp(App):
         def on_dismiss(key: str | None) -> None:
             if key:
                 from ui.commands import handle_key_set
-                lines, success = handle_key_set(key)
+                # split so the modal also accepts "<provider> <key>" (e.g. local)
+                lines, success = handle_key_set(key.split())
                 self._show_cmd_output(lines, success)
             else:
                 self._show_cmd_output(["Key entry cancelled."], False)
