@@ -36,30 +36,31 @@ specialist routing).
 
 ## How it works — agents, state, and routing
 
-The system is a set of focused **agents** coordinated by a **driver**, all sharing
-one **engagement state**. This is the part the project was really built to explore,
-so here's how the pieces fit.
+The engine runs one agent at a time against a shared **engagement state**. Agents
+don't call each other — they read from that state and write back to it, and the
+driver decides who runs next.
 
-### Information flows through shared state, not direct messages
+### Shared state
 
-Agents never talk to each other directly. They read from and write to a single
-shared `EngagementState`, and the driver decides who runs next. The state holds:
+An agent is a system prompt plus a set of tools. Most tools shell out (nmap,
+netexec, etc.), but a few write straight into the engagement state:
 
-- **Findings** — written with `annotate_finding` (verified vs. potential).
-- **Credentials** — written with `record_credential`. Masked in the operator UI
-  and in saved snapshots, but the *real* value is handed to the agent so it can
-  actually authenticate.
-- **Surfaces** — `(host, service)` attack surfaces registered with
-  `register_surface`; these are the units the engine cycles on.
-- **Tool log + handoffs** — what's already been run, and each agent's close-out
-  note to the next one.
-- **An IOC change-ledger** — every change made to a target (`record_persistence`)
-  with the original state and an exact revert command, so nothing is left behind.
+- `annotate_finding` records a finding (with a `verified` flag for proven vs.
+  suspected).
+- `record_credential` records a credential. The real secret is kept and handed to
+  the agent so it can authenticate; the operator UI and saved snapshots only ever
+  show a masked version.
+- `register_surface` records a `(host, service)` attack surface — the unit the
+  driver cycles on.
+- `record_persistence` logs any change made to a target, with the original value
+  and the exact command to revert it.
+- `queue_followup` hands a lead to another agent.
 
-Before an agent runs, the engine builds it a **context block** from this state —
-prior work, credentials, open surfaces, and the previous agents' handoffs — so each
-agent inherits the picture instead of starting from scratch. When an agent finds
-something another should chase, it calls `queue_followup` to hand off a lead.
+Everything else an agent runs is appended to a tool log, and each agent finishes
+with a short handoff note. Before the next agent starts, the engine assembles a
+**context block** from all of this — recent tool output, known credentials, open
+surfaces, prior handoffs, and the findings so far — and puts it at the top of that
+agent's prompt. That context block is the only way work passes between agents.
 
 ### The agents
 
@@ -81,49 +82,54 @@ methodology — like turning code execution into a stable foothold — lives in
 | `validation` | validation | Independently reproduces exploited findings and kills false positives / hallucinations. |
 | `report` | reporting | Consolidates findings and writes the final deliverable. Always runs last. |
 
-### How an engagement flows
+### The driver loop
 
-The driver is **frontier-driven and lead-based**. The unit of work is a *lead*
-(a surface, a vuln, a credential, a foothold, a misconfig…), and each lead is
-ranked by **expected progress toward the objective**, not by generic service
-weight. Progress is measured on a kill-chain ladder:
+The driver is **frontier-driven**: it works the single most valuable *lead* at a
+time. A lead is anything actionable — a surface, a vuln, a credential, a foothold, a
+new internal host — tagged with the kill-chain rung it would reach if it pans out:
 
 ```
 recon → service → vuln → exploited → foothold → user → privesc → root
 ```
 
-The loop, roughly:
+The engine tracks how far up that ladder it has gotten, and scores each open lead by
+how much further it would push the frontier (with a nudge for higher-severity,
+still-open threads). So the next turn always goes to the lead that advances the
+engagement the most — not to whatever service happens to look the busiest.
 
-1. **Enumerate** the target into surfaces and findings.
-2. **Rank** the open leads by expected value — how much closer a lead, if it pans
-   out, moves the engagement up the ladder.
-3. **Dispatch** the best agent for the single highest-value lead.
-4. That agent works it, banks findings/credentials/a foothold, and often spawns
-   **new** leads (a cracked password to reuse, a new internal host to enumerate).
-5. Repeat on the new frontier until the objective is met or leads run dry.
-6. **Validate** exploited findings, then **report**.
+Each pass:
+
+1. Pick the top-scored lead and hand it to the right agent.
+2. The agent works it and writes back — findings, credentials, a foothold — and any
+   new findings/credentials become **new leads** (a cracked password to reuse, a new
+   host to enumerate).
+3. Re-score the leads and repeat, until the objective is met, the leads dry up, or
+   the turn budget runs out.
+
+`validation` then re-checks the exploited findings to drop false positives, and
+`report` runs last.
 
 ### How an agent gets picked
 
-Routing is **reasoning-first with a deterministic floor**:
+A lead's kind and rung decide the broad move (enumerate it, exploit it, escalate
+from it), and for a specific service there's a default specialist — `http → web`,
+`smb`/`ldap`/`kerberos → active-directory`, `mysql`/`mssql`/`redis → database`,
+`ssh`/`ftp`/`smtp` → network, `aws`/`gcp` → cloud.
 
-- A lead's *kind* and *reach* decide the broad role (enumerate it, exploit it,
-  escalate from it, …).
-- For a specific surface, a service→specialist map is the floor — e.g. `http →
-  web`, `smb/ldap/kerberos → active-directory`, `mysql/mssql/redis → database`,
-  `ssh/ftp/smtp → network`. When a specialist is loaded, an LLM router chooses
-  between it and the generalist `exploitation` agent; the map is the safety net,
-  never a hard switch.
-- The **persona pins the candidate pool.** `pentest` exposes every agent (full
-  specialist routing + parallelism). `pentest-ctf` declares only the generalist
-  spine, so the specialists aren't in the pool at all — exploitation
-  deterministically uses the generalist, and there's no per-surface routing
-  decision to get wrong on a single box.
+Selection is **reasoning-first with that map as a floor**: when a specialist is
+available, a small LLM router decides between it and the generalist `exploitation`
+agent based on the actual surface; the map is only the fallback when routing is off
+or no specialist fits. (Routing can be disabled in config, which pins everything to
+the map.)
 
-The guiding idea: **methodology is the value; the agents are just how it's
-delivered.** A specialist and a "playbook the generalist could read" are the same
-knowledge — which is why the architecture is slowly moving toward a generalist that
-*retrieves* domain depth on demand, with the persona deciding how many run at once.
+Finally, the **persona controls which agents are even in play**. `pentest` exposes
+all of them — full specialist routing, surfaces worked in parallel. `pentest-ctf`
+loads only a generalist spine (enumeration, exploitation, post-exploitation,
+validation, report), so on a single box exploitation always lands on the generalist
+with no routing decision to get wrong. Either way, shared methodology — like turning
+code execution into a stable foothold — lives in one place and is pulled into every
+agent that needs it, so the generalist and the specialists work a foothold the same
+way.
 
 ## Status
 
@@ -154,7 +160,7 @@ Run everything inside a Python virtual environment:
 ```bash
 python -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+./install.sh
 
 python main.py
 ```
@@ -184,6 +190,9 @@ is surprised:
 - **Logic and workflow are a work in progress.** Agent routing, lead handling,
   and stop conditions are under continuous testing and tuning — expect rough
   edges and behavior changes.
+- **Credential storage needs work.** Secrets are masked in the UI and snapshots,
+  but the underlying handling (keyring/state, on-disk artifacts) deserves a more
+  secure approach — on the list to improve.
 - General polish: this is a personal learning project, so plenty is half-built or
   in flux at any given time.
 
