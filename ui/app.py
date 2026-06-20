@@ -536,6 +536,9 @@ class PentestApp(App):
 
         # Activity log text for Ctrl+L modal / Ctrl+Y copy
         self._activity_lines: list[str] = []
+        # True while re-rendering a loaded assessment's saved event stream — suppresses
+        # state-mutating side effects in _handle_event (render-only).
+        self._replaying: bool = False
         # Command log text for COMMANDS header-click modal
         self._cmd_lines: list[str] = []
 
@@ -1629,6 +1632,29 @@ class PentestApp(App):
                     pass
         self._show_cmd_output(lines, True)
 
+    def _replay_engagement(self, jsonl_path) -> None:
+        """Re-render a saved assessment's activity log from its structured event
+        stream, through the live `_handle_event` renderer (with `_replaying` set so it
+        renders only — no state mutation). This restores the exact colours and the
+        expanded multi-line tool output the live view shows; the flat engagement.log
+        can't, since it stores compact JSON with escaped newlines."""
+        self._replaying = True
+        try:
+            for ln in jsonl_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                ln = ln.strip()
+                if not ln:
+                    continue
+                try:
+                    ev = json.loads(ln)
+                except Exception:
+                    continue
+                try:
+                    self._handle_event(ev)
+                except Exception:
+                    continue   # one malformed/unknown event must not abort the replay
+        finally:
+            self._replaying = False
+
     def _cmd_load(self, assessment_id: str) -> None:
         """Load a saved assessment back into the TUI panels by id (or id prefix)."""
         if self._is_running:
@@ -1657,19 +1683,26 @@ class PentestApp(App):
         self._current_assessment_path = path
         self._current_assessment_dir  = path.parent if path.parent != RESULTS_DIR else None
 
-        # Logs window ← the saved human-readable log for this assessment, if present
-        # (new: <dir>/engagement.log; legacy: logs/<stem>.log).
-        log_path = path.parent / "engagement.log"
-        if not log_path.exists():
-            log_path = LOGS_DIR / f"{path.stem}.log"
-        if log_path.exists():
-            try:
-                act = self.query_one("#activity-log", RichLog)
-                for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
-                    self._activity_lines.append(line)
-                    act.write(line)
-            except Exception:
-                pass
+        # Logs window ← rebuild it from the saved structured event stream
+        # (engagement.jsonl), replayed through the SAME renderer the live view uses,
+        # so colours and multi-line output come back exactly as they ran. The plain
+        # engagement.log is only a fallback for assessments saved before the jsonl
+        # existed (it's compact JSON, so its tool output shows literal "\n").
+        jsonl_path = path.parent / "engagement.jsonl"
+        if jsonl_path.exists():
+            self._replay_engagement(jsonl_path)
+        else:
+            log_path = path.parent / "engagement.log"
+            if not log_path.exists():
+                log_path = LOGS_DIR / f"{path.stem}.log"
+            if log_path.exists():
+                try:
+                    act = self.query_one("#activity-log", RichLog)
+                    for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                        self._activity_lines.append(line)
+                        act.write(line)
+                except Exception:
+                    pass
 
         # Findings ← every run's findings.
         n_find = 0
@@ -2157,7 +2190,7 @@ class PentestApp(App):
         self._add_flag_row(ev.value, ev.location, ev.verified)
 
     async def on_pentest_app_pipeline_event(self, ev: PipelineEvent) -> None:
-        await self._handle_event(ev.ev)
+        self._handle_event(ev.ev)
 
     # ── Pipeline event dispatcher (non-state events only) ─────────────────────
 
@@ -2197,7 +2230,11 @@ class PentestApp(App):
             out.append(f"… +{extra} more line(s) — Ctrl+L / read_artifact for full output")
         return out
 
-    async def _handle_event(self, event: dict) -> None:
+    def _handle_event(self, event: dict) -> None:
+        # `_replaying` is set while re-rendering a loaded assessment's saved event
+        # stream: render every activity line exactly as live, but suppress the state
+        # mutations (findings, status, token counters, hold flags) — the panels are
+        # repopulated separately from the saved snapshot, and counters must not move.
         t = event.get("type")
 
         if t == "agent_reasoning":
@@ -2250,21 +2287,23 @@ class PentestApp(App):
             col      = _SEV_COLOR.get(sev, "white")
             tag      = "CONFIRMED" if verified else "potential"
             self._activity(f"  [{col}][{tag}][/{col}] [{sev.upper()}] {title}")
-            self._add_finding({
-                "id":          event.get("finding_id", ""),
-                "title":       title,
-                "severity":    sev,
-                "verified":    verified,
-                "type":        event.get("ftype", ""),
-                "description": event.get("description", ""),
-                "target":      event.get("target", ""),
-                "evidence":    event.get("evidence", {}),
-            })
+            if not self._replaying:        # findings come from the saved runs on load
+                self._add_finding({
+                    "id":          event.get("finding_id", ""),
+                    "title":       title,
+                    "severity":    sev,
+                    "verified":    verified,
+                    "type":        event.get("ftype", ""),
+                    "description": event.get("description", ""),
+                    "target":      event.get("target", ""),
+                    "evidence":    event.get("evidence", {}),
+                })
 
         elif t == "agent_start":
-            self._current_agent  = event["agent"]
-            self._current_target = event["target"]
-            self._update_status()
+            if not self._replaying:
+                self._current_agent  = event["agent"]
+                self._current_target = event["target"]
+                self._update_status()
             self._activity(
                 f"\n[bold cyan]── {event['agent']} ──[/bold cyan]  {event['target']}"
             )
@@ -2290,11 +2329,12 @@ class PentestApp(App):
                 self._activity(f"[green]■ {agent} complete[/green]  {tail}")
 
         elif t == "token_update":
-            self._total_tokens["input"]      += event.get("input_delta", 0)
-            self._total_tokens["output"]     += event.get("output_delta", 0)
-            self._total_tokens["cache_read"] += event.get("cache_read_delta", 0)
-            self._total_cost                 += event.get("cost_delta", 0.0)
-            self._update_status()
+            if not self._replaying:        # don't move live counters when replaying
+                self._total_tokens["input"]      += event.get("input_delta", 0)
+                self._total_tokens["output"]     += event.get("output_delta", 0)
+                self._total_tokens["cache_read"] += event.get("cache_read_delta", 0)
+                self._total_cost                 += event.get("cost_delta", 0.0)
+                self._update_status()
 
         elif t == "api_retry":
             self._activity(
@@ -2353,15 +2393,18 @@ class PentestApp(App):
             )
 
         elif t == "agent_held":
-            self._agent_held = True
+            if not self._replaying:
+                self._agent_held = True
             self._activity("  [yellow]⏸ agent held — type guidance, then /continue or /skip[/yellow]")
 
         elif t == "agent_resumed":
-            self._agent_held = False
+            if not self._replaying:
+                self._agent_held = False
             self._activity("  [green]▶ agent resumed with operator guidance[/green]")
 
         elif t == "agent_skipped":
-            self._agent_held = False
+            if not self._replaying:
+                self._agent_held = False
             self._activity("  [yellow]⏭ agent skipped — advancing to next[/yellow]")
 
         elif t == "job_started":
