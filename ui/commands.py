@@ -119,9 +119,10 @@ COMMANDS: list[Command] = [
         Sub("load", "Reload a saved assessment into the panels by id", "<assessment-id>"),
         Sub("new",  "Clear the board to start a fresh assessment"),
     )),
-    Command("/report", "Generate a report now, or on|off to toggle auto-reporting",
-            (Sub("", "No arg generates a report now; on|off toggles auto-reporting at engagement end",
-                 "[on|off]", ("on", "off")),)),
+    Command("/report", "Generate a report now, regen to re-synthesize, or on|off to toggle",
+            (Sub("", "No arg re-renders now; regen re-runs the report agent on a loaded "
+                 "assessment; on|off toggles auto-reporting at engagement end",
+                 "[on|off|regen]", ("on", "off", "regen")),)),
     Command("/clear", "Reset to a blank window — panels, agent log, and token meter (saved files on disk are kept)",
             (Sub("", "Reset to a blank window — panels, agent log, and token meter (saved files on disk are kept)"),)),
     Command("/help", "Show this help — '/help <command>' for one command in detail",
@@ -585,13 +586,16 @@ def handle_websearch(args: list[str]) -> tuple[list[str], bool]:
 
 
 def handle_report(args: list[str]) -> tuple[list[str], bool]:
-    """Toggle auto-reporting at engagement end. (A bare /report generates one NOW;
-    that's handled in the app, which holds the run state.)"""
+    """Toggle auto-reporting at engagement end. (A bare /report renders one NOW, and
+    /report regen re-runs the report agent on a loaded assessment; both are handled
+    in the app, which holds the run state.)"""
     from core.config import get, set_value
     if not args:
         cur = get("reporting_enabled", True)
         return [f"Auto-reporting is {'ON' if cur else 'OFF'}.",
-                "Use /report on | /report off; a bare /report makes one on demand."], True
+                "Use /report on | /report off.",
+                "  /report          — re-render HTML from saved data (no LLM)",
+                "  /report regen    — re-run the report agent to re-synthesize a loaded assessment"], True
     val = args[0].lower()
     if val in ("on", "true", "enable", "enabled", "yes", "1"):
         set_value("reporting_enabled", True)

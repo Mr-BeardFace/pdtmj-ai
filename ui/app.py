@@ -1141,6 +1141,19 @@ class PentestApp(App):
                 from ui.commands import handle_report
                 lines, ok = handle_report(parsed[1])
                 self._show_cmd_output(lines, ok)
+            elif arg in ("regen", "resynth", "resynthesize", "synth", "new"):
+                # Re-run the report AGENT (LLM) against a loaded assessment's findings
+                # and write a fresh narrative report — recovers a full write-up from a
+                # saved assessment without re-running the engagement.
+                if self._is_running:
+                    self._show_cmd_output(["An engagement is running — finish it first."], False)
+                elif not (self._current_assessment and self._current_assessment.runs
+                          and self._current_assessment.merged_findings()):
+                    self._show_cmd_output(
+                        ["No loaded assessment with findings to re-synthesize.",
+                         "Run [cyan]/assessment load <id>[/cyan] first, then /report regen."], False)
+                else:
+                    self._resynthesize_report()
             else:
                 self._cmd_report()
             return
@@ -2806,6 +2819,69 @@ class PentestApp(App):
             self.post_message(PentestApp.Activity(f"[green]HTML Report:[/green] {path}"))
         except Exception as e:
             self.post_message(PentestApp.Activity(f"[red]Report failed: {e}[/red]"))
+
+    @work(thread=True)
+    def _resynthesize_report(self) -> None:
+        """Re-run the report agent (LLM) against a loaded assessment's saved findings
+        and write a fresh narrative report. Recovers a full write-up from a saved
+        assessment without re-running the engagement. Guards are checked by the
+        caller; this assumes a loaded assessment with findings exists."""
+        self.post_message(PentestApp.Running(True))
+        try:
+            from core.pipeline import REPORT_AGENT
+            assessment = self._current_assessment
+            target     = assessment.target
+            adir       = self._current_assessment_dir
+            findings   = assessment.merged_findings()
+
+            # Review-only state from the masked snapshot (creds masked, no tool_log).
+            snap: dict = {}
+            if adir and (adir / "state.json").exists():
+                try:
+                    snap = json.loads((adir / "state.json").read_text(encoding="utf-8"))
+                except Exception:
+                    snap = {}
+            state = EngagementState.from_snapshot(snap) if snap else EngagementState(target=target)
+            if not state.target:
+                state.target = target
+            self._current_state = state
+
+            ts     = datetime.now().strftime("%Y%m%d_%H%M%S")
+            logger = SessionLogger(LOGS_DIR / f"resynth_report_{ts}.log")
+            self._session_logger = logger
+            self.post_message(PentestApp.Activity(
+                f"[cyan]Re-synthesizing report from {len(findings)} saved finding(s)…[/cyan]"))
+
+            llm       = LLMClient()
+            registry  = build_registry()
+            art_store = ArtifactStore(adir / "artifacts") if adir else None
+            orchestrator = Orchestrator(
+                llm, registry, RESULTS_DIR, log_callback=self._make_log_cb(), quiet=True,
+                engagement_state=state, active_persona=self._active_persona,
+                session_logger=logger, artifact_store=art_store,
+            )
+            self._orchestrator = orchestrator
+            report_def = load_agent(REPORT_AGENT, AGENTS_DIR)
+            eng_run = orchestrator.run(report_def, target, None, max_turns=20,
+                                       all_findings=findings)
+
+            # Keep a single report run, persist the assessment, render fresh HTML.
+            assessment.runs = [r for r in assessment.runs if r.agent != REPORT_AGENT] + [eng_run]
+            if self._current_assessment_path:
+                try:
+                    self._current_assessment_path.write_text(
+                        assessment.model_dump_json(indent=2), encoding="utf-8")
+                except Exception:
+                    pass
+            self._generate_pipeline_report(
+                target, assessment.runs, persistence=snap.get("persistence", []))
+        except Exception as e:
+            self.post_message(PentestApp.Activity(f"[red]Re-synthesis failed: {e}[/red]"))
+        finally:
+            self._orchestrator   = None
+            self._current_state  = None
+            self._session_logger = None
+            self.post_message(PentestApp.Running(False))
 
     @work(thread=True)
     def _run_single(

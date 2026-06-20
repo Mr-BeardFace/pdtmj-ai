@@ -936,6 +936,33 @@ class EngagementState(BaseModel):
 
     # ── UI snapshot (for saving/reloading an assessment in the TUI) ─────────────
 
+    @classmethod
+    def from_snapshot(cls, snap: dict) -> "EngagementState":
+        """Rebuild a review-only state from a state_snapshot() dict — the inverse of
+        state_snapshot(). Secrets are NOT recoverable (creds come back masked); this
+        is for reporting/review, never re-authentication. Findings and the tool log
+        are not in the snapshot and are supplied separately (e.g. from the runs)."""
+        s = cls(target=snap.get("target", "") or "")
+        s.scope_targets = list(snap.get("scope_targets") or ([s.target] if s.target else []))
+        s.out_of_scope  = list(snap.get("out_of_scope") or [])
+        for c in snap.get("credentials", []) or []:
+            cred = s.add_credential(
+                cred_type=c.get("cred_type", "password"), username=c.get("username"),
+                secret=c.get("secret_masked") or "(masked)", service=c.get("service", ""),
+                location=c.get("location", "") or c.get("service", ""),
+                source_agent=c.get("source_agent", "loaded"), verified=bool(c.get("verified")))
+            if cred is not None and c.get("secret_masked"):
+                cred.secret_masked = c["secret_masked"]      # keep the original masked form
+        recon = snap.get("recon", {}) or {}
+        s.recon.host_names.update(recon.get("host_names", {}) or {})
+        s.recon.os_info.update(recon.get("os_info", {}) or {})
+        for svc in snap.get("services", []) or []:
+            try:
+                s.services.append(dict(svc))
+            except Exception:
+                pass
+        return s
+
     def state_snapshot(self) -> dict:
         """A masked, panel-focused dump of the live state for persisting alongside
         an assessment so the TUI can reload its Hosts/Creds/Flags/change-ledger
