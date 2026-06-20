@@ -147,8 +147,7 @@ see [Known limitations](#known-limitations).
   running user with `NOPASSWD` sudo.
 
   > Yes, this is a security trade-off. It's deliberate: this runs as root in a
-  > disposable lab VM (a Kali attack box), not on anything you care about. Run it
-  > the same way — in a throwaway VM, never on a host with anything to lose.
+  > disposable lab VM (a Kali attack box), not on anything you care about.
 
 - **Python 3.11+**, run inside a virtual environment (see Setup).
 - **An API key** for at least one provider (Anthropic, OpenRouter, or NVIDIA).
