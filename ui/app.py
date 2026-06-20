@@ -2835,6 +2835,38 @@ class PentestApp(App):
         except Exception as e:
             self.post_message(PentestApp.Activity(f"[red]Report failed: {e}[/red]"))
 
+    @staticmethod
+    def _rehydrate_report_state(state, assessment) -> None:
+        """Regen loads only the masked state.json (no tool_log, no handoffs). Rebuild
+        both from the full assessment runs so `build_context_block` can surface the real
+        command history and each agent's own technical narrative to the report writer —
+        the difference between re-narrating finding titles and re-synthesizing from the
+        actual engagement. The runs were secret-redacted when stored, so this is safe."""
+        from core.engagement_state import ToolLogEntry
+        from core.pipeline import REPORT_AGENT
+        for run in assessment.runs:
+            for tc in run.tool_calls:
+                out = tc.output
+                out_s = ("" if out is None
+                         else out if isinstance(out, str)
+                         else json.dumps(out, default=str))
+                state.tool_log.append(ToolLogEntry(
+                    agent=run.agent,
+                    tool_name=tc.tool_name,
+                    command=tc.command_str or tc.tool_name,
+                    summary=(out_s[:160].replace("\n", " ") if out_s
+                             else (tc.error or "")[:160]),
+                    truncated_output=out_s[:800],
+                    timestamp=tc.timestamp,
+                ))
+            # Each agent's own close-out narrative is the richest "what happened" signal —
+            # far more than the bare findings. Feed the report writer all of them (the
+            # report agent's own prior narration is skipped to avoid echoing itself).
+            if run.agent != REPORT_AGENT:
+                state.add_handoff(
+                    run.agent, run.technical_overview or run.summary
+                    or run.executive_summary or "")
+
     @work(thread=True)
     def _resynthesize_report(self) -> None:
         """Re-run the report agent (LLM) against a loaded assessment's saved findings
@@ -2859,6 +2891,11 @@ class PentestApp(App):
             state = EngagementState.from_snapshot(snap) if snap else EngagementState(target=target)
             if not state.target:
                 state.target = target
+            # The masked state.json carries no tool_log/handoffs, so a bare regen would
+            # write from findings alone — the same shallow report. Rebuild the evidence
+            # trail and each agent's narrative from the full (already-redacted) runs so
+            # the report agent re-synthesizes from the real engagement, not just titles.
+            self._rehydrate_report_state(state, assessment)
             self._current_state = state
 
             ts     = datetime.now().strftime("%Y%m%d_%H%M%S")
