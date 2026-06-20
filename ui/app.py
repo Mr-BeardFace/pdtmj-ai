@@ -2623,7 +2623,10 @@ class PentestApp(App):
             )
             self._orchestrator = orchestrator   # for /job list|kill from the UI
 
-            all_agents = load_all_agents()
+            # The active persona may pin the routable agent set (CTF → generalist
+            # spine only), so specialist routing can't fork work off the generalist.
+            from core.agent_loader import persona_agents
+            all_agents = persona_agents(self._active_persona, AGENTS_DIR, load_all_agents())
 
             # ── driver callbacks ─────────────────────────────────────────────
             def emit_activity(text: str) -> None:

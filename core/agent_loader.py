@@ -71,6 +71,43 @@ def load_agent(agent_name: str, agents_dir: Path) -> AgentDefinition:
     )
 
 
+def persona_agents(persona_name: str, agents_dir: Path,
+                   all_agents: Dict[str, AgentDefinition]) -> Dict[str, AgentDefinition]:
+    """Restrict the routable agent set to what the active persona declares.
+
+    A persona's `persona.md` frontmatter may carry an `agents:` allowlist — the agent
+    keys that persona dispatches to. When present, `all_agents` is filtered to it, so
+    the driver's routing candidate pool (and thus `_*_agent_for` specialist routing)
+    only sees those agents. This is how the CTF persona pins exploitation to the
+    generalist spine: with the domain specialists absent from the pool, the service-
+    specialist branch finds nothing loaded and deterministically falls back to the
+    generic agent — no per-surface router call, no specialist fork.
+
+    No allowlist (e.g. the full pentest persona) → unchanged. Agents marked
+    `always_last` (the reporter) are always retained so a persona can't drop the
+    deliverable."""
+    if not persona_name:
+        return all_agents
+    persona_path = (agents_dir / persona_name / "persona.md").resolve()
+    if (not str(persona_path).startswith(str(agents_dir.resolve()))
+            or not persona_path.exists()):
+        return all_agents
+    try:
+        m = re.match(r"^---\n(.*?)\n---\n", persona_path.read_text(encoding="utf-8"), re.DOTALL)
+        meta = yaml.safe_load(m.group(1)) if m else {}
+    except Exception:
+        return all_agents
+    allow = set(meta.get("agents") or [])
+    if not allow:
+        return all_agents
+    # always_last safety net (keep the reporter) — but only within the persona's own
+    # namespace, so a pentest persona doesn't drag in code/re reporters.
+    namespaces = {k.split("/")[0] for k in allow}
+    return {k: v for k, v in all_agents.items()
+            if k in allow or ((v.metadata or {}).get("always_last")
+                              and k.split("/")[0] in namespaces)}
+
+
 def discover_agents(agents_dir: Path) -> Dict[str, AgentDefinition]:
     """
     Return all agents found under agents_dir (recursive).

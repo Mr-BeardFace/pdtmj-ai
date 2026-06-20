@@ -482,7 +482,11 @@ class Orchestrator:
             persona_path = (agents_base / active_persona / "persona.md").resolve()
             # Guard against path traversal in the persona name
             if str(persona_path).startswith(str(agents_base.resolve())) and persona_path.exists():
-                self._persona_instructions = persona_path.read_text(encoding="utf-8") + "\n\n---\n\n"
+                body = persona_path.read_text(encoding="utf-8")
+                # Strip the YAML frontmatter (name/description/agents allowlist) — it's
+                # metadata for loading/routing, not instructions for the model.
+                body = re.sub(r"^---\n.*?\n---\n", "", body, count=1, flags=re.DOTALL)
+                self._persona_instructions = body.strip() + "\n\n---\n\n"
 
     def clone_for_worker(self, state: EngagementState, label: str = "") -> "Orchestrator":
         """A sibling Orchestrator for a parallel worker — its OWN forked `state` and
