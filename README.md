@@ -9,6 +9,12 @@ exploitation/foothold, post-exploitation, reporting) over a shared engagement
 state, with credentials masked and every change to a target tracked and
 reversible.
 
+## Demo
+
+![PDTMJ-AI demo](assets/demo.gif)
+
+*([full-quality video](assets/demo.mp4))*
+
 ## Why this exists
 
 I'm not a developer. This was vibe-coded — built with an LLM doing the heavy
@@ -171,6 +177,20 @@ Once inside the app, store a provider key (auto-detected by prefix) and select i
 /provider set anthropic
 ```
 
+### Local models
+
+Any OpenAI-compatible runtime works — Ollama, LM Studio, llama.cpp's server, vLLM.
+Point the `local` provider at its base URL and pick a model:
+
+```
+/provider set local http://localhost:11434/v1   # Ollama (LM Studio: :1234/v1)
+/agent set model global llama3.1:8b
+/models list local
+```
+
+No API key is needed for a typical local server; if yours requires one, set it with
+`/key set local <api-key>`. The base URL persists to `config.yaml` (`local_base_url`).
+
 Configuration lives in `config.yaml` (copy `config.yaml.example`); API keys are
 read from the OS keyring or the env vars in `.env.example`. Neither `config.yaml`
 nor `.env` is tracked — see `.gitignore`.
@@ -180,8 +200,8 @@ nor `.env` is tracked — see `.gitignore`.
 Things I already know don't work the way I want yet — calling them out so nobody
 is surprised:
 
-- **Limited LLM providers.** Only a few sources are wired in (Anthropic,
-  OpenRouter, NVIDIA). More to come.
+- **Limited LLM providers.** Anthropic, OpenRouter, NVIDIA, and any
+  OpenAI-compatible local server (Ollama, LM Studio, …). More to come.
 - **Reporting is rough.** Report generation and regeneration are inconsistent and
   still being reworked.
 - **Copying text is flaky.** Pulling text out of the TUI panes doesn't always

@@ -5,3 +5,9 @@
 *.py   text eol=lf
 *.j2   text eol=lf
 *.md   text eol=lf
+
+# Media — never apply text/EOL normalization (would corrupt the bytes).
+*.gif  binary
+*.mp4  binary
+*.png  binary
+*.jpg  binary

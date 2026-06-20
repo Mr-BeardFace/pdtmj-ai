@@ -52,7 +52,7 @@ COMMANDS: list[Command] = [
     Command("/info", "Show all current settings — persona, provider, models, keys, loop caps",
             (Sub("", "Show all current settings — persona, provider, models, keys, loop caps"),)),
     Command("/key", "Manage API keys (stored in the system keychain)", (
-        Sub("set",   "Store a key — provider auto-detected from its prefix", "<api-key>"),
+        Sub("set",   "Store a key (provider auto-detected, or name it explicitly)", "[provider] <api-key>"),
         Sub("list",  "Show API key status for all providers"),
         Sub("clear", "Remove key(s) from the keychain",
             f"[{'|'.join(_PROVIDER_NAMES)}]", _PROVIDER_NAMES),
@@ -79,8 +79,8 @@ COMMANDS: list[Command] = [
         Sub("list", "List available personas"),
     )),
     Command("/provider", "Switch the active LLM provider", (
-        Sub("set",  "Switch active provider",
-            f"<{'|'.join(_PROVIDER_NAMES)}>", _PROVIDER_NAMES),
+        Sub("set",  "Switch active provider (local also takes a base URL)",
+            f"<{'|'.join(_PROVIDER_NAMES)}> [baseURL]", _PROVIDER_NAMES),
         Sub("list", "Show current provider and key status"),
     )),
     Command("/scope", "Manage the engagement's in-scope targets", (
@@ -330,18 +330,34 @@ def handle_key_clear(args: list[str]) -> tuple[list[str], bool]:
         return [f"Keychain error: {e}"], False
 
 
-def handle_key_set(new_key: str) -> tuple[list[str], bool]:
-    """Store a new API key — provider auto-detected from its key prefix."""
-    spec = provider_for_key(new_key)
-    if spec is None:
-        lines = ["Unknown key format."]
-        for s in PROVIDERS.values():
-            lines.append(f"  {s.label} keys start with  {s.key_prefixes[0]}")
-        return lines, False
+def handle_key_set(args: list[str]) -> tuple[list[str], bool]:
+    """Store a new API key.
+
+      /key set <api-key>             provider auto-detected from the key prefix
+      /key set <provider> <api-key>  explicit provider (for keys with no standard
+                                     prefix, e.g. a local server)
+    """
+    if not args:
+        return ["Usage: /key set [provider] <api-key>"], False
+
+    # Two tokens → explicit provider; one token → auto-detect by prefix.
+    if len(args) >= 2 and args[0].lower() in PROVIDERS:
+        spec    = PROVIDERS[args[0].lower()]
+        new_key = args[1]
+    else:
+        new_key = args[0]
+        spec    = provider_for_key(new_key)
+        if spec is None:
+            lines = ["Unknown key format — say which provider: /key set <provider> <api-key>",
+                     f"  Providers: {', '.join(_PROVIDER_NAMES)}"]
+            for s in PROVIDERS.values():
+                if s.key_prefixes:
+                    lines.append(f"  {s.label} keys start with  {s.key_prefixes[0]}")
+            return lines, False
     try:
         import keyring
         keyring.set_password(_KEYRING_SERVICE, spec.keyring_key, new_key)
-        masked = new_key[:8] + "..." + new_key[-4:]
+        masked = (new_key[:8] + "..." + new_key[-4:]) if len(new_key) > 12 else "***"
         return [f"{spec.label} API key stored in system keychain  ({masked})"], True
     except Exception as e:
         return [f"Keychain error: {e}"], False
@@ -356,17 +372,21 @@ def handle_models_list(provider: str = "") -> tuple[list[str], bool]:
     spec = PROVIDERS.get(provider)
     if spec is None:
         return [f"Unknown provider: {provider!r}  (supported: {', '.join(_PROVIDER_NAMES)})"], False
-    if not spec.models_url:
+    from core.llm_client import models_url_for
+    models_url = models_url_for(spec)
+    if not models_url:
+        if spec.base_url_config:
+            return [f"{spec.label}: no base URL set — run /provider set {provider} <url> first."], False
         return [f"{spec.label} does not expose a model list."], False
 
     key = resolve_provider_key(spec)
-    if not key:
+    if not key and not spec.key_optional:
         pfx = spec.key_prefixes[0] if spec.key_prefixes else ""
         return [f"No {spec.label} API key set. Run: /key set {pfx}..."], False
 
     try:
         import httpx
-        r = httpx.get(spec.models_url, headers=auth_headers(spec, key), timeout=10)
+        r = httpx.get(models_url, headers=auth_headers(spec, key or ""), timeout=10)
         r.raise_for_status()
         models = r.json().get("data", [])
     except Exception as e:
@@ -848,7 +868,8 @@ def handle_provider_list() -> tuple[list[str], bool]:
 
 def handle_provider_set(args: list[str]) -> tuple[list[str], bool]:
     if not args:
-        return [f"Usage: /provider set <{'|'.join(_PROVIDER_NAMES)}>"], False
+        return [f"Usage: /provider set <{'|'.join(_PROVIDER_NAMES)}>  "
+                f"(local also takes a base URL: /provider set local <http://host:port/v1>)"], False
     provider = args[0].lower()
     spec = PROVIDERS.get(provider)
     if spec is None:
@@ -856,25 +877,36 @@ def handle_provider_set(args: list[str]) -> tuple[list[str], bool]:
             f"Unknown provider: {provider!r}",
             f"  Supported: {', '.join(_PROVIDER_NAMES)}",
         ], False
-    from core.config import set_value, get_global_model
-    set_value("active_provider", provider)
+    from core.config import set_value, get, get_global_model
 
-    # Warn if the provider's key isn't set yet.
-    if not resolve_provider_key(spec):
+    # A config-driven provider (local) accepts its base URL inline and persists it.
+    if spec.base_url_config:
+        if len(args) > 1:
+            set_value(spec.base_url_config, args[1].rstrip("/"))
+        base = get(spec.base_url_config, "")
+        if not base:
+            return [
+                f"{spec.label} needs a base URL.",
+                f"  Run: /provider set {provider} http://localhost:11434/v1   (Ollama)",
+                f"       /provider set {provider} http://localhost:1234/v1    (LM Studio)",
+            ], False
+
+    set_value("active_provider", provider)
+    out = [f"Provider set to: {provider}"]
+    if spec.base_url_config:
+        out[0] += f"  ({get(spec.base_url_config, '')})"
+
+    # Warn about a missing key — but only when the provider actually requires one.
+    if not spec.key_optional and not resolve_provider_key(spec):
         pfx = spec.key_prefixes[0] if spec.key_prefixes else ""
-        return [
-            f"Provider set to: {provider}",
-            f"  Warning: no {spec.label} API key found — set one with /key set {pfx}...",
-        ], True
+        out.append(f"  Warning: no {spec.label} API key found — set one with /key set {pfx}...")
+        return out, True
     # Non-native providers use OpenAI-style model IDs, so the per-agent Anthropic
     # defaults won't resolve — remind the operator to pin a global model.
     if not spec.native and not get_global_model():
-        return [
-            f"Provider set to: {provider}",
-            f"  Note: set a model for this provider — /agent set model global <id>"
-            f"  (list them with /models list {provider}).",
-        ], True
-    return [f"Provider set to: {provider}"], True
+        out.append(f"  Note: set a model for this provider — /agent set model global <id>"
+                   f"  (list them with /models list {provider}).")
+    return out, True
 
 
 # ── Main dispatcher ───────────────────────────────────────────────────────────
@@ -918,11 +950,11 @@ def dispatch(text: str) -> tuple[list[str], bool] | None:
         return handle_key_clear(args)
     if cmd == "/key set":
         if args:
-            return handle_key_set(args[0])
+            return handle_key_set(args)
         return [
-            "Usage: /key set <api-key>",
-            "  Anthropic keys:   sk-ant-...",
-            "  OpenRouter keys:  sk-or-...",
+            "Usage: /key set [provider] <api-key>",
+            "  Auto-detected:    sk-ant-... (Anthropic), sk-or-... (OpenRouter), nvapi-... (NVIDIA)",
+            "  Explicit provider: /key set local <api-key>   (for keys with no standard prefix)",
             "  Key will be stored in your system keychain, not on disk.",
         ], False
     if cmd == "/models list":

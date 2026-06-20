@@ -74,6 +74,9 @@ class ProviderSpec:
     auth_style:   str  = "bearer"           # "bearer" (Authorization) | "x-api-key" (Anthropic)
     free_only:    bool = False              # /models list filters to zero-cost models (OpenRouter)
     extra_headers: dict = field(default_factory=dict)
+    key_optional:    bool = False           # True → no API key required (local servers)
+    base_url_config: str  = ""              # config.yaml key holding the base URL (local provider);
+                                            # when set, chat/models endpoints derive from it at runtime
 
     @property
     def key_hint(self) -> str:
@@ -104,7 +107,41 @@ PROVIDERS: dict[str, ProviderSpec] = {
         chat_url="https://integrate.api.nvidia.com/v1/chat/completions",
         models_url="https://integrate.api.nvidia.com/v1/models",
     ),
+    # Local OpenAI-compatible server (Ollama, LM Studio, llama.cpp, vLLM). The base
+    # URL is the operator's, so it comes from config (`local_base_url`, set with
+    # `/provider set local <url>`); the chat/models endpoints derive from it. Most
+    # local servers need no key, so one is optional.
+    "local": ProviderSpec(
+        name="local", label="Local (OpenAI-compatible)",
+        keyring_key="local_api_key", env_var="LOCAL_API_KEY",
+        key_prefixes=(),                    # no prefix to auto-detect — select explicitly
+        base_url_config="local_base_url",
+        key_optional=True,
+    ),
 }
+
+
+def _base_url_for(spec: ProviderSpec) -> str:
+    """The configured base URL for a config-driven provider (local), trailing slash
+    stripped; empty for providers with static endpoints."""
+    if not spec.base_url_config:
+        return ""
+    from core.config import get
+    return (get(spec.base_url_config, "") or "").rstrip("/")
+
+
+def chat_url_for(spec: ProviderSpec) -> str:
+    """Chat-completions endpoint — derived from the configured base URL for a local
+    provider, else the spec's static `chat_url`."""
+    base = _base_url_for(spec)
+    return f"{base}/chat/completions" if base else spec.chat_url
+
+
+def models_url_for(spec: ProviderSpec) -> str:
+    """/models endpoint — derived from the configured base URL for a local provider,
+    else the spec's static `models_url`."""
+    base = _base_url_for(spec)
+    return f"{base}/models" if base else spec.models_url
 
 
 def get_provider(name: str | None) -> ProviderSpec:
@@ -135,7 +172,10 @@ def provider_for_key(api_key: str) -> ProviderSpec | None:
 
 
 def auth_headers(spec: ProviderSpec, key: str) -> dict:
-    """Auth headers for a plain HTTP call (chat or /models) to this provider."""
+    """Auth headers for a plain HTTP call (chat or /models) to this provider. No key
+    → no auth header (a local server that doesn't require one)."""
+    if not key:
+        return {}
     if spec.auth_style == "x-api-key":
         return {"x-api-key": key, "anthropic-version": "2023-06-01"}
     return {"Authorization": f"Bearer {key}"}
@@ -448,8 +488,11 @@ class LLMClient:
         spec  = self._spec
         label = spec.label
 
-        if not self._oai_key:
+        if not self._oai_key and not spec.key_optional:
             raise APIAuthError(spec.key_hint)
+        if spec.base_url_config and not _base_url_for(spec):
+            raise APIAuthError(
+                f"{label}: no base URL set — run /provider set local <http://host:port/v1>")
 
         openai_messages = [{"role": "system", "content": system}] + _to_openai_messages(messages)
         openai_tools    = _to_openai_tools(tools) if tools else None
@@ -473,7 +516,7 @@ class LLMClient:
         for attempt in range(max_retries + 1):
             try:
                 resp = httpx.post(
-                    spec.chat_url,
+                    chat_url_for(spec),
                     headers=headers,
                     json=payload,
                     timeout=120,
