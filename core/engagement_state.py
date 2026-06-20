@@ -307,6 +307,45 @@ class EngagementState(BaseModel):
             return self._eng_script_calls
         return 0
 
+    # ── foothold-banking nudge ────────────────────────────────────────────────
+    # Code execution proven but never recorded is the costliest miss: the foothold
+    # is the headline finding and everything builds on it, yet a run can burn the
+    # whole turn budget exploring without ever calling annotate_finding for it.
+    _exec_confirmed: bool = PrivateAttr(default=False)   # exec observed this engagement
+    _foothold_banked: bool = PrivateAttr(default=False)  # a verified finding banked since
+    _turns_since_exec: int = PrivateAttr(default=0)
+    _foothold_nudged: bool = PrivateAttr(default=False)
+
+    def exec_confirmed(self) -> bool:
+        return self._exec_confirmed
+
+    def note_exec_confirmed(self) -> None:
+        """Code execution on a target was observed (an `id`/`whoami` readback, a
+        caught shell, a successful shell_exec). Idempotent — only the first matters;
+        the foothold-banking nudge keys off it until a verified finding is banked."""
+        if not self._exec_confirmed:
+            self._exec_confirmed = True
+            self._foothold_banked = False
+            self._turns_since_exec = 0
+
+    def note_foothold_banked(self) -> None:
+        """A verified finding was annotated after exec was confirmed — the foothold
+        is on the record. Clears the banking nudge."""
+        if self._exec_confirmed:
+            self._foothold_banked = True
+
+    def foothold_bank_due(self, threshold: int) -> int:
+        """Tick once per turn. Returns turns-since-exec when a nudge is due (exec
+        confirmed, no verified finding banked since, threshold reached), else 0.
+        Fires once — banking the foothold is a single specific action, not a streak."""
+        if not (threshold and self._exec_confirmed and not self._foothold_banked):
+            return 0
+        self._turns_since_exec += 1
+        if self._turns_since_exec >= threshold and not self._foothold_nudged:
+            self._foothold_nudged = True
+            return self._turns_since_exec
+        return 0
+
     def model_post_init(self, __context) -> None:
         if not self.scope_targets:
             self.scope_targets = [self.target]
@@ -347,6 +386,10 @@ class EngagementState(BaseModel):
         clone._eng_script_calls = self._eng_script_calls
         clone._eng_listscripts_used = self._eng_listscripts_used
         clone._eng_reuse_nudged = self._eng_reuse_nudged
+        clone._exec_confirmed = self._exec_confirmed
+        clone._foothold_banked = self._foothold_banked
+        clone._turns_since_exec = self._turns_since_exec
+        clone._foothold_nudged = self._foothold_nudged
         return clone
 
     def merge_marks(self) -> dict:
@@ -468,6 +511,11 @@ class EngagementState(BaseModel):
             self._scripts_since_progress += delta_sp
         if other._eng_listscripts_used:
             self._eng_listscripts_used = True
+        # exec confirmation is sticky across workers; banking clears the nudge
+        if other._exec_confirmed:
+            self.note_exec_confirmed()
+        if other._foothold_banked:
+            self._foothold_banked = True
 
         # objective — first worker to conclude wins
         if other.concluded and not self.concluded:

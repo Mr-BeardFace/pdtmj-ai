@@ -88,6 +88,48 @@ _IPV4_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
 _IPV6_RE = re.compile(r"\b(?:[0-9A-Fa-f]{1,4}:){2,}[0-9A-Fa-f]{1,4}\b")
 _INTERNAL_TLD_RE = re.compile(r"\b[\w.-]+\.(?:htb|local|internal|corp|lan|intra|home|test)\b", re.I)
 
+# Signature of confirmed code execution in a tool RESULT — the readback from a
+# blind-RCE channel where there is no live shell object to key off. This is only ever
+# scanned for output of the command-execution channels below (`_EXEC_CHANNEL_TOOLS`),
+# NOT enum tools — so a `host\user` line here is genuinely whoami output, not an
+# LDAP/SMB service-account string. A miss only costs a nudge; a false positive would
+# nag wrongly, so each alternative is anchored to be near-unmistakable:
+#   • Linux `id`:            uid=998(nifi) gid=998(nifi)
+#   • Windows whoami /priv:  SeImpersonatePrivilege, SeChangeNotifyPrivilege, …
+#   • Windows plain whoami:  a standalone `host\user` line (no drive letter / UNC / spaces)
+_EXEC_SIG_RE = re.compile(
+    r"uid=\d+\([^)]*\)\s+gid=\d+\(|"               # Linux id(1)
+    r"\bSe[A-Z][A-Za-z]+Privilege\b|"             # whoami /priv token
+    r"(?im:^[a-z0-9][\w.-]*\\[a-z0-9][\w.$ -]*?[ \t]*$)")  # whoami: host\user line
+# Tools that run a command ON the target — the only results worth sniffing for an
+# exec signature. Enum/auth tools are excluded so their output can't false-trip it.
+_EXEC_CHANNEL_TOOLS = {"web_exec", "oob_listener", "http_request", "ssh_exec",
+                       "nc", "telnet", "run_script"}
+
+
+def _collect_strings(obj, out: list, budget: list) -> None:
+    """Gather raw string values from a tool result (recursively) into `out` until the
+    char budget runs out. Used for exec-signature matching — scanning RAW values, not
+    a JSON dump, so real backslashes/newlines survive (whoami `host\\user`, line anchors)."""
+    if budget[0] <= 0:
+        return
+    if isinstance(obj, str):
+        out.append(obj[:budget[0]])
+        budget[0] -= len(obj)
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            _collect_strings(v, out, budget)
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            _collect_strings(v, out, budget)
+
+
+def _result_shows_exec(result: dict) -> bool:
+    """True if a command-channel result contains an unmistakable exec readback."""
+    parts: list = []
+    _collect_strings(result, parts, [20000])
+    return bool(_EXEC_SIG_RE.search("\n".join(parts)))
+
 # Tools that always run as a background job (too long to block a turn, and the
 # agent otherwise tends to narrate them as "done" the moment the subprocess is
 # launched). Their results are delivered automatically when the job finishes.
@@ -682,6 +724,8 @@ class Orchestrator:
             res = self._shells.exec(sid, cmd, timeout=inputs.get("timeout", 15))
             if "output" in res and not res.get("error"):
                 self._shell_exec_ok += 1          # active foothold work → budget progress
+                if self.state:                    # driving a shell = confirmed exec
+                    self.state.note_exec_confirmed()
             self._emit("shell_exec", session_id=sid, command=cmd,
                        summary=(res.get("output", "")[:120] if "output" in res else res.get("error", "")))
             return res
@@ -935,6 +979,9 @@ class Orchestrator:
         # they survive the agent cycling — thrash spread over many runs still trips.
         reuse_threshold = int(_cfg_get("run_script_volume_nudge", 10) or 0)
         grind_threshold = int(_cfg_get("grind_nudge_after_scripts", 12) or 0)
+        # Foothold-banking: turns after exec is confirmed to allow before nudging to
+        # annotate it. Small — confirm exec, then bank within a turn or two.
+        foothold_bank_after = int(_cfg_get("foothold_bank_nudge_after_turns", 2) or 0)
         # Last substantive agent text — becomes the handoff to the next agent if the
         # run ends without a clean text-only close-out (e.g. hits the turn cap).
         last_text = ""
@@ -1000,6 +1047,8 @@ class Orchestrator:
                     for s in new_shells:
                         self._emit("shell_connected", session_id=s.id, addr=f"{s.addr[0]}:{s.addr[1]}")
                     self._inject_user_text(messages, notice)
+                    if self.state:                # a caught shell is confirmed exec
+                        self.state.note_exec_confirmed()
 
                 # Objective declared achieved — stop this agent's loop. EXCEPT the
                 # reporting agent: it runs AFTER the engagement is concluded, to write
@@ -1084,6 +1133,9 @@ class Orchestrator:
                         self._save_run(run)
                         if self.state:
                             self.state.note_progress()   # banked a result → reset grind streak
+                            if tb.input.get("verified"):
+                                # a verified finding lands the foothold on the record
+                                self.state.note_foothold_banked()
                         tool_results.append({
                             "type":        "tool_result",
                             "tool_use_id": tb.id,
@@ -1358,6 +1410,15 @@ class Orchestrator:
                                                       inputs.get("language", ""))
                             self._emit_state_update()
 
+                        # Confirmed code execution via a blind channel (no live shell
+                        # object to key off) — arm the foothold-banking nudge. Cheap:
+                        # only until exec is first confirmed, only for command-execution
+                        # channels, on a capped serialization.
+                        if (self.state and not self.state.exec_confirmed()
+                                and tb.name in _EXEC_CHANNEL_TOOLS
+                                and isinstance(result, dict) and _result_shows_exec(result)):
+                            self.state.note_exec_confirmed()
+
                         tool_results.append({
                             "type":        "tool_result",
                             "tool_use_id": tb.id,
@@ -1466,6 +1527,26 @@ class Orchestrator:
                                 "list_scripts has never been called. You are very likely rewriting "
                                 "near-duplicates. Call list_scripts to reuse or adapt one, and fix a "
                                 "working script rather than re-authoring it.]"
+                            ),
+                        })
+
+                    # Foothold-banking nudge (engagement-level) — code execution has
+                    # been proven but no verified finding has been banked since. The
+                    # foothold is the headline finding; an unrecorded one means a run
+                    # can end mid-privesc with $0 of evidence to show for the exec.
+                    bank_n = self.state.foothold_bank_due(foothold_bank_after)
+                    if bank_n:
+                        self._print("  [yellow]🏴 foothold nudge — exec confirmed, nothing banked[/yellow]")
+                        self._emit("foothold_nudge", turns=bank_n)
+                        tool_results.append({
+                            "type": "text",
+                            "text": (
+                                "[Engine notice: code execution on the target has been CONFIRMED but you "
+                                "have not banked it. The foothold is the headline finding — everything "
+                                "after builds on it, and this run can hit its turn cap mid-privesc with "
+                                "nothing recorded. Call annotate_finding for the code-execution/access NOW "
+                                "— verified=true, with the command and its output as evidence — before "
+                                "continuing. Put any credentials in record_credential, not the finding.]"
                             ),
                         })
 
