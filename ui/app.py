@@ -657,8 +657,9 @@ class PentestApp(App):
 
         self._sync_flags_tab()
 
-        # Preload completion candidate pools
-        self._known_models = list(_DEFAULT_MODEL_IDS)
+        # Preload completion candidate pools — real models for the active provider
+        # (fetched in the background; placeholder shown until it returns).
+        self._seed_models_for_active_provider()
         try:
             self._known_agents = sorted(load_all_agents().keys())
         except Exception:
@@ -706,16 +707,41 @@ class PentestApp(App):
         except Exception:
             pass
 
-    def _capture_models(self, lines: list[str]) -> None:
-        """Learn model ids from `/models list` output for tab-completion."""
+    def _capture_models(self, lines: list[str], announce: bool = True) -> None:
+        """Learn model ids from `/models list` output for tab-completion. REPLACES the
+        pool (so completion is a real representation of the active provider's models,
+        not the previous provider's or hardcoded defaults mixed in)."""
         from ui.completion import extract_model_ids
         ids = extract_model_ids(lines)
         if ids:
-            self._known_models = list(dict.fromkeys(ids + self._known_models))
-            self._activity(
-                f"[dim]{len(ids)} model id(s) now available — Tab-complete after "
-                f"/agent set model <agent>[/dim]"
-            )
+            self._known_models = list(dict.fromkeys(ids))
+            if announce:
+                self._activity(
+                    f"[dim]{len(ids)} model id(s) now available — Tab-complete after "
+                    f"/agent set model <agent>[/dim]"
+                )
+
+    def _seed_models_for_active_provider(self) -> None:
+        """Set the model-completion pool to the active provider's real models. The
+        Anthropic defaults are only an instant placeholder while the (background) fetch
+        runs, and only when Anthropic is actually the active provider."""
+        from core.config import get as _cfg_get
+        prov = (_cfg_get("active_provider", "anthropic") or "anthropic").lower()
+        self._known_models = list(_DEFAULT_MODEL_IDS) if prov == "anthropic" else []
+        self._refresh_models_async()
+
+    @work(thread=True)
+    def _refresh_models_async(self) -> None:
+        """Fetch the active provider's real model list (network) and replace the
+        completion pool. Silent on failure (no key / server down) — the placeholder
+        stays. Keeps Tab-complete honest without making the user run /models list."""
+        try:
+            from ui.commands import handle_models_list
+            lines, ok = handle_models_list("")      # "" → active provider
+            if ok:
+                self._capture_models(lines, announce=False)
+        except Exception:
+            pass
 
     # ── Input handling ────────────────────────────────────────────────────────
 
@@ -1225,6 +1251,8 @@ class PentestApp(App):
                 self._update_status()
             elif parsed[0] == "/provider set":
                 self._update_status()
+                # the new provider has its own models — refresh the completion pool
+                self._seed_models_for_active_provider()
             elif parsed[0] == "/models list":
                 self._capture_models(lines)
 
@@ -1421,9 +1449,9 @@ class PentestApp(App):
         from ui.commands import handle_agent_list
         return handle_agent_list()
 
-    def _cmd_model_list(self) -> tuple[list[str], bool]:
+    def _cmd_model_list(self, provider: str = "") -> tuple[list[str], bool]:
         from ui.commands import handle_models_list
-        return handle_models_list("anthropic")
+        return handle_models_list(provider)      # "" → active provider
 
     # ── UI helpers ────────────────────────────────────────────────────────────
 
