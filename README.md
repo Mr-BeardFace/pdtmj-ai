@@ -132,10 +132,31 @@ Finally, the **persona controls which agents are even in play**. `pentest` expos
 all of them — full specialist routing, surfaces worked in parallel. `pentest-ctf`
 loads only a generalist spine (enumeration, exploitation, post-exploitation,
 validation, report), so on a single box exploitation always lands on the generalist
-with no routing decision to get wrong. Either way, shared methodology — like turning
-code execution into a stable foothold — lives in one place and is pulled into every
-agent that needs it, so the generalist and the specialists work a foothold the same
-way.
+with no routing decision to get wrong.
+
+### Two ways to deliver domain depth: route, or retrieve
+
+There are two ways the same domain methodology reaches an agent, and the project is
+mid-transition between them:
+
+- **Route to a specialist (the `pentest` persona).** A web/AD/DB surface is dispatched
+  to the `web` / `active-directory` / `database` agent — a separate run with that
+  domain's methodology as its system prompt.
+- **Retrieve a playbook (the `pentest-ctf` persona).** There are no specialists in the
+  pool; the generalist recognizes the domain from what it enumerated and calls the
+  `load_playbook` tool to pull that methodology **into its own context** — same
+  knowledge, no routing, no handoff. The `playbooks/` directory holds one document per
+  domain (`web`, `active-directory`, `database`, `network`, `cloud`); the specialist
+  agents and the playbooks are the same methodology in two delivery forms.
+
+The retrieval model is deliberate: routing reliability stops gating domain depth, one
+agent holds the whole picture, and you only pay for the playbooks a box actually needs.
+The direction is to move the `pentest` persona onto retrieval too — a generalist that
+retrieves, run in parallel one-per-host for larger scopes.
+
+Shared *foothold* methodology (turning code execution into a stable session) is handled
+a third way — a partial spliced into every exploitation-capable agent at load time — so
+the generalist and the specialists work a foothold identically.
 
 ## Status
 
