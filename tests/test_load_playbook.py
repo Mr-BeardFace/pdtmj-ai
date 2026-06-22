@@ -3,6 +3,19 @@ The generalist pulls a playbook into context instead of routing to a specialist.
 from tools.load_playbook import load_playbook, _available, TOOL_DEFINITION
 
 
+def test_full_playbook_library_present():
+    avail = set(_available())
+    assert {"active-directory", "web", "database", "network", "cloud"} <= avail
+
+
+def test_every_playbook_loads_and_is_nonempty():
+    for name in ("active-directory", "web", "database", "network", "cloud"):
+        res = load_playbook([name])
+        assert res["loaded"] == [name], name
+        assert len(res["playbooks"]) > 400, name      # real methodology, not a stub
+        assert "services:" not in res["playbooks"], name   # frontmatter stripped
+
+
 def test_active_directory_playbook_available():
     assert "active-directory" in _available()
 
@@ -19,8 +32,8 @@ def test_loads_ad_playbook_whole():
 
 def test_accepts_string_and_comma_forms():
     assert load_playbook("active-directory")["loaded"] == ["active-directory"]
-    assert load_playbook("active-directory, web")["loaded"] == ["active-directory"]  # web n/a yet
-    assert "web" in load_playbook("active-directory, web").get("not_found", [])
+    # multiple domains in one call (a DC that also serves web)
+    assert set(load_playbook("active-directory, web")["loaded"]) == {"active-directory", "web"}
 
 
 def test_unknown_playbook_lists_available():
