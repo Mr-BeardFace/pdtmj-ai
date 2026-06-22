@@ -732,14 +732,15 @@ class PentestApp(App):
 
     @work(thread=True)
     def _refresh_models_async(self) -> None:
-        """Fetch the active provider's real model list (network) and replace the
-        completion pool. Silent on failure (no key / server down) — the placeholder
-        stays. Keeps Tab-complete honest without making the user run /models list."""
+        """Fetch the active provider's real model IDs (network) and replace the
+        completion pool — straight from the API, so local/Ollama names complete too.
+        Silent on failure (no key / server down): the placeholder stays. Keeps
+        Tab-complete honest without making the user run /models list."""
         try:
-            from ui.commands import handle_models_list
-            lines, ok = handle_models_list("")      # "" → active provider
-            if ok:
-                self._capture_models(lines, announce=False)
+            from ui.commands import fetch_model_ids
+            ids = fetch_model_ids("")               # "" → active provider, raw ids
+            if ids:
+                self._known_models = list(dict.fromkeys(ids))
         except Exception:
             pass
 
@@ -1254,7 +1255,9 @@ class PentestApp(App):
                 # the new provider has its own models — refresh the completion pool
                 self._seed_models_for_active_provider()
             elif parsed[0] == "/models list":
-                self._capture_models(lines)
+                # populate completion from the active provider's raw ids (robust to
+                # local/Ollama names the display-text parse would drop)
+                self._refresh_models_async()
 
     def _open_key_set_modal(self) -> None:
         def on_dismiss(key: str | None) -> None:
@@ -1377,7 +1380,7 @@ class PentestApp(App):
             lines, ok = self._cmd_model_list()
             self._show_cmd_output(lines, ok)
             if ok:
-                self._capture_models(lines)
+                self._refresh_models_async()   # populate completion from raw ids
         elif action == "report":
             self._make_report(intent["run_id"])
         elif action in ("pipeline", "run"):

@@ -49,3 +49,24 @@ def test_seed_empty_for_non_anthropic_provider(monkeypatch):
     # no Anthropic defaults bleeding into a different provider's completion
     assert s._known_models == []
     assert s.refreshed == 1
+
+
+def test_fetch_model_ids_keeps_local_ollama_names(monkeypatch):
+    # The bug: local names (llama3.1:8b, mistral) were dropped by the display-text
+    # heuristic. fetch_model_ids takes them straight from the API instead.
+    import ui.commands as cmds
+    monkeypatch.setattr(cmds, "_fetch_models_raw",
+                        lambda p="": ([{"id": "llama3.1:8b"}, {"id": "mistral"},
+                                       {"id": "gemma2:9b"}, {"name": "no-id-skip"}], ""))
+    assert cmds.fetch_model_ids() == ["llama3.1:8b", "mistral", "gemma2:9b"]
+
+
+def test_completion_suggests_local_model_names():
+    # With the pool populated, completion must work for Ollama-style names.
+    from ui.completion import suggest
+    models = ["llama3.1:8b", "mistral", "qwen2.5-coder:7b"]
+    agents = ["pentest/web"]
+    assert suggest("/agent set model global llama", agents, models) == \
+        "/agent set model global llama3.1:8b"
+    assert suggest("/agent set model global mis", agents, models) == \
+        "/agent set model global mistral"

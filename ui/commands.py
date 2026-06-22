@@ -363,35 +363,33 @@ def handle_key_set(args: list[str]) -> tuple[list[str], bool]:
         return [f"Keychain error: {e}"], False
 
 
-def handle_models_list(provider: str = "") -> tuple[list[str], bool]:
-    """List available models for a provider (defaults to the active one). Fully
-    registry-driven: endpoint, auth, and the OpenRouter free-only filter all come
-    from the provider's ProviderSpec, so a new provider is listable for free."""
+def _fetch_models_raw(provider: str = "") -> tuple[list[dict], str]:
+    """Fetch the raw model dicts for a provider (active one if ''). Returns
+    (models, error_message); error is "" on success. The single source of truth for
+    both the displayed list AND tab-completion — registry-driven (endpoint/auth/
+    free-only all come from the ProviderSpec)."""
     from core.config import get
+    from core.llm_client import models_url_for
     provider = (provider or get("active_provider", "anthropic")).lower()
     spec = PROVIDERS.get(provider)
     if spec is None:
-        return [f"Unknown provider: {provider!r}  (supported: {', '.join(_PROVIDER_NAMES)})"], False
-    from core.llm_client import models_url_for
+        return [], f"Unknown provider: {provider!r}  (supported: {', '.join(_PROVIDER_NAMES)})"
     models_url = models_url_for(spec)
     if not models_url:
         if spec.base_url_config:
-            return [f"{spec.label}: no base URL set — run /provider set {provider} <url> first."], False
-        return [f"{spec.label} does not expose a model list."], False
-
+            return [], f"{spec.label}: no base URL set — run /provider set {provider} <url> first."
+        return [], f"{spec.label} does not expose a model list."
     key = resolve_provider_key(spec)
     if not key and not spec.key_optional:
         pfx = spec.key_prefixes[0] if spec.key_prefixes else ""
-        return [f"No {spec.label} API key set. Run: /key set {pfx}..."], False
-
+        return [], f"No {spec.label} API key set. Run: /key set {pfx}..."
     try:
         import httpx
         r = httpx.get(models_url, headers=auth_headers(spec, key or ""), timeout=10)
         r.raise_for_status()
         models = r.json().get("data", [])
     except Exception as e:
-        return [f"API error: {e}"], False
-
+        return [], f"API error: {e}"
     if spec.free_only:
         # Free models: both prompt and completion cost must be "0".
         models = [
@@ -399,11 +397,29 @@ def handle_models_list(provider: str = "") -> tuple[list[str], bool]:
             if str(m.get("pricing", {}).get("prompt", "1"))      == "0"
             and str(m.get("pricing", {}).get("completion", "1")) == "0"
         ]
-        if not models:
-            return [f"No free models found on {spec.label}."], False
+    return models, ""
 
+
+def fetch_model_ids(provider: str = "") -> list[str]:
+    """Raw model ids for tab-completion — straight from the provider API, NOT re-parsed
+    from display text. So local/Ollama names (llama3.1:8b, mistral) work, where the
+    display-text heuristic dropped them."""
+    models, _ = _fetch_models_raw(provider)
+    return [m["id"] for m in models if m.get("id")]
+
+
+def handle_models_list(provider: str = "") -> tuple[list[str], bool]:
+    """List available models for a provider (defaults to the active one)."""
+    from core.config import get
+    provider = (provider or get("active_provider", "anthropic")).lower()
+    spec = PROVIDERS.get(provider)
+    models, err = _fetch_models_raw(provider)
+    if err:
+        return [err], False
     if not models:
-        return [f"No models returned by {spec.label}."], False
+        label = spec.label if spec else provider
+        return [f"No free models found on {label}." if (spec and spec.free_only)
+                else f"No models returned by {label}."], False
 
     header = (f"Free {spec.label} models ({len(models)} total — use these with /agent set model):"
               if spec.free_only else
