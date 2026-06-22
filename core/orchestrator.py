@@ -36,6 +36,7 @@ from tools.shell_exec import TOOL_DEFINITION as SHELL_EXEC_DEF
 from tools.list_shells import TOOL_DEFINITION as LIST_SHELLS_DEF
 from tools.list_scripts import TOOL_DEFINITION as LIST_SCRIPTS_DEF
 from tools.record_persistence import TOOL_DEFINITION as RECORD_PERSIST_DEF
+from tools.load_playbook import TOOL_DEFINITION as LOAD_PLAYBOOK_DEF, load_playbook as _load_playbook_fn
 from core.shells import ShellManager
 
 console = Console()
@@ -52,7 +53,8 @@ SEV_COLOR = {
 _INTERCEPTED = {"annotate_finding", "queue_followup", "record_plan", "register_surface",
                 "record_credential", "record_service", "record_flag", "conclude_engagement",
                 "grep_artifact", "read_artifact", "check_jobs", "list_scripts",
-                "start_listener", "shell_exec", "list_shells", "record_persistence", "wait"}
+                "start_listener", "shell_exec", "list_shells", "record_persistence", "wait",
+                "load_playbook"}
 
 # Tools whose call represents a credential auth attempt (for the auth ledger).
 _AUTH_TOOLS = {"ssh_exec", "netexec", "ftp", "smbclient"}
@@ -903,6 +905,10 @@ class Orchestrator:
         phase = agent.metadata.get("phase", "assessment")
         # Meta-tools available everywhere; plan/surface gated by phase.
         meta_defs = [ANNOTATE_DEF, FOLLOWUP_DEF, GREP_ARTIFACT_DEF, READ_ARTIFACT_DEF]
+        # Retrievable domain methodology — available to any agent that works a target,
+        # so the generalist can pull a playbook instead of routing to a specialist.
+        if phase not in ("planning", "reporting"):
+            meta_defs.append(LOAD_PLAYBOOK_DEF)
         if "record_plan" in agent.scope or phase == "planning":
             meta_defs.append(RECORD_PLAN_DEF)
         # Any agent that actively touches a target may discover a new surface;
@@ -1294,6 +1300,18 @@ class Orchestrator:
                             "type":        "tool_result",
                             "tool_use_id": tb.id,
                             "content":     json.dumps(self._handle_list_scripts(tb.input)),
+                        })
+                        continue
+
+                    if tb.name == "load_playbook":
+                        result = _load_playbook_fn(tb.input.get("names", []))
+                        names = ", ".join(result.get("loaded", [])) or "—"
+                        self._print(f"  [magenta]▣ playbook loaded:[/magenta] {names}")
+                        self._emit("playbook_loaded", names=result.get("loaded", []))
+                        tool_results.append({
+                            "type":        "tool_result",
+                            "tool_use_id": tb.id,
+                            "content":     json.dumps(result),   # whole — not offloaded
                         })
                         continue
 

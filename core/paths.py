@@ -28,6 +28,9 @@ from pathlib import Path
 
 BASE_DIR   = Path(__file__).parent.parent
 AGENTS_DIR = BASE_DIR / "agents"
+# Retrievable domain methodology — pulled on demand via the load_playbook tool,
+# rather than dispatched to as a separate agent.
+PLAYBOOKS_DIR = BASE_DIR / "playbooks"
 RESULTS_DIR = BASE_DIR / "results"
 LOGS_DIR = BASE_DIR / "logs"
 ARTIFACTS_DIR = BASE_DIR / "artifacts"
