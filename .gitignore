@@ -27,6 +27,13 @@ artifacts/
 work/
 *.log
 
+# ── Operator-private provider extensions — NEVER commit ─────────────────────
+# The real home for these is ~/.config/pdtmj-ai/providers_local.py (outside the
+# repo). This is a safety net in case one is ever dropped in the repo dir: a
+# private transport/auth module must never end up in the public tree.
+providers_local.py
+**/providers_local.py
+
 # ── OS / editor cruft ───────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db

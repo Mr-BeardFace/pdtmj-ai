@@ -82,6 +82,8 @@ COMMANDS: list[Command] = [
         Sub("set",  "Switch active provider (local also takes a base URL)",
             f"<{'|'.join(_PROVIDER_NAMES)}> [baseURL]", _PROVIDER_NAMES),
         Sub("list", "Show current provider and key status"),
+        Sub("login", "Authenticate a provider that uses a login flow",
+            "<provider> [code]", _PROVIDER_NAMES),
     )),
     Command("/scope", "Manage the engagement's in-scope targets", (
         Sub("add",    "Approve a target for agent followups", "<target>"),
@@ -925,6 +927,29 @@ def handle_provider_set(args: list[str]) -> tuple[list[str], bool]:
     return out, True
 
 
+def handle_provider_login(args: list[str]) -> tuple[list[str], bool]:
+    """Run a provider's login flow, if it has one. Most providers authenticate with
+    an API key (/key set) and have no login step; a provider only supports this if it
+    registered a `login` callable (an operator-private extension). The callable takes
+    the remaining args and returns (lines, ok), so it can be multi-step (issue a URL on
+    the first call, complete the exchange when a code is pasted on the second)."""
+    if not args:
+        return ["Usage: /provider login <provider> [code]"], False
+    provider = args[0].lower()
+    spec = PROVIDERS.get(provider)
+    if spec is None:
+        return [f"Unknown provider: {provider!r}",
+                f"  Supported: {', '.join(_PROVIDER_NAMES)}"], False
+    login = getattr(spec, "login", None)
+    if not callable(login):
+        return [f"{spec.label} doesn't use a login flow — set an API key with "
+                f"/key set instead."], False
+    try:
+        return login(args[1:])
+    except Exception as e:
+        return [f"{spec.label} login failed: {e}"], False
+
+
 # ── Main dispatcher ───────────────────────────────────────────────────────────
 
 def dispatch(text: str) -> tuple[list[str], bool] | None:
@@ -996,6 +1021,8 @@ def dispatch(text: str) -> tuple[list[str], bool] | None:
         return handle_provider_list()
     if cmd == "/provider set":
         return handle_provider_set(args)
+    if cmd == "/provider login":
+        return handle_provider_login(args)
 
     # Unknown command
     return [
