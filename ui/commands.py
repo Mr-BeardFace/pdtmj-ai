@@ -90,9 +90,9 @@ COMMANDS: list[Command] = [
         Sub("remove", "Take a host/IP/CIDR out of scope (and keep it out)", "<target>"),
         Sub("list",   "Show approved (and excluded) scope targets"),
     )),
-    Command("/exploit", "Enable/disable the exploitation phase (default on)",
-            (Sub("", "Enable/disable the exploitation phase (default on)", "<on|off>",
-                 ("on", "off")),)),
+    Command("/exploit", "Enable/disable the exploitation phase, or the confirm gate",
+            (Sub("", "on|off toggles the phase; 'confirm on|off' toggles the confirm-before-exploit gate",
+                 "<on|off | confirm on|off>", ("on", "off", "confirm")),)),
     Command("/websearch", "Enable/disable web research (web_search + fetch_url)",
             (Sub("", "Enable/disable the web-research tools (web_search + fetch_url)", "<on|off>",
                  ("on", "off")),)),
@@ -593,20 +593,44 @@ def handle_agent_set_temp(args: list[str]) -> tuple[list[str], bool]:
         return [f"Error writing config: {e}"], False
 
 
+_ON_WORDS  = ("on", "true", "enable", "enabled", "yes", "1")
+_OFF_WORDS = ("off", "false", "disable", "disabled", "no", "0")
+
+
 def handle_exploit(args: list[str]) -> tuple[list[str], bool]:
     from core.config import get, set_value
     if not args:
-        cur = get("exploitation_enabled", True)
+        cur     = get("exploitation_enabled", True)
+        confirm = get("confirm_exploitation", True)
         return [f"Exploitation phase is {'ON' if cur else 'OFF'}.",
-                "Use /exploit on  or  /exploit off  to change."], True
+                f"Confirm-before-exploit is {'ON' if confirm else 'OFF'}.",
+                "Use /exploit on|off  to toggle the phase,",
+                "    /exploit confirm on|off  to toggle the confirmation gate."], True
+
+    # /exploit confirm on|off — toggle the confirm-before-exploit gate.
+    if args[0].lower() == "confirm":
+        if len(args) < 2:
+            cur = get("confirm_exploitation", True)
+            return [f"Confirm-before-exploit is {'ON' if cur else 'OFF'}.",
+                    "Use /exploit confirm on|off."], True
+        cval = args[1].lower()
+        if cval in _ON_WORDS:
+            set_value("confirm_exploitation", True)
+            return ["Confirm-before-exploit ENABLED — you'll be asked before each exploit."], True
+        if cval in _OFF_WORDS:
+            set_value("confirm_exploitation", False)
+            return ["Confirm-before-exploit DISABLED — exploits run without prompting."], True
+        return ["Usage: /exploit confirm on|off"], False
+
+    # /exploit on|off — toggle the exploitation phase.
     val = args[0].lower()
-    if val in ("on", "true", "enable", "enabled", "yes", "1"):
+    if val in _ON_WORDS:
         set_value("exploitation_enabled", True)
         return ["Exploitation ENABLED — plan → exploit → validate will run."], True
-    if val in ("off", "false", "disable", "disabled", "no", "0"):
+    if val in _OFF_WORDS:
         set_value("exploitation_enabled", False)
         return ["Exploitation DISABLED — assessment only (enumeration + reporting)."], True
-    return ["Usage: /exploit on|off"], False
+    return ["Usage: /exploit on|off  |  /exploit confirm on|off"], False
 
 
 def handle_websearch(args: list[str]) -> tuple[list[str], bool]:
@@ -765,7 +789,8 @@ def handle_info() -> tuple[list[str], bool]:
         _row("Parallel",
              (f"ON  ·  {cfg.get('max_parallel_agents', 3)} agents" if cfg.get("parallel_enabled", False)
               else "OFF"), "(/parallel on|off)"),
-        _row("Confirm exploit", str(cfg.get("confirm_exploitation", True))),
+        _row("Confirm exploit", "ON" if cfg.get("confirm_exploitation", True) else "OFF",
+             "(/exploit confirm on|off)"),
         _row("Debug capture", "ON" if cfg.get("debug_capture", False) else "OFF", "(/debug on|off)"),
         "",
         "  API keys:",
