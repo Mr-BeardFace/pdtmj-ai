@@ -3,10 +3,10 @@
 Import from here instead of computing paths in main.py or ui/app.py.
 
 Per-assessment layout (2.0): everything an assessment produces lives under ONE
-folder — `assessments/assessment_<id>_<target>/` — instead of being scattered
+folder — `assessments/assessment_<id>_<datetime>/` — instead of being scattered
 across results/, logs/, artifacts/, and work/:
 
-    assessments/assessment_<id>_<target>/
+    assessments/assessment_<id>_<datetime>/
         assessment.json      engagement record (runs, findings, cost)
         state.json           masked panel snapshot (for /load)
         engagement.log       human-readable session log
@@ -24,6 +24,7 @@ single runs, tests) those fall back to the legacy top-level dirs.
 import os
 import re
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 BASE_DIR   = Path(__file__).parent.parent
@@ -62,10 +63,31 @@ def _safe(part: str) -> str:
     return _SAFE_RE.sub("_", part or "")[:40]
 
 
+def _existing_assessment_dir(assessment_id: str) -> Path | None:
+    """An already-created folder for this id, if any — so resume/idempotent calls
+    reuse the same folder (and don't mint a new timestamp). Matches both the new
+    `assessment_<id>_<datetime>` layout and older `assessment_<id>[_<target>]` ones;
+    the trailing `_` after the id keeps a short id from matching a longer one."""
+    if not ASSESSMENTS_DIR.exists():
+        return None
+    safe_id = _safe(assessment_id)
+    for d in sorted(ASSESSMENTS_DIR.glob(f"assessment_{safe_id}_*")):
+        if d.is_dir():
+            return d
+    legacy = ASSESSMENTS_DIR / f"assessment_{safe_id}"   # no-suffix legacy folder
+    return legacy if legacy.is_dir() else None
+
+
 def assessment_dirname(assessment_id: str, target: str = "") -> str:
-    base = f"assessment_{_safe(assessment_id)}"
-    t = _safe(target)
-    return f"{base}_{t}" if t else base
+    """Folder name for an assessment: `assessment_<id>_<YYYY-MM-DD_HHMM>`. The start
+    time is stamped once, on first creation; a later call for the same id reuses the
+    existing folder's name (resume-safe). `target` is accepted for call-site
+    compatibility but no longer part of the name. Colon-free → Windows-safe."""
+    existing = _existing_assessment_dir(assessment_id)
+    if existing is not None:
+        return existing.name
+    ts = datetime.now().strftime("%Y-%m-%d_%H%M")
+    return f"assessment_{_safe(assessment_id)}_{ts}"
 
 
 def set_assessment_dir(assessment_id: str, target: str = "") -> Path:
