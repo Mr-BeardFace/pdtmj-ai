@@ -143,6 +143,10 @@ _DEFAULTS: dict[str, Any] = {
     # packages. On by default — the agent runs on your authorized test box.
     "allow_package_install": True,
 
+    # Full-transcript debug capture (off unless /config debug_capture on). Writes
+    # every LLM request/response/command to llm_debug.log in the engagement dir.
+    "debug_capture": False,
+
     # ── hashcat (offline cracking, runs as a background job) ──────────────────
     "hashcat_wordlist": "/usr/share/wordlists/rockyou.txt",
     "hashcat_rules": "/usr/share/hashcat/rules/OneRuleToRuleThemAll.rule",

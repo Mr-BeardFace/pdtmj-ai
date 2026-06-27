@@ -31,9 +31,12 @@ def test_info_overview():
     lines, ok = handle_info()
     assert ok is True
     blob = "\n".join(lines)
-    for label in ("Persona", "Provider", "Global model", "Parallel", "Debug capture", "API keys"):
+    # The fixed anchors are always shown.
+    for label in ("Persona", "Provider", "Global model",
+                  "Exploitation", "Reporting", "Confirm exploit"):
         assert label in blob
-    # Removed rows should no longer appear.
+    # No command hints, and the old always-on rows are gone from the anchor block.
+    assert "(/persona set)" not in blob and "(/exploit" not in blob
     assert "Loop caps" not in blob and "LLM routing" not in blob
 
 

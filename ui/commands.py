@@ -16,6 +16,11 @@ from core.llm_client import (
 # completions and validation so a new provider needs no edits here.
 _PROVIDER_NAMES = tuple(PROVIDERS)
 
+# /config completions — every setting key plus the group names, derived from the
+# settings registry so a new setting is tab-completable with no edits here.
+from core.settings import all_keys as _setting_keys, GROUPS as _setting_groups
+_CONFIG_COMPLETIONS = _setting_keys() + tuple(g.lower() for g in _setting_groups)
+
 # ── Command registry ──────────────────────────────────────────────────────────
 # Single source of truth. Parsing, tab-completion, the grouped /help overview,
 # and per-command help (/help <cmd>) are all derived from this — so adding or
@@ -49,8 +54,11 @@ class Command:
 
 
 COMMANDS: list[Command] = [
-    Command("/info", "Show all current settings — persona, provider, models, keys, loop caps",
-            (Sub("", "Show all current settings — persona, provider, models, keys, loop caps"),)),
+    Command("/info", "Snapshot: anchors, anything off-default, and your keys",
+            (Sub("", "Snapshot of the active config — anchors + changed-from-default + keys"),)),
+    Command("/config", "View or change any setting (the single place to configure)",
+            (Sub("", "List all (grouped), /config <group>, /config <key>, or /config <key> <value>",
+                 "[key|group] [value]", _CONFIG_COMPLETIONS),)),
     Command("/key", "Manage API keys (stored in the system keychain)", (
         Sub("set",   "Store a key (provider auto-detected, or name it explicitly)", "[provider] <api-key>"),
         Sub("list",  "Show API key status for all providers"),
@@ -214,7 +222,7 @@ def usage(cmd_path: str) -> str:
 # Command families for the grouped /help overview. Every command name MUST appear
 # in exactly one group (a startup check in _overview_lines guards against drift).
 _HELP_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Setup & config",        ("/info", "/key", "/models", "/agent", "/persona", "/provider")),
+    ("Setup & config",        ("/info", "/config", "/key", "/models", "/agent", "/persona", "/provider")),
     ("Engagement setup",      ("/scope", "/cred", "/exploit", "/websearch", "/turns", "/parallel", "/debug")),
     ("Control (while running)", ("/abort", "/skip", "/pause", "/continue", "/end", "/job")),
     ("Assessments & reports", ("/assessment", "/report")),
@@ -761,50 +769,142 @@ def handle_turns(args: list[str]) -> tuple[list[str], bool]:
             "Applies to the next engagement you start."], True
 
 
+def _config_list(group: str | None = None) -> list[str]:
+    from core import settings
+    groups = [group] if group else list(settings.GROUPS)
+    shown = [s for g in groups for s in settings.settings_in_group(g)]
+    kw = max((len(s.key) for s in shown), default=10)
+    lines = ["Settings  —  /config <key> <value> to change · /config <key> for detail", ""]
+    for g in groups:
+        gs = settings.settings_in_group(g)
+        if not gs:
+            continue
+        lines.append(f"  {g}")
+        for s in gs:
+            star = "*" if settings.is_changed(s) else " "
+            val = settings.format_value(settings.current_value(s))
+            lines.append(f"   {star} {s.key:<{kw}}  {val:<7}  {s.desc}")
+        lines.append("")
+    lines.append("  * = changed from default")
+    return lines
+
+
+def _config_show(s) -> list[str]:
+    from core import settings
+    val  = settings.format_value(settings.current_value(s))
+    dflt = settings.format_value(s.default)
+    if s.choices:
+        typ = " | ".join(s.choices)
+    elif s.type == "bool":
+        typ = "on | off"
+    elif s.type == "int":
+        typ = "integer" + (f" ≥ {s.minimum}" if s.minimum is not None else "") + (" or null" if s.allow_null else "")
+    else:
+        typ = "text" + (" or null" if s.allow_null else "")
+    return [
+        f"  {s.key} = {val}",
+        f"    {s.desc}",
+        f"    Type: {typ}     Default: {dflt}     Group: {s.group}",
+        f"    Change with: /config {s.key} <value>",
+    ]
+
+
+def _config_unknown(name: str) -> list[str]:
+    import difflib
+    from core import settings
+    out = [f"Unknown setting: {name!r}"]
+    near = difflib.get_close_matches(name, settings.all_keys(), n=3)
+    if near:
+        out.append("  Did you mean: " + ", ".join(near) + "?")
+    out.append("  /config to list everything, or /config <group>.")
+    return out
+
+
+def handle_config(args: list[str]) -> tuple[list[str], bool]:
+    """The single place to view/change scalar settings. /config lists all (grouped),
+    /config <group> filters, /config <key> shows detail, /config <key> <value> sets."""
+    from core import settings
+    from core.config import set_value
+    if not args:
+        return _config_list(), True
+
+    first = args[0]
+    if len(args) == 1:
+        if first.lower() in (g.lower() for g in settings.GROUPS):
+            return _config_list(first), True
+        s = settings.get_setting(first)
+        if s:
+            return _config_show(s), True
+        return _config_unknown(first), False
+
+    # /config <key> <value...>
+    s = settings.get_setting(first)
+    if not s:
+        return _config_unknown(first), False
+    value, err = settings.coerce(s, " ".join(args[1:]))
+    if err:
+        return [err], False
+    old = settings.current_value(s)
+    set_value(s.key, value)
+    return [f"{s.key} = {settings.format_value(value)}   "
+            f"(was {settings.format_value(old)})"], True
+
+
 def handle_info() -> tuple[list[str], bool]:
-    """Single-screen overview of the active configuration."""
+    """A signal-only snapshot: the fixed anchors you always want to see, plus
+    anything moved off its default and the keys you actually have. Everything at
+    its default stays hidden — to browse/change all settings, use /config."""
     from core.config import load_config, get_global_model
+    from core import settings
 
     cfg      = load_config()
     persona  = cfg.get("active_persona", "pentest")
     provider = cfg.get("active_provider", "anthropic")
     gmodel   = get_global_model()
 
-    def _row(label: str, value: str, hint: str = "") -> str:
-        # Fixed label + value columns so the trailing command hints line up
-        # regardless of how long the value is.
-        line = f"  {label:<17}{value:<24}"
-        return (line + hint).rstrip()
+    def _row(label: str, value: str) -> str:
+        return f"  {label:<17}{value}".rstrip()
 
+    def _on(key: str, default: bool) -> str:
+        return "ON" if cfg.get(key, default) else "OFF"
+
+    # Fixed anchors — always shown, even at default. No command hints.
     lines = [
         "Current configuration",
         "",
-        _row("Persona", persona, "(/persona set)"),
-        _row("Provider", provider, "(/provider set)"),
-        _row("Global model", gmodel or "— (per-agent defaults)", "(/agent set model global)"),
-        _row("Max turns/agent", _fmt_turns(int(cfg.get("max_turns_default", 60))), "(/turns <n|off>)"),
-        _row("Exploitation", "ON" if cfg.get("exploitation_enabled", True) else "OFF", "(/exploit on|off)"),
-        _row("Reporting", "ON" if cfg.get("reporting_enabled", True) else "OFF", "(/report on|off)"),
-        _row("Web research", "ON" if cfg.get("allow_web_search", True) else "OFF", "(/websearch on|off)"),
-        _row("Parallel",
-             (f"ON  ·  {cfg.get('max_parallel_agents', 3)} agents" if cfg.get("parallel_enabled", False)
-              else "OFF"), "(/parallel on|off)"),
-        _row("Confirm exploit", "ON" if cfg.get("confirm_exploitation", True) else "OFF",
-             "(/exploit confirm on|off)"),
-        _row("Debug capture", "ON" if cfg.get("debug_capture", False) else "OFF", "(/debug on|off)"),
-        "",
-        "  API keys:",
-        *(f"    {spec.label:<12} {_masked_key_source(spec)}" for spec in PROVIDERS.values()),
-        "",
+        _row("Persona", persona),
+        _row("Provider", provider),
+        _row("Global model", gmodel or "— (per-agent defaults)"),
+        _row("Exploitation", _on("exploitation_enabled", True)),
+        _row("Reporting", _on("reporting_enabled", True)),
+        _row("Confirm exploit", _on("confirm_exploitation", True)),
     ]
 
+    # Anything moved off its default (excluding the always-shown anchors).
+    changed = [s for s in settings.SETTINGS
+               if not s.info_static and settings.is_changed(s)]
+    if changed:
+        lines += ["", "  Changed from defaults:"]
+        kw = max(len(s.label) for s in changed)
+        for s in changed:
+            val  = settings.format_value(settings.current_value(s))
+            dflt = settings.format_value(s.default)
+            lines.append(f"    {s.label:<{kw}}  {val:<10} (default {dflt})")
+
+    # Per-agent model overrides — only when set.
     overrides = {k: v for k, v in (cfg.get("agent_models", {}) or {}).items() if k != "global"}
     if overrides:
-        lines.append("  Per-agent model overrides:")
+        lines += ["", "  Per-agent model overrides:"]
         for name, model in overrides.items():
             lines.append(f"    {name:<28} → {model}")
-    else:
-        lines.append("  Per-agent model overrides: none")
+
+    # API keys — populated providers only.
+    keyed = [(spec.label, _masked_key_source(spec))
+             for spec in PROVIDERS.values() if resolve_provider_key(spec)]
+    if keyed:
+        lines += ["", "  API keys:"]
+        for label, src in keyed:
+            lines.append(f"    {label:<12} {src}")
 
     return lines, True
 
@@ -1027,6 +1127,8 @@ def dispatch(text: str) -> tuple[list[str], bool] | None:
         return handle_help(args)
     if cmd == "/info":
         return handle_info()
+    if cmd == "/config":
+        return handle_config(args)
     if cmd == "/exploit":
         return handle_exploit(args)
     if cmd == "/websearch":
