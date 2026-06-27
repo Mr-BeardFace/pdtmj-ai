@@ -31,8 +31,10 @@ def test_info_overview():
     lines, ok = handle_info()
     assert ok is True
     blob = "\n".join(lines)
-    for label in ("Persona", "Provider", "Global model", "Loop caps", "API keys"):
+    for label in ("Persona", "Provider", "Global model", "Parallel", "Debug capture", "API keys"):
         assert label in blob
+    # Removed rows should no longer appear.
+    assert "Loop caps" not in blob and "LLM routing" not in blob
 
 
 def test_info_routed_through_dispatch():

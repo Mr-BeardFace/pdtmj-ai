@@ -96,6 +96,9 @@ COMMANDS: list[Command] = [
     Command("/websearch", "Enable/disable web research (web_search + fetch_url)",
             (Sub("", "Enable/disable the web-research tools (web_search + fetch_url)", "<on|off>",
                  ("on", "off")),)),
+    Command("/debug", "Capture full LLM requests/responses/commands to a log (default off)",
+            (Sub("", "Save full request->response->command transcript to the engagement dir",
+                 "<on|off>", ("on", "off")),)),
     Command("/turns", "Set the per-agent turn budget (default 60; off = unlimited)",
             (Sub("", "Set the per-agent turn budget (default 60; off = unlimited)", "<n|off>"),)),
     Command("/parallel", "Parallel mode: work surfaces + hypotheses concurrently (default off)",
@@ -212,7 +215,7 @@ def usage(cmd_path: str) -> str:
 # in exactly one group (a startup check in _overview_lines guards against drift).
 _HELP_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Setup & config",        ("/info", "/key", "/models", "/agent", "/persona", "/provider")),
-    ("Engagement setup",      ("/scope", "/cred", "/exploit", "/websearch", "/turns", "/parallel")),
+    ("Engagement setup",      ("/scope", "/cred", "/exploit", "/websearch", "/turns", "/parallel", "/debug")),
     ("Control (while running)", ("/abort", "/skip", "/pause", "/continue", "/end", "/job")),
     ("Assessments & reports", ("/assessment", "/report")),
     ("Session",               ("/clear", "/help", "/exit", "/quit")),
@@ -623,6 +626,29 @@ def handle_websearch(args: list[str]) -> tuple[list[str], bool]:
     return ["Usage: /websearch on|off"], False
 
 
+def handle_debug(args: list[str]) -> tuple[list[str], bool]:
+    """Toggle full-transcript debug capture. When on, every agent turn (full request,
+    full response, every command call) is appended to llm_debug.log in the engagement's
+    results dir. Takes effect on the next agent run."""
+    from core.config import get, set_value
+    if not args:
+        cur = get("debug_capture", False)
+        return [f"Debug capture is {'ON' if cur else 'OFF'}.",
+                "Use /debug on | /debug off.",
+                "  Writes full request → response → command transcript to",
+                "  <engagement results dir>/llm_debug.log (next agent run).",
+                "  NOTE: the transcript is unredacted — it contains real secrets/loot in plaintext."], True
+    val = args[0].lower()
+    if val in ("on", "true", "enable", "enabled", "yes", "1"):
+        set_value("debug_capture", True)
+        return ["Debug capture ENABLED — full transcripts go to llm_debug.log in the engagement dir.",
+                "  Heads-up: unredacted (real secrets in plaintext). Takes effect next agent run."], True
+    if val in ("off", "false", "disable", "disabled", "no", "0"):
+        set_value("debug_capture", False)
+        return ["Debug capture DISABLED."], True
+    return ["Usage: /debug on|off"], False
+
+
 def handle_report(args: list[str]) -> tuple[list[str], bool]:
     """Toggle auto-reporting at engagement end. (A bare /report renders one NOW, and
     /report regen re-runs the report agent on a loaded assessment; both are handled
@@ -736,12 +762,11 @@ def handle_info() -> tuple[list[str], bool]:
         _row("Exploitation", "ON" if cfg.get("exploitation_enabled", True) else "OFF", "(/exploit on|off)"),
         _row("Reporting", "ON" if cfg.get("reporting_enabled", True) else "OFF", "(/report on|off)"),
         _row("Web research", "ON" if cfg.get("allow_web_search", True) else "OFF", "(/websearch on|off)"),
+        _row("Parallel",
+             (f"ON  ·  {cfg.get('max_parallel_agents', 3)} agents" if cfg.get("parallel_enabled", False)
+              else "OFF"), "(/parallel on|off)"),
         _row("Confirm exploit", str(cfg.get("confirm_exploitation", True))),
-        _row("Loop caps", f"{cfg.get('max_cycles_per_surface', 4)} cycles/surface"
-                           f"  ·  {cfg.get('max_total_cycles', 40)} total"
-                           f"  ·  {cfg.get('max_surfaces', 50)} surfaces"),
-        _row("LLM routing", f"{'ON' if cfg.get('llm_routing', True) else 'OFF (keyword heuristics)'}"
-                            f"  ·  loop nudge @ {cfg.get('repeat_nudge_threshold', 3)} repeats"),
+        _row("Debug capture", "ON" if cfg.get("debug_capture", False) else "OFF", "(/debug on|off)"),
         "",
         "  API keys:",
         *(f"    {spec.label:<12} {_masked_key_source(spec)}" for spec in PROVIDERS.values()),
@@ -981,6 +1006,8 @@ def dispatch(text: str) -> tuple[list[str], bool] | None:
         return handle_exploit(args)
     if cmd == "/websearch":
         return handle_websearch(args)
+    if cmd == "/debug":
+        return handle_debug(args)
     if cmd == "/parallel":
         return handle_parallel(args)
     if cmd == "/turns":

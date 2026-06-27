@@ -896,7 +896,13 @@ class Orchestrator:
         ))
         self._emit("agent_start", agent=agent.name, target=target, run_id=run.id)
 
-        from core.config import get_model_for_agent, get_global_model, get_temperature_for_agent
+        from core.config import (get_model_for_agent, get_global_model,
+                                  get_temperature_for_agent, get as _config_get)
+        # Full-transcript debug capture (off unless /debug on). Re-read per agent so a
+        # mid-engagement toggle takes effect on the next agent; appended to one file.
+        from core import debug_capture
+        debug_capture.configure(self.results_dir / "llm_debug.log",
+                                bool(_config_get("debug_capture", False)))
         effective_model = get_model_for_agent(agent.name) or get_global_model() or agent.model
         # Per-agent sampling temperature (None → provider default). Resolved once per run.
         effective_temperature = get_temperature_for_agent(agent.name)
@@ -1070,6 +1076,8 @@ class Orchestrator:
                     run.status = "concluded"
                     break
 
+                debug_capture.log_request(agent.name, _turn, effective_model,
+                                          system, messages, tool_schemas)
                 response = self.llm.run(
                     model=effective_model,
                     system=system,
@@ -1077,6 +1085,7 @@ class Orchestrator:
                     tools=tool_schemas,
                     temperature=effective_temperature,
                 )
+                debug_capture.log_response(agent.name, _turn, response)
 
                 usage = response.usage
                 run.token_usage.input_tokens       += usage.input_tokens
@@ -1136,6 +1145,7 @@ class Orchestrator:
                     # Register any secret carried in this call's inputs BEFORE any
                     # emit/log in this iteration, so it is masked from first sight.
                     self._register_input_secrets(tb.input, tb.name)
+                    debug_capture.log_command(agent.name, _turn, tb.name, tb.input)
 
                     # ── intercepted tools ──────────────────────────────────────
                     if tb.name == "annotate_finding":
