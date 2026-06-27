@@ -738,8 +738,9 @@ class Orchestrator:
             res = self._shells.exec(sid, cmd, timeout=inputs.get("timeout", 15))
             if "output" in res and not res.get("error"):
                 self._shell_exec_ok += 1          # active foothold work → budget progress
-                if self.state:                    # driving a shell = confirmed exec
+                if self.state:                    # driving a shell = confirmed + stabilized exec
                     self.state.note_exec_confirmed()
+                    self.state.note_shell_confirmed()
             self._emit("shell_exec", session_id=sid, command=cmd,
                        summary=(res.get("output", "")[:120] if "output" in res else res.get("error", "")))
             return res
@@ -766,6 +767,7 @@ class Orchestrator:
                 cleanup=inputs.get("cleanup", ""), os=inputs.get("os", ""),
                 source_agent=source_agent,
             )
+            self.state.note_persistence_recorded()   # foothold made durable → clears stabilize nudge
             self._print(f"  [bold yellow][change][/bold yellow] {kind} @ {host}")
             self._emit("persistence", kind=kind, host=host, detail=item.detail,
                        before=item.before, cleanup=item.cleanup, os=item.os)
@@ -1006,6 +1008,11 @@ class Orchestrator:
         # Foothold-banking: turns after exec is confirmed to allow before nudging to
         # annotate it. Small — confirm exec, then bank within a turn or two.
         foothold_bank_after = int(_cfg_get("foothold_bank_nudge_after_turns", 2) or 0)
+        # Foothold-stabilization: turns of exec-confirmed-but-not-stabilized before
+        # nudging to convert one-shot exec into a stable channel + record_persistence;
+        # re-fires every `stab_repeat` turns while still unstabilized.
+        stab_after  = int(_cfg_get("foothold_stabilize_nudge_after_turns", 3) or 0)
+        stab_repeat = int(_cfg_get("foothold_stabilize_repeat_turns", 5) or 0)
         # Last substantive agent text — becomes the handoff to the next agent if the
         # run ends without a clean text-only close-out (e.g. hits the turn cap).
         last_text = ""
@@ -1593,6 +1600,34 @@ class Orchestrator:
                                 "nothing recorded. Call annotate_finding for the code-execution/access NOW "
                                 "— verified=true, with the command and its output as evidence — before "
                                 "continuing. Put any credentials in record_credential, not the finding.]"
+                            ),
+                        })
+
+                    # Foothold-stabilization nudge (engagement-level) — exec is proven
+                    # but never converted into a stable channel. This is the costly grind:
+                    # re-driving fragile one-shot exec (a command at a time) to read files
+                    # it could read in seconds from a shell. Fires while unstabilized and
+                    # re-fires, because banking the finding does NOT clear it (a recorded
+                    # finding with no stable access still loses the foothold on a dropped
+                    # connection / turn cap). Cleared by a driven shell_exec OR persistence.
+                    stab_n = self.state.stabilize_due(stab_after, stab_repeat)
+                    if stab_n:
+                        self._print("  [yellow]🔗 stabilize nudge — exec confirmed, no stable channel[/yellow]")
+                        self._emit("stabilize_nudge", turns=stab_n)
+                        tool_results.append({
+                            "type": "text",
+                            "text": (
+                                "[Engine notice: you have CODE EXECUTION but have not stabilized it — no "
+                                "command has been driven through a live shell and no persistence is recorded. "
+                                "Stop re-running one-shot exec to read things a command at a time; that "
+                                "re-achieves access you already have and burns the turn budget. CAPITALIZE "
+                                "NOW: (1) convert to a stable channel — catch a reverse shell (start_listener "
+                                "then trigger it; if the channel runs no shell use `bash -c` or stage to disk), "
+                                "or drop an SSH key to authorized_keys, or plant a webshell — and CONFIRM it "
+                                "with shell_exec; (2) record_persistence for what you planted (so a dropped "
+                                "connection doesn't cost the foothold). If outbound is filtered, prefer the "
+                                "SSH-key route over a reverse shell. Only after a stable channel exists should "
+                                "you continue local enumeration / privesc.]"
                             ),
                         })
 
