@@ -10,17 +10,17 @@ _CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
 _DEFAULTS: dict[str, Any] = {
     "confirm_exploitation": True,
     # Master switch for the exploitation phase (plan → exploit → validate). On by
-    # default for all personas; toggle with /exploit on|off.
+    # default for all personas; toggle with /config exploitation_enabled on|off.
     "exploitation_enabled": True,
     # Master switch for the reporting phase (the report-writer agent + HTML). On by
-    # default; toggle with /report on|off. Off is handy during testing so a run
+    # default; toggle with /config reporting_enabled on|off. Off is handy during testing so a run
     # doesn't spend tokens/time synthesizing a report — `/report` still generates
     # one on demand, and findings/state are saved either way.
     "reporting_enabled": True,
     "global_model": None,
     # Per-agent turn budget (one LLM round = one turn). 0 = unlimited (no cap —
     # an agent runs until it stops on its own; use with care, it can run long).
-    # Change at runtime with /turns <n|off>.
+    # Change at runtime with /config max_turns_default <n> (0 = unlimited).
     "max_turns_default": 60,
     # Treat the turn budget as a SLIDING "turns since last progress" window rather
     # than a hard total: every turn that banks a finding/credential/flag, catches a
@@ -60,7 +60,7 @@ _DEFAULTS: dict[str, Any] = {
     # Master switch. OFF → the engagement runs exactly as before (one surface,
     # one agent at a time). ON → independent surfaces are worked concurrently and
     # the exploit phase fans out bounded "prove or refute" workers across the top
-    # plan items, first solve cancelling the rest. Toggle with /parallel on|off.
+    # plan items, first solve cancelling the rest. Toggle with /config parallel_enabled on|off.
     "parallel_enabled": False,
     # Global ceiling on concurrent LLM agent loops, shared across BOTH parallel
     # layers (surfaces × hypotheses) so nesting can't multiply into a quota

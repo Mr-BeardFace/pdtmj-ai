@@ -98,21 +98,6 @@ COMMANDS: list[Command] = [
         Sub("remove", "Take a host/IP/CIDR out of scope (and keep it out)", "<target>"),
         Sub("list",   "Show approved (and excluded) scope targets"),
     )),
-    Command("/exploit", "Enable/disable the exploitation phase, or the confirm gate",
-            (Sub("", "on|off toggles the phase; 'confirm on|off' toggles the confirm-before-exploit gate",
-                 "<on|off | confirm on|off>", ("on", "off", "confirm")),)),
-    Command("/websearch", "Enable/disable web research (web_search + fetch_url)",
-            (Sub("", "Enable/disable the web-research tools (web_search + fetch_url)", "<on|off>",
-                 ("on", "off")),)),
-    Command("/debug", "Capture full LLM requests/responses/commands to a log (default off)",
-            (Sub("", "Save full request->response->command transcript to the engagement dir",
-                 "<on|off>", ("on", "off")),)),
-    Command("/turns", "Set the per-agent turn budget (default 60; off = unlimited)",
-            (Sub("", "Set the per-agent turn budget (default 60; off = unlimited)", "<n|off>"),)),
-    Command("/parallel", "Parallel mode: work surfaces + hypotheses concurrently (default off)",
-            (Sub("", "on|off|status, or set a fan-out width: agents|surfaces|hypotheses <n>",
-                 "<on|off|status|agents N|surfaces N|hypotheses N>",
-                 ("on", "off", "status", "agents", "surfaces", "hypotheses")),)),
     Command("/job", "List running background jobs (and recent finished) or kill one by id",
             (Sub("list", "List running jobs plus the last few finished"),
              Sub("kill", "Terminate a running job and its process by id (or 'all')", "<id|all>",
@@ -132,10 +117,10 @@ COMMANDS: list[Command] = [
         Sub("load", "Reload a saved assessment into the panels by id", "<assessment-id>"),
         Sub("new",  "Clear the board to start a fresh assessment"),
     )),
-    Command("/report", "Generate a report now, regen to re-synthesize, or on|off to toggle",
-            (Sub("", "No arg re-renders now; regen re-runs the report agent on a loaded "
-                 "assessment; on|off toggles auto-reporting at engagement end",
-                 "[on|off|regen]", ("on", "off", "regen")),)),
+    Command("/report", "Generate a report now, or regen to re-synthesize a loaded assessment",
+            (Sub("", "No arg re-renders the report now; regen re-runs the report agent on a "
+                 "loaded assessment. (Toggle auto-reporting with /config reporting_enabled.)",
+                 "[regen]", ("regen",)),)),
     Command("/clear", "Reset to a blank window — panels, agent log, and token meter (saved files on disk are kept)",
             (Sub("", "Reset to a blank window — panels, agent log, and token meter (saved files on disk are kept)"),)),
     Command("/help", "Show this help — '/help <command>' for one command in detail",
@@ -223,7 +208,7 @@ def usage(cmd_path: str) -> str:
 # in exactly one group (a startup check in _overview_lines guards against drift).
 _HELP_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Setup & config",        ("/info", "/config", "/key", "/models", "/agent", "/persona", "/provider")),
-    ("Engagement setup",      ("/scope", "/cred", "/exploit", "/websearch", "/turns", "/parallel", "/debug")),
+    ("Engagement setup",      ("/scope", "/cred")),
     ("Control (while running)", ("/abort", "/skip", "/pause", "/continue", "/end", "/job")),
     ("Assessments & reports", ("/assessment", "/report")),
     ("Session",               ("/clear", "/help", "/exit", "/quit")),
@@ -252,7 +237,7 @@ def _overview_lines() -> list[str]:
             lines.append(f"  [cyan]{_form(c):<{width}}[/cyan] {c.summary}")
         lines.append("")
     lines += [
-        "[dim]/help <command>[/dim]  — detail + arguments for one command  (e.g. /help parallel)",
+        "[dim]/help <command>[/dim]  — detail + arguments for one command  (e.g. /help config)",
         "While an agent runs, anything without / is sent to the agent as an instruction.",
         "",
         "Keyboard shortcuts:",
@@ -599,174 +584,6 @@ def handle_agent_set_temp(args: list[str]) -> tuple[list[str], bool]:
         return [f"Temperature for '{agent_name}' set to {t}."], True
     except Exception as e:
         return [f"Error writing config: {e}"], False
-
-
-_ON_WORDS  = ("on", "true", "enable", "enabled", "yes", "1")
-_OFF_WORDS = ("off", "false", "disable", "disabled", "no", "0")
-
-
-def handle_exploit(args: list[str]) -> tuple[list[str], bool]:
-    from core.config import get, set_value
-    if not args:
-        cur     = get("exploitation_enabled", True)
-        confirm = get("confirm_exploitation", True)
-        return [f"Exploitation phase is {'ON' if cur else 'OFF'}.",
-                f"Confirm-before-exploit is {'ON' if confirm else 'OFF'}.",
-                "Use /exploit on|off  to toggle the phase,",
-                "    /exploit confirm on|off  to toggle the confirmation gate."], True
-
-    # /exploit confirm on|off — toggle the confirm-before-exploit gate.
-    if args[0].lower() == "confirm":
-        if len(args) < 2:
-            cur = get("confirm_exploitation", True)
-            return [f"Confirm-before-exploit is {'ON' if cur else 'OFF'}.",
-                    "Use /exploit confirm on|off."], True
-        cval = args[1].lower()
-        if cval in _ON_WORDS:
-            set_value("confirm_exploitation", True)
-            return ["Confirm-before-exploit ENABLED — you'll be asked before each exploit."], True
-        if cval in _OFF_WORDS:
-            set_value("confirm_exploitation", False)
-            return ["Confirm-before-exploit DISABLED — exploits run without prompting."], True
-        return ["Usage: /exploit confirm on|off"], False
-
-    # /exploit on|off — toggle the exploitation phase.
-    val = args[0].lower()
-    if val in _ON_WORDS:
-        set_value("exploitation_enabled", True)
-        return ["Exploitation ENABLED — plan → exploit → validate will run."], True
-    if val in _OFF_WORDS:
-        set_value("exploitation_enabled", False)
-        return ["Exploitation DISABLED — assessment only (enumeration + reporting)."], True
-    return ["Usage: /exploit on|off  |  /exploit confirm on|off"], False
-
-
-def handle_websearch(args: list[str]) -> tuple[list[str], bool]:
-    """Enable/disable the web-research tools (web_search + fetch_url) for all agents."""
-    from core.config import get, set_value
-    if not args:
-        cur = get("allow_web_search", True)
-        return [f"Web research (web_search + fetch_url) is {'ON' if cur else 'OFF'}.",
-                "Use /websearch on | /websearch off."], True
-    val = args[0].lower()
-    if val in ("on", "true", "enable", "enabled", "yes", "1"):
-        set_value("allow_web_search", True)
-        return ["Web research ENABLED — web_search + fetch_url are available."], True
-    if val in ("off", "false", "disable", "disabled", "no", "0"):
-        set_value("allow_web_search", False)
-        return ["Web research DISABLED — web_search + fetch_url blocked for all agents."], True
-    return ["Usage: /websearch on|off"], False
-
-
-def handle_debug(args: list[str]) -> tuple[list[str], bool]:
-    """Toggle full-transcript debug capture. When on, every agent turn (full request,
-    full response, every command call) is appended to llm_debug.log in the engagement's
-    results dir. Takes effect on the next agent run."""
-    from core.config import get, set_value
-    if not args:
-        cur = get("debug_capture", False)
-        return [f"Debug capture is {'ON' if cur else 'OFF'}.",
-                "Use /debug on | /debug off.",
-                "  Writes full request → response → command transcript to",
-                "  <engagement results dir>/llm_debug.log (next agent run).",
-                "  NOTE: the transcript is unredacted — it contains real secrets/loot in plaintext."], True
-    val = args[0].lower()
-    if val in ("on", "true", "enable", "enabled", "yes", "1"):
-        set_value("debug_capture", True)
-        return ["Debug capture ENABLED — full transcripts go to llm_debug.log in the engagement dir.",
-                "  Heads-up: unredacted (real secrets in plaintext). Takes effect next agent run."], True
-    if val in ("off", "false", "disable", "disabled", "no", "0"):
-        set_value("debug_capture", False)
-        return ["Debug capture DISABLED."], True
-    return ["Usage: /debug on|off"], False
-
-
-def handle_report(args: list[str]) -> tuple[list[str], bool]:
-    """Toggle auto-reporting at engagement end. (A bare /report renders one NOW, and
-    /report regen re-runs the report agent on a loaded assessment; both are handled
-    in the app, which holds the run state.)"""
-    from core.config import get, set_value
-    if not args:
-        cur = get("reporting_enabled", True)
-        return [f"Auto-reporting is {'ON' if cur else 'OFF'}.",
-                "Use /report on | /report off.",
-                "  /report          — re-render HTML from saved data (no LLM)",
-                "  /report regen    — re-run the report agent to re-synthesize a loaded assessment"], True
-    val = args[0].lower()
-    if val in ("on", "true", "enable", "enabled", "yes", "1"):
-        set_value("reporting_enabled", True)
-        return ["Auto-reporting ENABLED — a report is generated at engagement end."], True
-    if val in ("off", "false", "disable", "disabled", "no", "0"):
-        set_value("reporting_enabled", False)
-        return ["Auto-reporting DISABLED — no report at end. Run /report to make one on demand."], True
-    return ["Usage: /report [on|off]   (no arg = generate a report now)"], False
-
-
-def handle_parallel(args: list[str]) -> tuple[list[str], bool]:
-    """Toggle parallel mode and tune the fan-out widths. Takes effect on the next
-    engagement (it picks the driver at start)."""
-    from core.config import get, set_value
-
-    def _status() -> list[str]:
-        return [
-            f"Parallel mode is {'ON' if get('parallel_enabled', False) else 'OFF'}.",
-            f"  max agents (global cap):  {get('max_parallel_agents', 3)}   (/parallel agents <n>)",
-            f"  surfaces at once:         {get('surface_fanout', 3)}   (/parallel surfaces <n>)",
-            f"  hypotheses per exploit:   {get('hypothesis_fanout', 3)}   (/parallel hypotheses <n>)",
-            f"  per-hypothesis turns:     {get('hypothesis_worker_turns', 12)}",
-            "Note: K parallel agents reach the account rate limit ~K× faster — keep the cap modest.",
-        ]
-
-    if not args:
-        return _status(), True
-    sub = args[0].lower()
-    if sub in ("on", "true", "enable", "enabled", "yes", "1"):
-        set_value("parallel_enabled", True)
-        return ["Parallel mode ENABLED — surfaces and hypotheses run concurrently "
-                "next engagement."] + _status()[1:], True
-    if sub in ("off", "false", "disable", "disabled", "no", "0"):
-        set_value("parallel_enabled", False)
-        return ["Parallel mode DISABLED — back to the serial driver."], True
-    if sub == "status":
-        return _status(), True
-    # numeric tuners
-    key_map = {"agents": "max_parallel_agents", "surfaces": "surface_fanout",
-               "hypotheses": "hypothesis_fanout"}
-    if sub in key_map and len(args) >= 2:
-        try:
-            n = max(1, int(args[1]))
-        except ValueError:
-            return [f"Usage: /parallel {sub} <positive integer>"], False
-        set_value(key_map[sub], n)
-        return [f"Set {key_map[sub]} = {n}."], True
-    return ["Usage: /parallel on|off|status  |  /parallel agents|surfaces|hypotheses <n>"], False
-
-
-def _fmt_turns(n: int) -> str:
-    return "unlimited (no cap)" if n <= 0 else str(n)
-
-
-def handle_turns(args: list[str]) -> tuple[list[str], bool]:
-    """Show or set the per-agent turn budget. 0/off = unlimited."""
-    from core.config import get, set_value
-    if not args:
-        cur = int(get("max_turns_default", 60))
-        return [f"Max turns per agent: {_fmt_turns(cur)}.",
-                "Set with /turns <n>  (e.g. /turns 60)  ·  /turns off for unlimited."], True
-    val = args[0].strip().lower()
-    if val in ("off", "unlimited", "none", "0", "inf"):
-        set_value("max_turns_default", 0)
-        return ["Max turns per agent: UNLIMITED — an agent runs until it stops on its own.",
-                "Loop caps (cycles/surfaces) still bound the overall engagement."], True
-    try:
-        n = int(val)
-    except ValueError:
-        return ["Usage: /turns <number>  or  /turns off", f"  '{args[0]}' is not a number."], False
-    if n < 1:
-        return ["Usage: /turns <number ≥ 1>  or  /turns off (unlimited)."], False
-    set_value("max_turns_default", n)
-    return [f"Max turns per agent set to {n}.",
-            "Applies to the next engagement you start."], True
 
 
 def _config_list(group: str | None = None) -> list[str]:
@@ -1129,16 +946,6 @@ def dispatch(text: str) -> tuple[list[str], bool] | None:
         return handle_info()
     if cmd == "/config":
         return handle_config(args)
-    if cmd == "/exploit":
-        return handle_exploit(args)
-    if cmd == "/websearch":
-        return handle_websearch(args)
-    if cmd == "/debug":
-        return handle_debug(args)
-    if cmd == "/parallel":
-        return handle_parallel(args)
-    if cmd == "/turns":
-        return handle_turns(args)
     if cmd == "/key list":
         return handle_key_list()
     if cmd == "/key clear":

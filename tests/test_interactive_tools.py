@@ -60,17 +60,16 @@ def test_brief_from_intent_respects_toggle(monkeypatch):
     assert brief.exploitation_allowed is True       # on by default now
 
 
-def test_handle_exploit_toggles(monkeypatch):
+def test_config_exploitation_toggles(monkeypatch):
+    # Exploitation toggle moved from /exploit to /config exploitation_enabled.
     store = {}
     monkeypatch.setattr(config, "set_value", lambda k, v: store.__setitem__(k, v))
     monkeypatch.setattr(config, "get", lambda k, d=None: store.get(k, d))
-    from ui.commands import handle_exploit
-    _, ok = handle_exploit(["off"])
+    from ui.commands import dispatch
+    _, ok = dispatch("/config exploitation_enabled off")
     assert ok and store["exploitation_enabled"] is False
-    _, ok = handle_exploit(["on"])
+    _, ok = dispatch("/config exploitation_enabled on")
     assert ok and store["exploitation_enabled"] is True
-    lines, ok = handle_exploit([])
-    assert ok and "ON" in " ".join(lines)
 
 
 def test_info_shows_exploitation():

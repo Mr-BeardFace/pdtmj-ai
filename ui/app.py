@@ -1178,14 +1178,17 @@ class PentestApp(App):
                     self._show_cmd_output(["Nothing to resume. Start a new run instead."], False)
             return
 
-        # /report — bare: generate HTML now; on|off: toggle auto-reporting at end
+        # /report — bare: generate HTML now; regen: re-synthesize a loaded assessment.
+        # (Auto-reporting toggle moved to /config reporting_enabled.)
         if parsed and parsed[0] == "/report":
             arg = (parsed[1][0].lower() if parsed[1] else "")
             if arg in ("on", "off", "true", "false", "enable", "disable",
                        "enabled", "disabled", "yes", "no", "0", "1"):
-                from ui.commands import handle_report
-                lines, ok = handle_report(parsed[1])
-                self._show_cmd_output(lines, ok)
+                self._show_cmd_output(
+                    ["Auto-reporting is now set via /config reporting_enabled "
+                     f"{'on' if arg in ('on','true','enable','enabled','yes','1') else 'off'}.",
+                     "  /report (no arg) still renders a report now; /report regen re-synthesizes."],
+                    False)
             elif arg in ("regen", "resynth", "resynthesize", "synth", "new"):
                 # Re-run the report AGENT (LLM) against a loaded assessment's findings
                 # and write a fresh narrative report — recovers a full write-up from a

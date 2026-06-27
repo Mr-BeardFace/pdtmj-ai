@@ -42,33 +42,29 @@ def test_explicit_out_of_scope_still_wins():
 
 # ── /turns command ─────────────────────────────────────────────────────────────
 
-def test_turns_set_and_show(monkeypatch):
+def test_turns_set_via_config(monkeypatch):
+    # Turn budget moved from /turns to /config max_turns_default.
     store = {}
     monkeypatch.setattr(config, "set_value", lambda k, v: store.__setitem__(k, v))
     monkeypatch.setattr(config, "get", lambda k, d=None: store.get(k, d))
-    from ui.commands import handle_turns
-    _, ok = handle_turns(["60"])
+    from ui.commands import dispatch
+    _, ok = dispatch("/config max_turns_default 60")
     assert ok and store["max_turns_default"] == 60
-    lines, ok = handle_turns([])
-    assert ok and "60" in " ".join(lines)
 
 
-def test_turns_off_is_unlimited(monkeypatch):
+def test_turns_zero_is_unlimited(monkeypatch):
     store = {}
     monkeypatch.setattr(config, "set_value", lambda k, v: store.__setitem__(k, v))
     monkeypatch.setattr(config, "get", lambda k, d=None: store.get(k, d))
-    from ui.commands import handle_turns
-    _, ok = handle_turns(["off"])
+    from ui.commands import dispatch
+    _, ok = dispatch("/config max_turns_default 0")   # 0 = unlimited
     assert ok and store["max_turns_default"] == 0
-    lines, _ = handle_turns([])
-    assert "unlimited" in " ".join(lines).lower()
 
 
 def test_turns_rejects_garbage(monkeypatch):
     monkeypatch.setattr(config, "set_value", lambda k, v: None)
-    monkeypatch.setattr(config, "get", lambda k, d=None: d)
-    from ui.commands import handle_turns
-    _, ok = handle_turns(["abc"])
+    from ui.commands import dispatch
+    _, ok = dispatch("/config max_turns_default abc")
     assert ok is False
 
 
@@ -77,7 +73,7 @@ def test_default_turns_is_60():
     assert config._DEFAULTS["max_turns_default"] == 60
 
 
-def test_dispatch_routes_turns():
+def test_old_turns_command_gone():
     from ui.commands import dispatch
     out = dispatch("/turns")
-    assert out is not None and out[1] is True
+    assert out is not None and out[1] is False

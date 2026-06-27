@@ -40,18 +40,25 @@ def test_info_overview():
     assert "Loop caps" not in blob and "LLM routing" not in blob
 
 
-def test_exploit_confirm_toggle():
+def test_config_exploit_toggles():
+    # Exploitation + confirm gate are now set through /config (the single config cmd).
     from core.config import get
-    dispatch("/exploit confirm off")
+    dispatch("/config confirm_exploitation off")
     assert get("confirm_exploitation", True) is False
-    dispatch("/exploit confirm on")
+    dispatch("/config confirm_exploitation on")
     assert get("confirm_exploitation", True) is True
-    # The bare phase toggle still works and is independent of the confirm gate.
-    dispatch("/exploit off")
+    dispatch("/config exploitation_enabled off")
     assert get("exploitation_enabled", True) is False
-    assert get("confirm_exploitation", True) is True   # unchanged by the phase toggle
-    dispatch("/exploit on")
+    assert get("confirm_exploitation", True) is True   # independent of the phase toggle
+    dispatch("/config exploitation_enabled on")
     assert get("exploitation_enabled", True) is True
+
+
+def test_old_toggle_commands_removed():
+    for cmd in ("/exploit on", "/turns 5", "/websearch off", "/parallel on", "/debug on"):
+        res = dispatch(cmd)
+        assert res is not None and res[1] is False
+        assert any("Unknown command" in ln for ln in res[0])
 
 
 def test_info_routed_through_dispatch():

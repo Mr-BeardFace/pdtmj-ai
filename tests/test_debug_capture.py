@@ -91,10 +91,11 @@ def test_toggle_off_stops_writing(tmp_path):
     dc.configure(None, False)
 
 
-def test_command_handler_toggles_config():
-    import ui.commands as commands
+def test_config_toggles_debug_capture():
+    # Debug capture is now toggled via /config debug_capture (was /debug).
+    from ui.commands import dispatch
     from core.config import get
-    commands.handle_debug(["on"])
+    dispatch("/config debug_capture on")
     assert get("debug_capture", False) is True
-    commands.handle_debug(["off"])
+    dispatch("/config debug_capture off")
     assert get("debug_capture", False) is False
