@@ -99,6 +99,20 @@ def log_response(agent, turn, response) -> None:
     )
 
 
+def log_error(agent, turn, exc) -> None:
+    """Log a failed LLM call (429/404/auth/timeout/etc.) where the response would go,
+    so a turn still reads request → error. Captures the exception type, full message
+    (which for HTTP errors carries the status + provider reason), and traceback."""
+    if not enabled():
+        return
+    import traceback
+    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    _write(
+        f"\n✖ ERROR     [{_ts()}]  agent={agent}  turn={turn}  "
+        f"{type(exc).__name__}: {exc}\n{tb}\n"
+    )
+
+
 def log_command(agent, turn, name, tool_input) -> None:
     if not enabled():
         return

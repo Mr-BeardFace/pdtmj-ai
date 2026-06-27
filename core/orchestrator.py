@@ -1078,13 +1078,19 @@ class Orchestrator:
 
                 debug_capture.log_request(agent.name, _turn, effective_model,
                                           system, messages, tool_schemas)
-                response = self.llm.run(
-                    model=effective_model,
-                    system=system,
-                    messages=messages,
-                    tools=tool_schemas,
-                    temperature=effective_temperature,
-                )
+                try:
+                    response = self.llm.run(
+                        model=effective_model,
+                        system=system,
+                        messages=messages,
+                        tools=tool_schemas,
+                        temperature=effective_temperature,
+                    )
+                except Exception as e:
+                    # Capture the failed call for debug, then re-raise so the normal
+                    # error handling (retry/abort/surface) is unchanged.
+                    debug_capture.log_error(agent.name, _turn, e)
+                    raise
                 debug_capture.log_response(agent.name, _turn, response)
 
                 usage = response.usage

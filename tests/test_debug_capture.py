@@ -63,6 +63,23 @@ def test_writes_request_response_command_in_order(tmp_path):
     dc.configure(None, False)   # reset for other tests
 
 
+def test_logs_error_in_place_of_response(tmp_path):
+    log = tmp_path / "llm_debug.log"
+    dc.configure(log, True)
+    dc.log_request("enum", 1, "claude-x", "SYS", [], [])
+    try:
+        raise RuntimeError("OpenRouter error 404: model not found")
+    except RuntimeError as e:
+        dc.log_error("enum", 1, e)
+    text = log.read_text(encoding="utf-8")
+    assert "✖ ERROR" in text
+    assert "RuntimeError" in text
+    assert "404: model not found" in text
+    # Request precedes the error (request → error ordering).
+    assert text.index("▶ REQUEST") < text.index("✖ ERROR")
+    dc.configure(None, False)
+
+
 def test_toggle_off_stops_writing(tmp_path):
     log = tmp_path / "llm_debug.log"
     dc.configure(log, True)
