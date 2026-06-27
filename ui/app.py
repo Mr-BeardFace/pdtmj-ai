@@ -1802,7 +1802,8 @@ class PentestApp(App):
         if self._current_assessment and self._current_assessment.runs:
             try:
                 path = generate_merged_report(
-                    self._current_assessment.runs, RESULTS_DIR,
+                    self._current_assessment.runs,
+                    self._current_assessment_dir or RESULTS_DIR,
                     fmt="html", target=self._current_assessment.target,
                 )
                 self._show_cmd_output([f"Report saved: {path}"], True)
@@ -1833,7 +1834,7 @@ class PentestApp(App):
                         if d.get("target") == first_target:
                             runs.append(EngagementRun(**d))
                     runs.sort(key=lambda r: r.start_time)
-                    path = generate_merged_report(runs, RESULTS_DIR, fmt="html", target=first_target)
+                    path = generate_merged_report(runs, files[0].parent, fmt="html", target=first_target)
                     self._show_cmd_output([f"Report saved: {path}"], True)
                     self._activity(f"[green]HTML Report:[/green] {path}")
                 except Exception as e:
@@ -1843,7 +1844,7 @@ class PentestApp(App):
                 d = json.loads(assessment_files[0].read_text(encoding="utf-8"))
                 assessment = Assessment(**d)
                 path = generate_merged_report(
-                    assessment.runs, RESULTS_DIR,
+                    assessment.runs, assessment_files[0].parent,
                     fmt="html", target=assessment.target,
                 )
                 self._show_cmd_output([f"Report saved: {path}"], True)
@@ -1862,7 +1863,7 @@ class PentestApp(App):
         try:
             data = json.loads(matches[0].read_text(encoding="utf-8"))
             run  = EngagementRun(**data)
-            path = generate_report(run, RESULTS_DIR)
+            path = generate_report(run, matches[0].parent)
             self._activity(f"[green]Report:[/green] {path}")
         except Exception as e:
             self._activity(f"[red]Report failed: {e}[/red]")
@@ -2689,7 +2690,7 @@ class PentestApp(App):
             llm          = LLMClient(on_retry=_on_retry)
             registry     = build_registry()
             orchestrator = Orchestrator(
-                llm, registry, RESULTS_DIR,
+                llm, registry, adir,        # everything (debug log, run saves) into the folder
                 log_callback=self._make_log_cb(), quiet=True,
                 engagement_state=state,
                 interrupt_queue=self._interrupt_queue,
@@ -2979,8 +2980,9 @@ class PentestApp(App):
             self._rehydrate_report_state(state, assessment)
             self._current_state = state
 
-            ts     = datetime.now().strftime("%Y%m%d_%H%M%S")
-            logger = SessionLogger(LOGS_DIR / f"resynth_report_{ts}.log")
+            ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
+            out_dir  = adir or RESULTS_DIR
+            logger   = SessionLogger(out_dir / f"resynth_report_{ts}.log")
             self._session_logger = logger
             self.post_message(PentestApp.Activity(
                 f"[cyan]Re-synthesizing report from {len(findings)} saved finding(s)…[/cyan]"))
@@ -2989,7 +2991,7 @@ class PentestApp(App):
             registry  = build_registry()
             art_store = ArtifactStore(adir / "artifacts") if adir else None
             orchestrator = Orchestrator(
-                llm, registry, RESULTS_DIR, log_callback=self._make_log_cb(), quiet=True,
+                llm, registry, out_dir, log_callback=self._make_log_cb(), quiet=True,
                 engagement_state=state, active_persona=self._active_persona,
                 session_logger=logger, artifact_store=art_store,
             )
@@ -3029,13 +3031,15 @@ class PentestApp(App):
             state = EngagementState(target=target)
             self._current_state = state
 
-            ts        = datetime.now().strftime("%Y%m%d_%H%M%S")
-            safe_a    = _safe_filename_part(agent_name)
-            safe_t    = _safe_filename_part(target)
-            logger    = SessionLogger(LOGS_DIR / f"run_{safe_a}_{safe_t}_{ts}.log")
+            # A single-agent run gets its own assessment folder too, so all of its
+            # output (log, scratch, artifacts, saved run) lives in one place — nothing
+            # scattered to the global logs/ or results/ dirs. set_assessment_dir also
+            # points transient tool tempfiles at the folder's scratch/.
+            import uuid
+            adir = set_assessment_dir(uuid.uuid4().hex[:8], target)
+            self._current_assessment_dir = adir
+            logger    = SessionLogger(adir / "engagement.log")
             self._session_logger = logger
-            # Keep transient tool tempfiles in a per-run working dir, not /tmp.
-            use_assessment_scratch(f"{safe_a}_{safe_t}_{ts}")
             logger.header(target, objective, persona=self._active_persona,
                           mode=f"single:{agent_name}")
             self.post_message(PentestApp.Activity(f"[dim]Log: {logger.path}[/dim]"))
@@ -3050,7 +3054,7 @@ class PentestApp(App):
             llm       = LLMClient()
             registry  = build_registry()
             orchestrator = Orchestrator(
-                llm, registry, RESULTS_DIR,
+                llm, registry, adir,
                 log_callback=self._make_log_cb(), quiet=True,
                 engagement_state=state,
                 interrupt_queue=self._interrupt_queue,

@@ -96,7 +96,7 @@ def set_assessment_dir(assessment_id: str, target: str = "") -> Path:
     call again on resume with the same id."""
     global _current_assessment_dir
     d = ASSESSMENTS_DIR / assessment_dirname(assessment_id, target)
-    for sub in ("scripts", "artifacts", "scratch"):
+    for sub in ("scripts", "artifacts", "scratch", "keys"):
         (d / sub).mkdir(parents=True, exist_ok=True)
     _current_assessment_dir = d
     _point_scratch_at(d / "scratch")          # in-process + subprocess temp → here
@@ -128,6 +128,14 @@ def scratch_dir() -> Path:
     if _current_assessment_dir is not None:
         return _current_assessment_dir / "scratch"
     return Path(tempfile.gettempdir())
+
+
+def keys_dir() -> Path:
+    """Where generated keypairs (ssh_keygen) are written — inside the assessment
+    folder when one is active, else the legacy results/keys."""
+    if _current_assessment_dir is not None:
+        return _current_assessment_dir / "keys"
+    return RESULTS_DIR / "keys"
 
 
 def scratch_env(base: dict | None = None) -> dict:

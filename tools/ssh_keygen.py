@@ -11,14 +11,14 @@ from core import proc as runner
 import tempfile
 from typing import Optional
 
-from core.paths import RESULTS_DIR
+from core.paths import keys_dir
 
 
 def ssh_keygen(label: Optional[str] = None, comment: str = "svc@local") -> dict:
     if not _which("ssh-keygen"):
         return {"error": "ssh-keygen not found in PATH"}
 
-    key_dir = RESULTS_DIR / "keys"
+    key_dir = keys_dir()                  # inside the assessment folder when active
     key_dir.mkdir(parents=True, exist_ok=True)
     import re
     safe = re.sub(r"[^A-Za-z0-9_-]", "_", label or "foothold")

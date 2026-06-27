@@ -17,7 +17,7 @@ from core.engagement_state import EngagementState
 from core.artifacts import ArtifactStore
 from core.jobs import JobManager, Job
 from core.proc import ProcessRegistry, bind as proc_bind
-from core.paths import ARTIFACTS_DIR
+from core.paths import ARTIFACTS_DIR, artifacts_dir
 from core.utils import mask_secret
 from tools.annotate_finding import TOOL_DEFINITION as ANNOTATE_DEF
 from tools.queue_followup import TOOL_DEFINITION as FOLLOWUP_DEF
@@ -444,7 +444,10 @@ class Orchestrator:
         self.interrupt_queue: queue.Queue = interrupt_queue or queue.Queue()
         self._save_individual_runs = save_individual_runs
         self._session_logger = session_logger
-        self._artifacts = artifact_store or ArtifactStore(ARTIFACTS_DIR)
+        # Default store resolves into the active assessment folder (artifacts_dir())
+        # so offloaded output stays with the assessment; ARTIFACTS_DIR is the
+        # fallback only when no assessment is active (CLI single runs / tests).
+        self._artifacts = artifact_store or ArtifactStore(artifacts_dir())
         # Live child-process registry — lets the operator kill a single job
         # (/job kill) or every in-flight process (/abort). Tools register via
         # core.proc.run; foreground calls and jobs bind to it below.

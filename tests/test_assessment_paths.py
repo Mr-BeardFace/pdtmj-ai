@@ -68,6 +68,16 @@ def test_dirs_fall_back_without_active_assessment(monkeypatch):
     monkeypatch.setattr(paths, "_current_assessment_dir", None)
     assert paths.scripts_dir() == paths.RESULTS_DIR / "scripts"
     assert paths.artifacts_dir() == paths.ARTIFACTS_DIR
+    assert paths.keys_dir() == paths.RESULTS_DIR / "keys"
+
+
+def test_keys_dir_routes_into_assessment(tmp_path, monkeypatch, _restore_temp_env):
+    # ssh_keygen output (and everything else) must land inside the assessment folder.
+    monkeypatch.setattr(paths, "ASSESSMENTS_DIR", tmp_path / "assessments")
+    monkeypatch.setattr(paths, "_current_assessment_dir", None)
+    d = paths.set_assessment_dir("keyid", "10.0.0.5")
+    assert paths.keys_dir() == d / "keys"
+    assert (d / "keys").is_dir()   # created by set_assessment_dir
 
 
 def test_scratch_env_points_tmp_vars_into_assessment(tmp_path, monkeypatch, _restore_temp_env):
