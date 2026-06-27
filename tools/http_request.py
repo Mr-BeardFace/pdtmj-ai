@@ -201,6 +201,15 @@ def http_request(
         if session:
             result["session"] = session
             result["session_cookies"] = _jar_cookie_names(jar_path)
+        elif all_set_cookies:
+            # This response set cookies but no named session was used — the state is
+            # lost on the next call. Nudge, in-band, to carry it. Re-deriving a login
+            # every request (the observed grind) is what this prevents.
+            result["_session_hint"] = (
+                "This response set cookies (likely a login/session). Pass "
+                "session='<name>' on this and subsequent http_request calls to carry "
+                "the login automatically instead of re-authenticating each time."
+            )
         return result
 
     finally:
