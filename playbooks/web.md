@@ -30,10 +30,19 @@ never drop tables or DoS to prove a point.
 - **URL/param** → `'`, `"`, `{{7*7}}`, `; id`, `../../../etc/passwd`, `%0a`.
 - **SQLi** → `admin'--`, `' OR '1'='1`, `' UNION SELECT NULL--`; `sqlmap_scan` to confirm/extract (read-only).
 - **SSTI** → `{{7*7}}`, `${7*7}`, `<%= 7*7 %>`. **LFI** → traversal + PHP filter wrappers.
-- **Auth** → default/vendor creds; for authenticated flows pass a named `session` to
-  `http_request` (log in once, cookies carried). Solve image CAPTCHAs with `captcha_solve`
-  in the same session. Check JWTs (`alg:none`, weak secret), lockout, username enum,
-  auth bypass (verb tampering, `X-Forwarded-For: 127.0.0.1`).
+- **Auth** → default/vendor creds; SQLi in login (`admin'--`, `admin' OR '1'='1'--`).
+  For authenticated flows pass a named `session` to `http_request` (e.g. `session="admin"`):
+  log in once and every later call with that name stays authenticated, cookies carried —
+  check `session_cookies` in the response to confirm. Use it for post-login enumeration,
+  CSRF-token flows, and IDOR/authz tests as a real user.
+  **An image CAPTCHA is not a dead end** — load the form with a named `session` (sets the
+  captcha cookie + gives the captcha id/image URL), call `captcha_solve` with that same
+  session and the image URL (`charset='digits'` for Gogs-style, else `'alnum'`), then submit
+  in the SAME session with the decoded value + captcha id. If rejected, the captcha rotates
+  per request — reload the form and solve the fresh one. (Behavioral/JS challenges —
+  reCAPTCHA, hCaptcha, Turnstile — are not OCR-solvable; find another way in.)
+  Check JWTs (`alg:none`, weak secret), lockout, username enum, auth bypass (verb
+  tampering, `X-Forwarded-For: 127.0.0.1`).
 - **Authz** → IDOR (increment IDs), horizontal/vertical privilege escalation, mass
   assignment (`role=admin`).
 - **API** → GraphQL introspection, undocumented methods (PUT/DELETE), old API versions.
