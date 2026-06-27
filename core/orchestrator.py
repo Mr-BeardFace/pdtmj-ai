@@ -153,8 +153,9 @@ _FIELD_OFFLOAD_CHARS  = 3000
 _RESULT_OFFLOAD_CHARS = 6000
 # read_artifact/grep_artifact slices are returned directly (already line-bounded) and
 # only TRUNCATED if pathologically large — never re-offloaded to a new artifact, which
-# would loop (the agent asked to read this very slice).
-_ARTIFACT_VIEW_CAP    = 16000
+# would loop (the agent asked to read this very slice). Kept in the same ballpark as
+# the offload threshold so a single read-back can't dwarf what offloading saved.
+_ARTIFACT_VIEW_CAP    = 10000
 
 FINDINGS_SCHEMA_INSTRUCTIONS = """
 
@@ -448,6 +449,10 @@ class Orchestrator:
         # so offloaded output stays with the assessment; ARTIFACTS_DIR is the
         # fallback only when no assessment is active (CLI single runs / tests).
         self._artifacts = artifact_store or ArtifactStore(artifacts_dir())
+        # Signatures of artifact slices already pulled into context (read offset/limit
+        # or grep pattern) — used to flag a literal re-read so the agent doesn't loop
+        # re-fetching the same bytes.
+        self._artifact_views: set[str] = set()
         # Live child-process registry — lets the operator kill a single job
         # (/job kill) or every in-flight process (/abort). Tools register via
         # core.proc.run; foreground calls and jobs bind to it below.
@@ -1949,16 +1954,31 @@ class Orchestrator:
     def _handle_artifact_query(self, name: str, inputs: dict) -> dict:
         aid = inputs.get("artifact_id", "")
         if name == "grep_artifact":
-            return self._artifacts.grep(
+            result = self._artifacts.grep(
                 aid, inputs.get("pattern", ""),
                 ignore_case=inputs.get("ignore_case", True),
                 context=inputs.get("context", 0),
                 max_matches=inputs.get("max_matches", 200),
                 invert=inputs.get("invert", False),
             )
-        return self._artifacts.read(
-            aid, offset=inputs.get("offset", 0), limit=inputs.get("limit", 200),
-        )
+            sig = f"grep:{aid}:{inputs.get('pattern','')}"
+        else:
+            result = self._artifacts.read(
+                aid, offset=inputs.get("offset", 0), limit=inputs.get("limit", 200),
+            )
+            sig = f"read:{aid}:{inputs.get('offset', 0)}:{inputs.get('limit', 200)}"
+        # Re-read guard: pulling the IDENTICAL slice/grep back into context wastes a
+        # turn and re-bills the same bytes. Flag it so the agent fetches something new
+        # (a different window/pattern) or moves on, instead of re-reading on a loop.
+        if isinstance(result, dict) and sig in self._artifact_views:
+            result = dict(result)
+            result["_already_viewed"] = (
+                "You already pulled this exact slice earlier this run. Re-reading it "
+                "adds nothing — use a different offset/limit or grep_artifact pattern "
+                "to see something new, or act on what you have."
+            )
+        self._artifact_views.add(sig)
+        return result
 
     def _cap_artifact_view(self, result):
         """Bound a read_artifact/grep_artifact result for the prompt by truncating its
