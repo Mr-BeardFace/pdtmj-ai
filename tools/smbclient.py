@@ -180,7 +180,7 @@ TOOL_DEFINITION = {
         "- 'ls' — list files in share root\n"
         "- 'ls subdir/' — list subdirectory\n"
         "- 'get filename' — download a file to the local downloads dir; result 'saved_to' is "
-        "the local path. Analyze it with run_script (bash: unzip/strings/cat/grep), NOT remote-exec/listener tools.\n"
+        "the local path. Analyze it with local_exec (strings/cat/grep/unzip), NOT remote-exec/listener tools.\n"
         "- 'put localfile remotefile' — upload a file\n"
         "- 'recurse; ls' — recursive listing\n"
         "- 'dir' — alias for ls\n"

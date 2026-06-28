@@ -87,6 +87,8 @@ _TOOL_MODULES: list[tuple[str, str]] = [
     ("tools.web_exec",         "web_exec"),
     # Ad-hoc scripting (custom exploits / tools at runtime)
     ("tools.run_script",       "run_script"),
+    # Local shell for inspecting downloaded/local files (strings/cat/grep/unzip)
+    ("tools.local_exec",       "local_exec"),
     # Self-provisioning missing tooling
     ("tools.pip_install",      "pip_install"),
     ("tools.apt_install",      "apt_install"),
