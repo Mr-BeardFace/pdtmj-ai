@@ -640,7 +640,7 @@ class PentestApp(App):
         # hosts/ports/services. One row per host:port; host-level columns
         # (Hostname/OS) repeat down a host's rows so each line stands alone.
         ht = self.query_one("#hosts-table", DataTable)
-        for label in ("IP", "Hostname", "OS", "Port", "Service", "Fingerprint", "Tech"):
+        for label in ("IP", "Hostname", "OS", "Port", "Protocol", "Service", "Fingerprint", "Tech"):
             ht.add_column(label, key=label)
 
         # Flags table (CTF) — columns set up; tab shown only for the CTF persona
@@ -2086,8 +2086,8 @@ class PentestApp(App):
     def _add_host_row(self, ip: str, port_entry: dict, authoritative: bool = False) -> None:
         """Add or update one row in the single target tracker.
 
-        One row per host:port. Columns: IP | Hostname | OS | Port | Service |
-        Fingerprint | Tech. `authoritative` distinguishes the agent's own
+        One row per host:port. Columns: IP | Hostname | OS | Port | Protocol |
+        Service | Fingerprint | Tech. `authoritative` distinguishes the agent's own
         interpretation (record_service — wins, and locks the cell) from the raw
         nmap baseline (only fills blanks, never clobbers an agent-set cell). This
         stops the scan baseline re-posting every cycle from reverting the LLM's
@@ -2096,6 +2096,7 @@ class PentestApp(App):
         dt       = self.query_one("#hosts-table", DataTable)
         port     = str(port_entry.get("port", ""))
         proto    = port_entry.get("protocol", "tcp")
+        proto_disp = (proto or "tcp").upper()      # TCP / UDP column
         service  = port_entry.get("service", "") or ""
         fingerprint = port_entry.get("version", "") or port_entry.get("product", "") or ""
         tech     = port_entry.get("tech", "") or ""
@@ -2128,7 +2129,7 @@ class PentestApp(App):
 
         self._host_rows.add(row_key)
         self._host_rowkeys[row_key] = dt.add_row(
-            ip, hostname, os_str, port, service, fingerprint, tech, key=row_key)
+            ip, hostname, os_str, port, proto_disp, service, fingerprint, tech, key=row_key)
         if authoritative:
             for col, val in (("Service", service), ("Fingerprint", fingerprint),
                              ("Tech", tech), ("Hostname", hostname), ("OS", os_str)):

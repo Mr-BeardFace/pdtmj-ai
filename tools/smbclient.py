@@ -6,6 +6,12 @@ from core import proc as runner
 from typing import Optional
 
 
+# Placeholder usernames that really mean "unauthenticated" — mapped to a null
+# session (-N) when no password is supplied, so anonymous enumeration is the exact
+# `smbclient -L <target> -N`, not a named login.
+_ANON_USERS = {"", "anonymous", "guest", "null", "anonymous logon"}
+
+
 def smbclient(target: str, share: Optional[str] = None, command: str = "ls",
               username: Optional[str] = None, password: Optional[str] = None,
               domain: Optional[str] = None, port: int = 445,
@@ -14,11 +20,20 @@ def smbclient(target: str, share: Optional[str] = None, command: str = "ls",
         return {"error": "smbclient not found in PATH. Install: apt install smbclient"}
 
     def _auth(cmd: list[str]) -> None:
-        if username:
-            auth = username if not domain else f"{domain}\\{username}"
-            cmd += ["-U", auth]
-            if password:
-                cmd[-1] = f"{cmd[-1]}%{password}"
+        user = (username or "").strip()
+        # Anonymous / null session: no real user AND no password → `-N` with no -U
+        # (smbclient -L <target> -N). Agents often pass a placeholder username
+        # ("anonymous"/"guest"/"null") for what is really an unauthenticated probe;
+        # treat those as anonymous so the command is the correct null session, not a
+        # bogus `-U anonymous` that auths as a named account (or prompts and hangs).
+        if not password and user.lower() in _ANON_USERS:
+            cmd += ["-N"]
+            return
+        if user:
+            auth = user if not domain else f"{domain}\\{user}"
+            # Always pin the password (real or empty) so smbclient never drops to an
+            # interactive password prompt and blocks the turn. Empty = `-U user%`.
+            cmd += ["-U", f"{auth}%{password or ''}"]
         else:
             cmd += ["-N"]  # No password / anonymous
 

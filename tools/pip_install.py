@@ -4,6 +4,7 @@ When an exploit script needs a library that isn't present (pwntools, requests,
 paramiko, impacket, …), install it with this instead of shelling out to pip from
 inside a script. Packages install into the environment running PDTMJ-AI.
 """
+import re
 import subprocess
 from core import proc as runner
 from core import paths
@@ -12,6 +13,26 @@ import sys
 from core.config import get
 
 OUTPUT_CAP = 8000
+
+# A pip requirement can carry a version/extra spec (e.g. 'requests==2.31.0',
+# 'impacket[ldap]'); strip it to the bare dist name for the already-installed check.
+_SPEC_SPLIT = re.compile(r"[<>=!~\[ ]")
+
+
+def _installed_dists(py: str) -> set:
+    """Lower-cased set of dist names already installed in the target interpreter."""
+    try:
+        r = subprocess.run([py, "-m", "pip", "list", "--format=freeze",
+                            "--disable-pip-version-check"],
+                           capture_output=True, text=True, timeout=30)
+    except Exception:  # noqa: BLE001
+        return set()
+    out = set()
+    for line in (r.stdout or "").splitlines():
+        name = line.split("==", 1)[0].strip().lower()
+        if name:
+            out.add(name)
+    return out
 
 
 def pip_install(packages, upgrade: bool = False, timeout: int = 300) -> dict:
@@ -31,6 +52,19 @@ def pip_install(packages, upgrade: bool = False, timeout: int = 300) -> dict:
     if flags:
         return {"error": f"refusing package arguments that look like flags: {flags}"}
 
+    # Skip dists already installed (unless upgrading) so we don't reinstall what the
+    # environment already provides (impacket, requests, …). Version-pinned specs are
+    # always passed through to pip so it can resolve the exact version.
+    present: list = []
+    if not upgrade:
+        have = _installed_dists(py)
+        bare = {p: _SPEC_SPLIT.split(p, 1)[0].strip().lower() for p in pkgs}
+        present = [p for p in pkgs if p == bare[p] and bare[p] in have]
+        pkgs = [p for p in pkgs if p not in present]
+        if not pkgs:
+            return {"success": True, "installed": [], "already_present": present,
+                    "note": "All requested packages are already installed — nothing to do."}
+
     cmd = [py, "-m", "pip", "install", "--disable-pip-version-check"]
     if upgrade:
         cmd.append("--upgrade")
@@ -47,12 +81,13 @@ def pip_install(packages, upgrade: bool = False, timeout: int = 300) -> dict:
 
     ok = proc.returncode == 0
     return {
-        "success":   ok,
-        "exit_code": proc.returncode,
-        "installed": pkgs if ok else [],
-        "stdout":    (proc.stdout or "")[-OUTPUT_CAP:],
-        "stderr":    (proc.stderr or "")[-OUTPUT_CAP:],
-        "_command":  f"{py} -m pip install {' '.join(pkgs)}",
+        "success":         ok,
+        "exit_code":       proc.returncode,
+        "installed":       pkgs if ok else [],
+        "already_present": present,
+        "stdout":          (proc.stdout or "")[-OUTPUT_CAP:],
+        "stderr":          (proc.stderr or "")[-OUTPUT_CAP:],
+        "_command":        f"{py} -m pip install {' '.join(pkgs)}",
     }
 
 
