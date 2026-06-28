@@ -96,7 +96,7 @@ def set_assessment_dir(assessment_id: str, target: str = "") -> Path:
     call again on resume with the same id."""
     global _current_assessment_dir
     d = ASSESSMENTS_DIR / assessment_dirname(assessment_id, target)
-    for sub in ("scripts", "artifacts", "scratch", "keys"):
+    for sub in ("scripts", "artifacts", "scratch", "keys", "loot"):
         (d / sub).mkdir(parents=True, exist_ok=True)
     _current_assessment_dir = d
     _point_scratch_at(d / "scratch")          # in-process + subprocess temp → here
@@ -136,6 +136,17 @@ def keys_dir() -> Path:
     if _current_assessment_dir is not None:
         return _current_assessment_dir / "keys"
     return RESULTS_DIR / "keys"
+
+
+def loot_dir() -> Path:
+    """Where files pulled off targets are saved — the assessment's loot/ when one is
+    active, else the legacy results/loot."""
+    if _current_assessment_dir is not None:
+        d = _current_assessment_dir / "loot"
+    else:
+        d = RESULTS_DIR / "loot"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def scratch_env(base: dict | None = None) -> dict:
