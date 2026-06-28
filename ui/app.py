@@ -2139,22 +2139,23 @@ class PentestApp(App):
 
     @staticmethod
     def _host_sort_key(values: tuple) -> tuple:
-        """Order rows by IP (numeric octet order), then port (numeric). IPv4
-        addresses sort ahead of any non-IPv4 host label; the leading group flag
-        keeps int- and str-keyed rows from being compared against each other."""
-        ip_val, port_val = values
+        """Order rows by IP (numeric octet order), then protocol (UDP before TCP),
+        then port (numeric). IPv4 addresses sort ahead of any non-IPv4 host label;
+        the leading group flag keeps int- and str-keyed rows from being compared."""
+        ip_val, proto_val, port_val = values
+        proto_key = 0 if str(proto_val).upper() == "UDP" else 1   # UDP first
         try:
             port_key = int(port_val)
         except (ValueError, TypeError):
             port_key = 0
         parts = str(ip_val).split(".")
         if len(parts) == 4 and all(p.isdigit() for p in parts):
-            return (0, tuple(int(p) for p in parts), port_key)
-        return (1, str(ip_val), port_key)
+            return (0, tuple(int(p) for p in parts), proto_key, port_key)
+        return (1, str(ip_val), proto_key, port_key)
 
     def _sort_hosts(self, dt: "DataTable | None" = None) -> None:
         dt = dt or self.query_one("#hosts-table", DataTable)
-        dt.sort("IP", "Port", key=self._host_sort_key)
+        dt.sort("IP", "Protocol", "Port", key=self._host_sort_key)
 
     def _update_host_field(self, ip: str, column: str, value: str) -> None:
         """Backfill a host-level column (OS/Hostname) across every row for an IP."""
