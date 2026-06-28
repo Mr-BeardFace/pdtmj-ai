@@ -528,9 +528,8 @@ class Orchestrator:
         return w
 
     def _emit(self, event_type: str, **data) -> None:
-        # Mask known credential secrets in everything sent to logs/UI — except the
-        # dedicated cred events, which the UI needs in full for click-to-reveal.
-        if (((self.state and self.state.credentials) or self._secret_values)
+        # Mask confirmed-credential secrets in logs/UI; skip credential/state_update.
+        if (self.state and any(c.verified for c in self.state.credentials)
                 and event_type not in ("state_update", "credential")):
             data = self._redact_obj(data)
         if self._session_logger:
@@ -804,17 +803,37 @@ class Orchestrator:
                             self._secret_values.add(t[len(fl) + 1:])
 
     def _redact_secrets(self, text: str) -> str:
-        if not isinstance(text, str):
+        """Mask secrets of CONFIRMED (verified) credentials only. Skip generic
+        words/usernames and anything that's part of an in-scope hostname/target."""
+        if not isinstance(text, str) or not self.state:
             return text
-        creds = self.state.credentials if self.state else []
-        for c in creds:
+        protected = self._scope_strings()
+        for c in self.state.credentials:
             s = c.secret
-            if s and len(s) >= 5 and s in text:
-                text = text.replace(s, c.secret_masked or mask_secret(s))
-        for s in self._secret_values:
-            if len(s) >= 5 and s in text:
-                text = text.replace(s, mask_secret(s))
+            if not (c.verified and s and len(s) >= 5 and s in text):
+                continue
+            if s.lower() in _GENERIC_USERS:                  # don't mangle usernames
+                continue
+            if any(s.lower() in host for host in protected):  # don't mangle hostnames
+                continue
+            text = text.replace(s, c.secret_masked or mask_secret(s))
         return text
+
+    def _scope_strings(self) -> set[str]:
+        """In-scope hostnames/targets (lower-cased), protected from redaction."""
+        out: set[str] = set()
+        st = self.state
+        if not st:
+            return out
+        for t in st.scope_targets:
+            if t:
+                out.add(t.lower())
+        for h in st.recon.host_names.values():
+            if h:
+                out.add(h.lower())
+        if st.target:
+            out.add(st.target.lower())
+        return out
 
     def _redact_obj(self, obj):
         if isinstance(obj, str):

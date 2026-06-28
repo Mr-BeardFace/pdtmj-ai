@@ -60,7 +60,8 @@ def test_known_secret_scrubbed_from_finding(tmp_path):
 def test_emit_redacts_known_secret(tmp_path):
     events = []
     state = EngagementState(target="x")
-    state.add_credential(cred_type="password", secret="Buck3tH4TF0RM3!", username="n")
+    state.add_credential(cred_type="password", secret="Buck3tH4TF0RM3!", username="n",
+                         verified=True)
     o = _orch(tmp_path, state, events)
     o._emit("tool_done", name="http_request", output={"body": "PASS Buck3tH4TF0RM3!"})
     td = next(e for e in events if e["type"] == "tool_done")

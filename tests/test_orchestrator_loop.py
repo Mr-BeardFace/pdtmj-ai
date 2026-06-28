@@ -520,24 +520,19 @@ def test_run_clears_stale_control_signals(tmp_path):
 
 # ── secret redaction (first-appearance masking) ────────────────────────────────
 
-def test_secret_masked_from_first_appearance(tmp_path):
-    # A secret carried in a tool call must mask even before record_credential adds
-    # it to state — covers the "first instance was cleartext" bug.
+def test_unproven_secret_not_masked_until_verified(tmp_path):
+    # A guess/spray value stays visible; masked only once recorded verified.
     orch = _orchestrator(tmp_path, FakeLLM([]), _registry(lambda **kw: {}),
                          EngagementState(target="10.10.10.5"))
     orch._register_input_secrets({"password": "SuperSecret123!", "username": "admin"}, "ssh_exec")
-    orch._register_input_secrets({"flags": "-p Hunter2Pass --shares"}, "netexec")
-    orch._register_input_secrets({"flags": "--password=Sekret9999"}, "tool")
-
-    assert orch._redact_secrets("login admin:SuperSecret123!") == "login admin:Su***********3!"
-    assert "Hunter2Pass" not in orch._redact_secrets("nxc smb -p Hunter2Pass")
-    assert "Sekret9999" not in orch._redact_secrets("ran --password=Sekret9999 ok")
+    assert orch._redact_secrets("login admin:SuperSecret123!") == "login admin:SuperSecret123!"
+    orch.state.add_credential(secret="SuperSecret123!", username="admin", verified=True)
+    assert "SuperSecret123!" not in orch._redact_secrets("login admin:SuperSecret123!")
 
 
-def test_redacts_obj_with_no_recorded_credentials(tmp_path):
-    # Redaction must function with zero recorded creds (the empty-set guard bug).
+def test_redact_obj_no_crash_and_leaves_unproven_visible(tmp_path):
     orch = _orchestrator(tmp_path, FakeLLM([]), _registry(lambda **kw: {}),
                          EngagementState(target="x"))
     orch._register_input_secrets({"password": "LongSecretValue"}, "ssh_exec")
     out = orch._redact_obj({"inputs": {"password": "LongSecretValue"}})
-    assert "LongSecretValue" not in json.dumps(out)
+    assert "LongSecretValue" in json.dumps(out)
