@@ -127,7 +127,8 @@ def run_script(
 
     try:
         proc = runner.run(
-            cmd, capture_output=True, text=True, timeout=timeout
+            cmd, capture_output=True, text=True, timeout=timeout,
+            cwd=str(paths.analysis_dir()),     # analysis workspace (/tmp replacement)
         )
     except subprocess.TimeoutExpired:
         return {

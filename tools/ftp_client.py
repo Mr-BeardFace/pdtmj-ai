@@ -53,9 +53,9 @@ def ftp(host: str, port: int = 21, username: str = "anonymous",
             buf = BytesIO()
             client.retrbinary("RETR " + path, buf.write)
             raw = buf.getvalue()
-            # Save the bytes to the local loot dir so binaries survive intact and
-            # other tools can reach the file; still return a text preview.
-            dest = os.path.join(str(paths.loot_dir()), os.path.basename(path.replace("\\", "/")))
+            # Save the bytes to the local downloads dir so binaries survive intact
+            # and other tools can reach the file; still return a text preview.
+            dest = os.path.join(str(paths.downloads_dir()), os.path.basename(path.replace("\\", "/")))
             with open(dest, "wb") as fh:
                 fh.write(raw)
             text = raw.decode("utf-8", errors="replace")

@@ -24,6 +24,7 @@ import signal
 import subprocess
 import threading
 import uuid
+from core import paths
 from core.timeutil import now_local
 from typing import Optional
 
@@ -156,6 +157,10 @@ def run(cmd, *, capture_output: bool = False, text: bool = False,
         popen_kwargs["stdin"] = stdin
     if env is not None:
         popen_kwargs["env"] = env
+    # Default working dir to the assessment downloads/ so any tool that writes a
+    # fetched file to cwd (smbclient get, curl -O, …) lands somewhere known.
+    if cwd is None and paths.assessment_root() is not None:
+        cwd = str(paths.downloads_dir())
     if cwd is not None:
         popen_kwargs["cwd"] = cwd
     if encoding is not None:

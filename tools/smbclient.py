@@ -60,14 +60,11 @@ def smbclient(target: str, share: Optional[str] = None, command: str = "ls",
         return last                      # nothing connected — return the last attempt
 
     unc = f"//{target}/{share}"
-    # Downloads (`get`) write to cwd → point it at the assessment loot dir so the
-    # file lands somewhere known and other tools/the operator can find it.
-    loot = str(paths.loot_dir())
     last = {}
     for mode, auth_args in _auth_variants():
         cmd = ["smbclient", unc, "-p", str(port)] + auth_args + extra + ["-c", command]
         try:
-            proc = runner.run(cmd, capture_output=True, text=True, timeout=30, cwd=loot)
+            proc = runner.run(cmd, capture_output=True, text=True, timeout=30)
         except subprocess.TimeoutExpired:
             last = {"error": "smbclient timed out", "_command": " ".join(cmd),
                     "_auth_mode": mode}
@@ -76,14 +73,14 @@ def smbclient(target: str, share: Optional[str] = None, command: str = "ls",
         result["_command"] = " ".join(cmd)
         result["_auth_mode"] = mode
         if result.get("connected"):
-            _annotate_download(result, command, loot)
+            _annotate_download(result, command)
             return result
         last = result
     return last
 
 
-def _annotate_download(result: dict, command: str, loot: str) -> None:
-    """For a `get`, report the local path of the downloaded file + how to use it."""
+def _annotate_download(result: dict, command: str) -> None:
+    """For a `get`, report the local path of the downloaded file."""
     try:
         toks = shlex.split(command)
     except ValueError:
@@ -91,12 +88,9 @@ def _annotate_download(result: dict, command: str, loot: str) -> None:
     if not toks or toks[0].lower() != "get":
         return
     local = toks[2] if len(toks) >= 3 else os.path.basename(toks[1].replace("\\", "/"))
-    dest = os.path.join(loot, os.path.basename(local))
+    dest = os.path.join(str(paths.downloads_dir()), os.path.basename(local))
     if os.path.exists(dest):
         result["saved_to"] = dest
-        result["note"] = (f"Downloaded to {dest} on THIS machine. Analyze it locally "
-                          "with run_script (bash), e.g. unzip/strings/file — not with "
-                          "remote-exec, listener, or http/ftp tools.")
 
 
 # Shares we never want the agent to fixate on as "the" target — administrative /
@@ -185,8 +179,8 @@ TOOL_DEFINITION = {
         "Once a share is given, 'command' runs inside it:\n"
         "- 'ls' — list files in share root\n"
         "- 'ls subdir/' — list subdirectory\n"
-        "- 'get filename' — download a file to the local loot dir; result 'saved_to' is "
-        "the local path. Analyze it with run_script (bash: unzip/strings/file), NOT remote-exec/listener tools.\n"
+        "- 'get filename' — download a file to the local downloads dir; result 'saved_to' is "
+        "the local path. Analyze it with run_script (bash: unzip/strings/cat/grep), NOT remote-exec/listener tools.\n"
         "- 'put localfile remotefile' — upload a file\n"
         "- 'recurse; ls' — recursive listing\n"
         "- 'dir' — alias for ls\n"

@@ -96,7 +96,7 @@ def set_assessment_dir(assessment_id: str, target: str = "") -> Path:
     call again on resume with the same id."""
     global _current_assessment_dir
     d = ASSESSMENTS_DIR / assessment_dirname(assessment_id, target)
-    for sub in ("scripts", "artifacts", "scratch", "keys", "loot"):
+    for sub in ("scripts", "artifacts", "scratch", "keys", "downloads", "analysis"):
         (d / sub).mkdir(parents=True, exist_ok=True)
     _current_assessment_dir = d
     _point_scratch_at(d / "scratch")          # in-process + subprocess temp → here
@@ -138,13 +138,19 @@ def keys_dir() -> Path:
     return RESULTS_DIR / "keys"
 
 
-def loot_dir() -> Path:
-    """Where files pulled off targets are saved — the assessment's loot/ when one is
-    active, else the legacy results/loot."""
-    if _current_assessment_dir is not None:
-        d = _current_assessment_dir / "loot"
-    else:
-        d = RESULTS_DIR / "loot"
+def downloads_dir() -> Path:
+    """Files actually downloaded off targets (smbclient get, ftp, curl -O)."""
+    d = (_current_assessment_dir / "downloads" if _current_assessment_dir is not None
+         else RESULTS_DIR / "downloads")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def analysis_dir() -> Path:
+    """Working area for inspecting pulled files (unzip/extract/strings) — the /tmp
+    replacement; transient, not kept. run_script runs here."""
+    d = (_current_assessment_dir / "analysis" if _current_assessment_dir is not None
+         else RESULTS_DIR / "analysis")
     d.mkdir(parents=True, exist_ok=True)
     return d
 
