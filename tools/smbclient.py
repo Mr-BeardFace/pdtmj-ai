@@ -19,57 +19,61 @@ def smbclient(target: str, share: Optional[str] = None, command: str = "ls",
     if not shutil.which("smbclient"):
         return {"error": "smbclient not found in PATH. Install: apt install smbclient"}
 
-    def _auth(cmd: list[str]) -> None:
+    def _auth_variants() -> list[tuple[str, list[str]]]:
+        """Ordered (mode, smbclient-auth-args) to try until one connects.
+
+        With real credentials: a single attempt, password always pinned (empty as
+        `user%`) so smbclient never drops to an interactive prompt and blocks the
+        turn. Unauthenticated (no creds, or a placeholder user like
+        anonymous/guest/null with no password): try a pure null session (`-N`)
+        FIRST, then an explicit anonymous user (`-U anonymous%`) — some servers
+        reject a bare null session but accept anonymous with no password."""
         user = (username or "").strip()
-        # Anonymous / null session: no real user AND no password → `-N` with no -U
-        # (smbclient -L <target> -N). Agents often pass a placeholder username
-        # ("anonymous"/"guest"/"null") for what is really an unauthenticated probe;
-        # treat those as anonymous so the command is the correct null session, not a
-        # bogus `-U anonymous` that auths as a named account (or prompts and hangs).
-        if not password and user.lower() in _ANON_USERS:
-            cmd += ["-N"]
-            return
-        if user:
+        if user and not (user.lower() in _ANON_USERS and not password):
             auth = user if not domain else f"{domain}\\{user}"
-            # Always pin the password (real or empty) so smbclient never drops to an
-            # interactive password prompt and blocks the turn. Empty = `-U user%`.
-            cmd += ["-U", f"{auth}%{password or ''}"]
-        else:
-            cmd += ["-N"]  # No password / anonymous
+            return [("credentialed", ["-U", f"{auth}%{password or ''}"])]
+        return [("null", ["-N"]), ("anonymous", ["-U", "anonymous%"])]
+
+    extra = shlex.split(flags) if flags else []
 
     # No share given → enumerate the share list first (smbclient -L). This is the
     # right first move: discover what shares exist, then connect to each. Without
     # it the agent can only guess at share names and falls back to IPC$.
     if not share:
-        cmd = ["smbclient", "-L", target, "-p", str(port)]
-        _auth(cmd)
-        if flags:
-            cmd += shlex.split(flags)
+        last: dict = {}
+        for mode, auth_args in _auth_variants():
+            cmd = ["smbclient", "-L", target, "-p", str(port)] + auth_args + extra
+            try:
+                proc = runner.run(cmd, capture_output=True, text=True, timeout=30)
+            except subprocess.TimeoutExpired:
+                last = {"error": "smbclient timed out", "target": target,
+                        "_command": " ".join(cmd), "_auth_mode": mode}
+                continue
+            result = _parse_shares(proc.stdout + proc.stderr, target)
+            result["_command"] = " ".join(cmd)
+            result["_auth_mode"] = mode
+            if result.get("connected") and result.get("shares"):
+                return result            # this auth form worked — done
+            last = result
+        return last                      # nothing connected — return the last attempt
+
+    unc = f"//{target}/{share}"
+    last = {}
+    for mode, auth_args in _auth_variants():
+        cmd = ["smbclient", unc, "-p", str(port)] + auth_args + extra + ["-c", command]
         try:
             proc = runner.run(cmd, capture_output=True, text=True, timeout=30)
         except subprocess.TimeoutExpired:
-            return {"error": "smbclient timed out", "target": target}
-        output = proc.stdout + proc.stderr
-        result = _parse_shares(output, target)
+            last = {"error": "smbclient timed out", "_command": " ".join(cmd),
+                    "_auth_mode": mode}
+            continue
+        result = _parse_output(proc.stdout + proc.stderr, target, share, command)
         result["_command"] = " ".join(cmd)
-        return result
-
-    unc = f"//{target}/{share}"
-    cmd = ["smbclient", unc, "-p", str(port)]
-    _auth(cmd)
-    if flags:
-        cmd += shlex.split(flags)
-    cmd += ["-c", command]
-
-    try:
-        proc = runner.run(cmd, capture_output=True, text=True, timeout=30)
-    except subprocess.TimeoutExpired:
-        return {"error": "smbclient timed out"}
-
-    output = proc.stdout + proc.stderr
-    result = _parse_output(output, target, share, command)
-    result["_command"] = " ".join(cmd)
-    return result
+        result["_auth_mode"] = mode
+        if result.get("connected"):
+            return result
+        last = result
+    return last
 
 
 # Shares we never want the agent to fixate on as "the" target — administrative /
@@ -162,7 +166,9 @@ TOOL_DEFINITION = {
         "- 'put localfile remotefile' — upload a file\n"
         "- 'recurse; ls' — recursive listing\n"
         "- 'dir' — alias for ls\n"
-        "For anonymous access: omit username/password (uses -N flag)."
+        "For anonymous access: omit username/password — it tries a null session (-N) "
+        "first, then falls back to an explicit anonymous user automatically. 'connected' "
+        "and '_auth_mode' (null/anonymous/credentialed) report which form worked."
     ),
     "input_schema": {
         "type": "object",

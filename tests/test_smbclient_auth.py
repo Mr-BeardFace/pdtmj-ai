@@ -1,60 +1,85 @@
-"""smbclient auth construction — anonymous/null sessions must be the exact
-`smbclient -L <target> -N` (no -U), and a real username without a password must
-pin an empty password (`user%`) so smbclient never drops to an interactive prompt
-that blocks the turn. Agents kept passing 'anonymous'/'guest' for what is really
-an unauthenticated probe."""
+"""smbclient auth construction. Unauthenticated enumeration tries a pure null
+session (`smbclient -L <target> -N`) FIRST, then falls back to an explicit
+anonymous user (`-U anonymous%`) — some servers reject a bare null session but
+accept anonymous with no password. A real username without a password pins an
+empty password (`user%`) so smbclient never drops to an interactive prompt that
+blocks the turn. Agents kept passing 'anonymous'/'guest' for what is really an
+unauthenticated probe."""
 from tools import smbclient as smb
 
 
-def _capture(monkeypatch) -> dict:
-    calls: dict = {}
+def _capture(monkeypatch, outputs=None) -> dict:
+    """Record every smbclient command run; optionally script per-call stdout."""
+    calls: dict = {"cmds": []}
     monkeypatch.setattr(smb.shutil, "which", lambda _: "/usr/bin/smbclient")
+    outs = list(outputs or [])
 
     class _P:
-        stdout = ""
-        stderr = ""
+        def __init__(self, stdout=""):
+            self.stdout = stdout
+            self.stderr = ""
 
     def fake_run(cmd, **k):
-        calls["cmd"] = cmd
-        return _P()
+        calls["cmds"].append(cmd)
+        return _P(outs.pop(0) if outs else "")
 
     monkeypatch.setattr(smb.runner, "run", fake_run)
     return calls
 
 
-def test_anonymous_list_is_exactly_dash_N(monkeypatch):
-    calls = _capture(monkeypatch)
-    smb.smbclient("10.10.10.10")                     # no username at all
-    assert calls["cmd"] == ["smbclient", "-L", "10.10.10.10", "-p", "445", "-N"]
+_SHARE_OUT = (
+    "\tSharename       Type      Comment\n"
+    "\t---------       ----      -------\n"
+    "        data            Disk      shared files\n"
+)
 
 
-def test_placeholder_usernames_map_to_null_session(monkeypatch):
-    calls = _capture(monkeypatch)
+def test_unauth_tries_null_then_anonymous_user(monkeypatch):
+    calls = _capture(monkeypatch)                     # both attempts return nothing
+    res = smb.smbclient("10.10.10.10")
+    assert calls["cmds"][0] == ["smbclient", "-L", "10.10.10.10", "-p", "445", "-N"]
+    assert calls["cmds"][1] == ["smbclient", "-L", "10.10.10.10", "-p", "445",
+                                "-U", "anonymous%"]
+    assert res["_auth_mode"] == "anonymous"           # last attempt's mode
+
+
+def test_null_session_short_circuits_when_it_connects(monkeypatch):
+    calls = _capture(monkeypatch, outputs=[_SHARE_OUT])
+    res = smb.smbclient("10.10.10.10")
+    assert len(calls["cmds"]) == 1                     # connected → no fallback
+    assert calls["cmds"][0][-1] == "-N"
+    assert res["_auth_mode"] == "null"
+    assert any(s["name"] == "data" for s in res["shares"])
+
+
+def test_placeholder_usernames_start_with_null_session(monkeypatch):
     for placeholder in ("anonymous", "guest", "null", "", "ANONYMOUS"):
+        calls = _capture(monkeypatch)
         smb.smbclient("10.10.10.10", username=placeholder)
-        assert "-N" in calls["cmd"], placeholder
-        assert "-U" not in calls["cmd"], placeholder
+        assert calls["cmds"][0][-1] == "-N", placeholder
 
 
 def test_real_user_without_password_pins_empty(monkeypatch):
     calls = _capture(monkeypatch)
     smb.smbclient("10.10.10.10", username="admin")
-    i = calls["cmd"].index("-U")
-    assert calls["cmd"][i + 1] == "admin%"           # empty pw → no prompt
-    assert "-N" not in calls["cmd"]
+    assert len(calls["cmds"]) == 1                     # real creds → single attempt
+    c = calls["cmds"][0]
+    assert c[c.index("-U") + 1] == "admin%"            # empty pw → no prompt
+    assert "-N" not in c
 
 
 def test_user_and_password_and_domain(monkeypatch):
     calls = _capture(monkeypatch)
     smb.smbclient("10.10.10.10", username="admin", password="pass", domain="CORP")
-    i = calls["cmd"].index("-U")
-    assert calls["cmd"][i + 1] == "CORP\\admin%pass"
+    c = calls["cmds"][0]
+    assert c[c.index("-U") + 1] == "CORP\\admin%pass"
 
 
 def test_guest_with_password_is_a_real_login(monkeypatch):
     # A placeholder name BUT with a password is an intentional login, not anonymous.
     calls = _capture(monkeypatch)
     smb.smbclient("10.10.10.10", username="guest", password="x")
-    i = calls["cmd"].index("-U")
-    assert calls["cmd"][i + 1] == "guest%x"
-    assert "-N" not in calls["cmd"]
+    assert len(calls["cmds"]) == 1
+    c = calls["cmds"][0]
+    assert c[c.index("-U") + 1] == "guest%x"
+    assert "-N" not in c
