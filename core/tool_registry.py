@@ -10,7 +10,8 @@ _SCOPE_GROUPS: Dict[str, List[str]] = {
     # the `includes: [foothold]` methodology block. Only registered tools.
     "foothold": [
         "oob_listener", "web_exec", "nc", "telnet", "ssh_keygen", "ssh_exec",
-        "netexec", "port_forward", "run_script", "hashcat_crack",
+        "netexec", "port_forward", "run_script", "local_exec",
+        "hashcat_crack", "john", "hash_extract",
         "ysoserial", "searchsploit",
     ],
 }

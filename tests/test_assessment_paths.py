@@ -45,13 +45,39 @@ def test_set_assessment_dir_consolidates(tmp_path, monkeypatch, _restore_temp_en
     assert tempfile.tempdir == str(d / "scratch")
     assert os.environ["TMPDIR"] == str(d / "scratch")
     assert os.environ["TEMP"] == str(d / "scratch") and os.environ["TMP"] == str(d / "scratch")
-    assert "abc123" in d.name and "10.0.0.5" in d.name
+    # Name is assessment_<id>_<YYYY-MM-DD_HHMM>; target is no longer in the folder name.
+    import re
+    assert d.name.startswith("assessment_abc123_")
+    assert "10.0.0.5" not in d.name
+    assert re.search(r"_\d{4}-\d{2}-\d{2}_\d{4}$", d.name)
+
+
+def test_resume_reuses_same_folder(tmp_path, monkeypatch, _restore_temp_env):
+    # A second call for the same id (resume) must reuse the folder, not mint a new
+    # timestamped one.
+    monkeypatch.setattr(paths, "ASSESSMENTS_DIR", tmp_path / "assessments")
+    monkeypatch.setattr(paths, "_current_assessment_dir", None)
+    first = paths.set_assessment_dir("dup1", "10.0.0.5")
+    monkeypatch.setattr(paths, "_current_assessment_dir", None)
+    again = paths.set_assessment_dir("dup1", "10.0.0.5")
+    assert first == again
+    assert len(list((tmp_path / "assessments").glob("assessment_dup1_*"))) == 1
 
 
 def test_dirs_fall_back_without_active_assessment(monkeypatch):
     monkeypatch.setattr(paths, "_current_assessment_dir", None)
     assert paths.scripts_dir() == paths.RESULTS_DIR / "scripts"
     assert paths.artifacts_dir() == paths.ARTIFACTS_DIR
+    assert paths.keys_dir() == paths.RESULTS_DIR / "keys"
+
+
+def test_keys_dir_routes_into_assessment(tmp_path, monkeypatch, _restore_temp_env):
+    # ssh_keygen output (and everything else) must land inside the assessment folder.
+    monkeypatch.setattr(paths, "ASSESSMENTS_DIR", tmp_path / "assessments")
+    monkeypatch.setattr(paths, "_current_assessment_dir", None)
+    d = paths.set_assessment_dir("keyid", "10.0.0.5")
+    assert paths.keys_dir() == d / "keys"
+    assert (d / "keys").is_dir()   # created by set_assessment_dir
 
 
 def test_scratch_env_points_tmp_vars_into_assessment(tmp_path, monkeypatch, _restore_temp_env):

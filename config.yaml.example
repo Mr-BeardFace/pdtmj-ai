@@ -42,6 +42,12 @@ kill_exempt_tools:
 - pip_install
 allow_package_install: true
 allow_web_search: false
+
+# Debug: capture full LLM request/response/command transcripts to llm_debug.log in
+# the engagement results dir. Unredacted (real secrets in plaintext) — leave off
+# unless debugging. Toggle live with /config debug_capture on|off.
+debug_capture: false
+
 hashcat_wordlist: /usr/share/wordlists/rockyou.txt
 hashcat_rules: /usr/share/hashcat/rules/OneRuleToRuleThemAll.rule
 hashcat_binary: hashcat

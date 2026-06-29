@@ -16,6 +16,21 @@ from core.config import get
 OUTPUT_CAP = 8000
 
 
+def _already_present(pkg: str) -> bool:
+    """True if the package (or a same-named binary) is already on the box, so we
+    don't burn time apt-installing what the base image (e.g. Kali) already ships —
+    impacket, kerbrute, netexec, smbclient, etc. A matching binary on PATH counts
+    (covers tools installed outside apt, like a go-built kerbrute); otherwise ask
+    dpkg whether the package itself is installed."""
+    if shutil.which(pkg):
+        return True
+    try:
+        r = subprocess.run(["dpkg", "-s", pkg], capture_output=True, text=True, timeout=10)
+        return r.returncode == 0 and "install ok installed" in r.stdout
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def apt_install(packages, timeout: int = 300) -> dict:
     if not get("allow_package_install", True):
         return {"error": "package installation is disabled (allow_package_install=false in config)"}
@@ -29,6 +44,15 @@ def apt_install(packages, timeout: int = 300) -> dict:
     flags = [p for p in pkgs if p.startswith("-")]
     if flags:
         return {"error": f"refusing package arguments that look like flags: {flags}"}
+
+    # Skip what's already installed — the base image ships most offensive tooling.
+    present = [p for p in pkgs if _already_present(p)]
+    pkgs = [p for p in pkgs if p not in present]
+    if not pkgs:
+        return {"success": True, "installed": [], "already_present": present,
+                "note": ("All requested packages are already installed — nothing to do. "
+                         "If a tool seemed missing, it is more likely a PATH or command-name "
+                         "mismatch than a missing package; check the exact binary name.")}
 
     is_root = hasattr(os, "geteuid") and os.geteuid() == 0
     # When not root, preserve TMPDIR/TEMP/TMP across the sudo boundary (sudo's
@@ -59,12 +83,13 @@ def apt_install(packages, timeout: int = 300) -> dict:
 
     ok = proc.returncode == 0
     return {
-        "success":   ok,
-        "exit_code": proc.returncode,
-        "installed": pkgs if ok else [],
-        "stdout":    (proc.stdout or "")[-OUTPUT_CAP:],
-        "stderr":    err[-OUTPUT_CAP:],
-        "_command":  display,
+        "success":         ok,
+        "exit_code":       proc.returncode,
+        "installed":       pkgs if ok else [],
+        "already_present": present,
+        "stdout":          (proc.stdout or "")[-OUTPUT_CAP:],
+        "stderr":          err[-OUTPUT_CAP:],
+        "_command":        display,
     }
 
 

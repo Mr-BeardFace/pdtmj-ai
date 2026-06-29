@@ -43,6 +43,8 @@ _TOOL_MODULES: list[tuple[str, str]] = [
     ("tools.kerbrute",            "kerbrute"),
     ("tools.impacket_kerberos",   "impacket_kerberos"),
     ("tools.hashcat_crack",       "hashcat_crack"),
+    ("tools.john",                "john"),
+    ("tools.hash_extract",        "hash_extract"),
     ("tools.bloodhound_python",   "bloodhound_python"),
     ("tools.certipy_ad",          "certipy_ad"),
     ("tools.impacket_ntlmrelay",  "impacket_ntlmrelay"),
@@ -87,6 +89,10 @@ _TOOL_MODULES: list[tuple[str, str]] = [
     ("tools.web_exec",         "web_exec"),
     # Ad-hoc scripting (custom exploits / tools at runtime)
     ("tools.run_script",       "run_script"),
+    # Local shell for inspecting downloaded/local files (strings/cat/grep/unzip)
+    ("tools.local_exec",       "local_exec"),
+    # Long-lived offensive daemons (responder / ntlmrelayx / mitm6) with read/stop
+    ("tools.run_daemon",       "run_daemon"),
     # Self-provisioning missing tooling
     ("tools.pip_install",      "pip_install"),
     ("tools.apt_install",      "apt_install"),

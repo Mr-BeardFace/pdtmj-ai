@@ -77,6 +77,12 @@ class ProviderSpec:
     key_optional:    bool = False           # True → no API key required (local servers)
     base_url_config: str  = ""              # config.yaml key holding the base URL (local provider);
                                             # when set, chat/models endpoints derive from it at runtime
+    # Optional operator-private extension points. Populated ONLY by an external
+    # providers module (see _load_external_providers); nothing in the shipped tree
+    # sets them, so both stay None for every provider in the table above. They let a
+    # provider whose auth/transport can't live in the public repo be wired up locally.
+    login:           Callable | None = None  # interactive auth: (args: list[str]) -> (lines, ok)
+    request_handler: Callable | None = None  # custom transport: replaces the built-in run() path
 
     @property
     def key_hint(self) -> str:
@@ -355,8 +361,14 @@ class LLMClient:
         self._spec     = get_provider(self._provider)
         self.on_retry  = on_retry
 
-        # Native (Anthropic SDK) vs OpenAI-compatible (shared httpx backend).
-        if self._spec.native:
+        # Transport selection. A provider may supply its own request_handler (an
+        # operator-private extension); otherwise native (Anthropic SDK) vs
+        # OpenAI-compatible (shared httpx backend).
+        if self._spec.request_handler:
+            # The custom transport owns its own auth — no SDK client, no key here.
+            self._anthropic_client = None
+            self._oai_key          = None
+        elif self._spec.native:
             self._anthropic_client = anthropic.Anthropic(
                 api_key=resolve_provider_key(self._spec, api_key)
             )
@@ -379,6 +391,9 @@ class LLMClient:
         max_tokens: int = 8192,
         temperature: float | None = None,
     ):
+        if self._spec.request_handler:
+            return self._spec.request_handler(
+                self, model, system, messages, tools, max_tokens, temperature)
         if not self._spec.native:
             return self._run_openai_compat(model, system, messages, tools, max_tokens, temperature)
         return self._run_anthropic(model, system, messages, tools, max_tokens, temperature)
@@ -575,3 +590,57 @@ class LLMClient:
     def _notify_retry(self, attempt: int, wait: float, reason: str) -> None:
         if self.on_retry:
             self.on_retry(attempt, wait, reason)
+
+
+# ── Operator-private provider extensions ────────────────────────────────────────
+# An optional seam for providers that can't ship in the public repo (e.g. one whose
+# transport/auth depends on the operator's own setup). The repo ships NO such module;
+# this is inert unless the operator drops one in. Resolution order:
+#   1. $PDTMJ_LOCAL_PROVIDERS — explicit path to a .py file
+#   2. ~/.config/pdtmj-ai/providers_local.py — the default location
+# The module must expose `register(api)`, where `api` carries ProviderSpec, the
+# PROVIDERS dict to insert into, and the response classes for building results.
+
+def _external_api():
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        ProviderSpec=ProviderSpec,
+        PROVIDERS=PROVIDERS,
+        Message=_Message,
+        TextBlock=_TextBlock,
+        ToolUseBlock=_ToolUseBlock,
+        Usage=_Usage,
+        KEYRING_SERVICE=_KEYRING_SERVICE,
+        APIAuthError=APIAuthError,
+        APIAccountLimitError=APIAccountLimitError,
+    )
+
+
+def _external_providers_path():
+    from pathlib import Path
+    override = os.environ.get("PDTMJ_LOCAL_PROVIDERS")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".config" / "pdtmj-ai" / "providers_local.py"
+
+
+def _load_external_providers() -> None:
+    import importlib.util
+    path = _external_providers_path()
+    if not path.is_file():
+        return
+    try:
+        spec = importlib.util.spec_from_file_location("pdtmj_providers_local", str(path))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        register = getattr(module, "register", None)
+        if callable(register):
+            register(_external_api())
+    except Exception as e:
+        # A broken or absent private module must never take the app down — the
+        # built-in providers still work. Surface the reason on stderr and move on.
+        import sys
+        print(f"[providers_local] failed to load {path}: {e}", file=sys.stderr)
+
+
+_load_external_providers()

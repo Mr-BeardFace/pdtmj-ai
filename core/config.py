@@ -10,17 +10,17 @@ _CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
 _DEFAULTS: dict[str, Any] = {
     "confirm_exploitation": True,
     # Master switch for the exploitation phase (plan → exploit → validate). On by
-    # default for all personas; toggle with /exploit on|off.
+    # default for all personas; toggle with /config exploitation_enabled on|off.
     "exploitation_enabled": True,
     # Master switch for the reporting phase (the report-writer agent + HTML). On by
-    # default; toggle with /report on|off. Off is handy during testing so a run
+    # default; toggle with /config reporting_enabled on|off. Off is handy during testing so a run
     # doesn't spend tokens/time synthesizing a report — `/report` still generates
     # one on demand, and findings/state are saved either way.
     "reporting_enabled": True,
     "global_model": None,
     # Per-agent turn budget (one LLM round = one turn). 0 = unlimited (no cap —
     # an agent runs until it stops on its own; use with care, it can run long).
-    # Change at runtime with /turns <n|off>.
+    # Change at runtime with /config max_turns_default <n> (0 = unlimited).
     "max_turns_default": 60,
     # Treat the turn budget as a SLIDING "turns since last progress" window rather
     # than a hard total: every turn that banks a finding/credential/flag, catches a
@@ -60,7 +60,7 @@ _DEFAULTS: dict[str, Any] = {
     # Master switch. OFF → the engagement runs exactly as before (one surface,
     # one agent at a time). ON → independent surfaces are worked concurrently and
     # the exploit phase fans out bounded "prove or refute" workers across the top
-    # plan items, first solve cancelling the rest. Toggle with /parallel on|off.
+    # plan items, first solve cancelling the rest. Toggle with /config parallel_enabled on|off.
     "parallel_enabled": False,
     # Global ceiling on concurrent LLM agent loops, shared across BOTH parallel
     # layers (surfaces × hypotheses) so nesting can't multiply into a quota
@@ -109,9 +109,9 @@ _DEFAULTS: dict[str, Any] = {
     "repeat_nudge_threshold": 3,
     # Tools exempt from the loop nudge — ones that are *meant* to be called
     # repeatedly with identical args (polling for OOB callbacks, background-job
-    # completion, or a reverse shell connecting back). Repeating these is normal
-    # operation, not a stuck loop, so they never count toward or trigger a nudge.
-    "nudge_exempt_tools": ["oob_listener", "check_jobs", "list_shells", "wait"],
+    # completion, a reverse shell connecting back, or a run_daemon capturing hashes).
+    # Repeating these is normal operation, not a stuck loop, so they never nudge.
+    "nudge_exempt_tools": ["oob_listener", "check_jobs", "list_shells", "wait", "run_daemon"],
     # Pivot nudge: after this many CONSECUTIVE failed/empty tool results (errors or
     # non-zero exit codes), tell the agent it may be on a dead end — bank what it
     # has and change approach. Catches the "retry near-identical thing forever"
@@ -126,6 +126,16 @@ _DEFAULTS: dict[str, Any] = {
     # pattern). Nudge to bank results and pivot. Engagement-level so it survives the
     # agent cycling that resets per-run counters. 0 disables.
     "grind_nudge_after_scripts": 12,
+    # Foothold capitalization. Two engagement-level nudges once code execution is
+    # confirmed (an id/whoami readback, a caught shell, a driven shell_exec):
+    #  • bank: turns before nudging to annotate the foothold as a verified finding.
+    #  • capitalize: turns of exec-confirmed-but-nothing-extracted before nudging to
+    #    loot it (flag/creds/privesc) with the primitive already in hand. Cleared by
+    #    looted creds/flags or a stable channel — not by chasing a shell. Re-fires
+    #    every `repeat` turns until something lands. 0 disables either nudge.
+    "foothold_bank_nudge_after_turns": 2,
+    "foothold_capitalize_nudge_after_turns": 3,
+    "foothold_capitalize_repeat_turns": 5,
     # Tools exempt from the bulk /abort kill — ones where terminating a process
     # mid-flight is riskier than letting it finish (a package transaction can
     # corrupt the dpkg/pip state). /abort leaves these running; a targeted
@@ -142,6 +152,10 @@ _DEFAULTS: dict[str, Any] = {
     # Kill switch for operators who don't want the engagement touching the host's
     # packages. On by default — the agent runs on your authorized test box.
     "allow_package_install": True,
+
+    # Full-transcript debug capture (off unless /config debug_capture on). Writes
+    # every LLM request/response/command to llm_debug.log in the engagement dir.
+    "debug_capture": False,
 
     # ── hashcat (offline cracking, runs as a background job) ──────────────────
     "hashcat_wordlist": "/usr/share/wordlists/rockyou.txt",

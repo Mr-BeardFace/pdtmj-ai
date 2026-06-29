@@ -167,6 +167,7 @@ go_pkg "dalfox"     dalfox      "github.com/hahwul/dalfox/v2@latest"
 section "Credential attacks"
 
 apt_pkg "hydra" hydra hydra
+apt_pkg "john"  john  john     # John the Ripper + the *2john extractors (hash_extract)
 
 # ─────────────────────────────────────────────────────────────────────────────
 section "SMB / Windows"

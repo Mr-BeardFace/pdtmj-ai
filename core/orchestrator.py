@@ -17,7 +17,7 @@ from core.engagement_state import EngagementState
 from core.artifacts import ArtifactStore
 from core.jobs import JobManager, Job
 from core.proc import ProcessRegistry, bind as proc_bind
-from core.paths import ARTIFACTS_DIR
+from core.paths import ARTIFACTS_DIR, artifacts_dir
 from core.utils import mask_secret
 from tools.annotate_finding import TOOL_DEFINITION as ANNOTATE_DEF
 from tools.queue_followup import TOOL_DEFINITION as FOLLOWUP_DEF
@@ -36,6 +36,7 @@ from tools.shell_exec import TOOL_DEFINITION as SHELL_EXEC_DEF
 from tools.list_shells import TOOL_DEFINITION as LIST_SHELLS_DEF
 from tools.list_scripts import TOOL_DEFINITION as LIST_SCRIPTS_DEF
 from tools.record_persistence import TOOL_DEFINITION as RECORD_PERSIST_DEF
+from tools.load_playbook import TOOL_DEFINITION as LOAD_PLAYBOOK_DEF, load_playbook as _load_playbook_fn
 from core.shells import ShellManager
 
 console = Console()
@@ -52,7 +53,8 @@ SEV_COLOR = {
 _INTERCEPTED = {"annotate_finding", "queue_followup", "record_plan", "register_surface",
                 "record_credential", "record_service", "record_flag", "conclude_engagement",
                 "grep_artifact", "read_artifact", "check_jobs", "list_scripts",
-                "start_listener", "shell_exec", "list_shells", "record_persistence", "wait"}
+                "start_listener", "shell_exec", "list_shells", "record_persistence", "wait",
+                "load_playbook"}
 
 # Tools whose call represents a credential auth attempt (for the auth ledger).
 _AUTH_TOOLS = {"ssh_exec", "netexec", "ftp", "smbclient"}
@@ -140,6 +142,10 @@ _ALWAYS_BACKGROUND = {
     "nuclei_scan",
     "sqlmap_scan",
     "masscan",
+    "kerbrute",          # userenum/spray/brute over a wordlist — long runner
+    "hydra",             # online password brute/spray — long runner
+    "bloodhound_python", # AD collection pass — long runner
+    "john",              # offline cracking — long runner (like hashcat_crack)
 }
 
 # Tool output handling. A single string field longer than this is offloaded to a
@@ -151,8 +157,9 @@ _FIELD_OFFLOAD_CHARS  = 3000
 _RESULT_OFFLOAD_CHARS = 6000
 # read_artifact/grep_artifact slices are returned directly (already line-bounded) and
 # only TRUNCATED if pathologically large — never re-offloaded to a new artifact, which
-# would loop (the agent asked to read this very slice).
-_ARTIFACT_VIEW_CAP    = 16000
+# would loop (the agent asked to read this very slice). Kept in the same ballpark as
+# the offload threshold so a single read-back can't dwarf what offloading saved.
+_ARTIFACT_VIEW_CAP    = 10000
 
 FINDINGS_SCHEMA_INSTRUCTIONS = """
 
@@ -442,7 +449,14 @@ class Orchestrator:
         self.interrupt_queue: queue.Queue = interrupt_queue or queue.Queue()
         self._save_individual_runs = save_individual_runs
         self._session_logger = session_logger
-        self._artifacts = artifact_store or ArtifactStore(ARTIFACTS_DIR)
+        # Default store resolves into the active assessment folder (artifacts_dir())
+        # so offloaded output stays with the assessment; ARTIFACTS_DIR is the
+        # fallback only when no assessment is active (CLI single runs / tests).
+        self._artifacts = artifact_store or ArtifactStore(artifacts_dir())
+        # Signatures of artifact slices already pulled into context (read offset/limit
+        # or grep pattern) — used to flag a literal re-read so the agent doesn't loop
+        # re-fetching the same bytes.
+        self._artifact_views: set[str] = set()
         # Live child-process registry — lets the operator kill a single job
         # (/job kill) or every in-flight process (/abort). Tools register via
         # core.proc.run; foreground calls and jobs bind to it below.
@@ -518,9 +532,8 @@ class Orchestrator:
         return w
 
     def _emit(self, event_type: str, **data) -> None:
-        # Mask known credential secrets in everything sent to logs/UI — except the
-        # dedicated cred events, which the UI needs in full for click-to-reveal.
-        if (((self.state and self.state.credentials) or self._secret_values)
+        # Mask confirmed-credential secrets in logs/UI; skip credential/state_update.
+        if (self.state and any(c.verified for c in self.state.credentials)
                 and event_type not in ("state_update", "credential")):
             data = self._redact_obj(data)
         if self._session_logger:
@@ -728,8 +741,9 @@ class Orchestrator:
             res = self._shells.exec(sid, cmd, timeout=inputs.get("timeout", 15))
             if "output" in res and not res.get("error"):
                 self._shell_exec_ok += 1          # active foothold work → budget progress
-                if self.state:                    # driving a shell = confirmed exec
+                if self.state:                    # driving a shell = confirmed + stabilized exec
                     self.state.note_exec_confirmed()
+                    self.state.note_shell_confirmed()
             self._emit("shell_exec", session_id=sid, command=cmd,
                        summary=(res.get("output", "")[:120] if "output" in res else res.get("error", "")))
             return res
@@ -756,6 +770,7 @@ class Orchestrator:
                 cleanup=inputs.get("cleanup", ""), os=inputs.get("os", ""),
                 source_agent=source_agent,
             )
+            self.state.note_persistence_recorded()   # foothold made durable → clears stabilize nudge
             self._print(f"  [bold yellow][change][/bold yellow] {kind} @ {host}")
             self._emit("persistence", kind=kind, host=host, detail=item.detail,
                        before=item.before, cleanup=item.cleanup, os=item.os)
@@ -792,17 +807,37 @@ class Orchestrator:
                             self._secret_values.add(t[len(fl) + 1:])
 
     def _redact_secrets(self, text: str) -> str:
-        if not isinstance(text, str):
+        """Mask secrets of CONFIRMED (verified) credentials only. Skip generic
+        words/usernames and anything that's part of an in-scope hostname/target."""
+        if not isinstance(text, str) or not self.state:
             return text
-        creds = self.state.credentials if self.state else []
-        for c in creds:
+        protected = self._scope_strings()
+        for c in self.state.credentials:
             s = c.secret
-            if s and len(s) >= 5 and s in text:
-                text = text.replace(s, c.secret_masked or mask_secret(s))
-        for s in self._secret_values:
-            if len(s) >= 5 and s in text:
-                text = text.replace(s, mask_secret(s))
+            if not (c.verified and s and len(s) >= 5 and s in text):
+                continue
+            if s.lower() in _GENERIC_USERS:                  # don't mangle usernames
+                continue
+            if any(s.lower() in host for host in protected):  # don't mangle hostnames
+                continue
+            text = text.replace(s, c.secret_masked or mask_secret(s))
         return text
+
+    def _scope_strings(self) -> set[str]:
+        """In-scope hostnames/targets (lower-cased), protected from redaction."""
+        out: set[str] = set()
+        st = self.state
+        if not st:
+            return out
+        for t in st.scope_targets:
+            if t:
+                out.add(t.lower())
+        for h in st.recon.host_names.values():
+            if h:
+                out.add(h.lower())
+        if st.target:
+            out.add(st.target.lower())
+        return out
 
     def _redact_obj(self, obj):
         if isinstance(obj, str):
@@ -894,7 +929,13 @@ class Orchestrator:
         ))
         self._emit("agent_start", agent=agent.name, target=target, run_id=run.id)
 
-        from core.config import get_model_for_agent, get_global_model, get_temperature_for_agent
+        from core.config import (get_model_for_agent, get_global_model,
+                                  get_temperature_for_agent, get as _config_get)
+        # Full-transcript debug capture (off unless /debug on). Re-read per agent so a
+        # mid-engagement toggle takes effect on the next agent; appended to one file.
+        from core import debug_capture
+        debug_capture.configure(self.results_dir / "llm_debug.log",
+                                bool(_config_get("debug_capture", False)))
         effective_model = get_model_for_agent(agent.name) or get_global_model() or agent.model
         # Per-agent sampling temperature (None → provider default). Resolved once per run.
         effective_temperature = get_temperature_for_agent(agent.name)
@@ -903,6 +944,10 @@ class Orchestrator:
         phase = agent.metadata.get("phase", "assessment")
         # Meta-tools available everywhere; plan/surface gated by phase.
         meta_defs = [ANNOTATE_DEF, FOLLOWUP_DEF, GREP_ARTIFACT_DEF, READ_ARTIFACT_DEF]
+        # Retrievable domain methodology — available to any agent that works a target,
+        # so the generalist can pull a playbook instead of routing to a specialist.
+        if phase not in ("planning", "reporting"):
+            meta_defs.append(LOAD_PLAYBOOK_DEF)
         if "record_plan" in agent.scope or phase == "planning":
             meta_defs.append(RECORD_PLAN_DEF)
         # Any agent that actively touches a target may discover a new surface;
@@ -986,6 +1031,11 @@ class Orchestrator:
         # Foothold-banking: turns after exec is confirmed to allow before nudging to
         # annotate it. Small — confirm exec, then bank within a turn or two.
         foothold_bank_after = int(_cfg_get("foothold_bank_nudge_after_turns", 2) or 0)
+        # Capitalize-on-exec: turns of exec-confirmed-but-nothing-extracted before
+        # nudging to loot the foothold (flag/creds/privesc) with the primitive it has;
+        # re-fires every `cap_repeat` turns until something is banked.
+        cap_after  = int(_cfg_get("foothold_capitalize_nudge_after_turns", 3) or 0)
+        cap_repeat = int(_cfg_get("foothold_capitalize_repeat_turns", 5) or 0)
         # Last substantive agent text — becomes the handoff to the next agent if the
         # run ends without a clean text-only close-out (e.g. hits the turn cap).
         last_text = ""
@@ -1064,13 +1114,22 @@ class Orchestrator:
                     run.status = "concluded"
                     break
 
-                response = self.llm.run(
-                    model=effective_model,
-                    system=system,
-                    messages=messages,
-                    tools=tool_schemas,
-                    temperature=effective_temperature,
-                )
+                debug_capture.log_request(agent.name, _turn, effective_model,
+                                          system, messages, tool_schemas)
+                try:
+                    response = self.llm.run(
+                        model=effective_model,
+                        system=system,
+                        messages=messages,
+                        tools=tool_schemas,
+                        temperature=effective_temperature,
+                    )
+                except Exception as e:
+                    # Capture the failed call for debug, then re-raise so the normal
+                    # error handling (retry/abort/surface) is unchanged.
+                    debug_capture.log_error(agent.name, _turn, e)
+                    raise
+                debug_capture.log_response(agent.name, _turn, response)
 
                 usage = response.usage
                 run.token_usage.input_tokens       += usage.input_tokens
@@ -1130,6 +1189,7 @@ class Orchestrator:
                     # Register any secret carried in this call's inputs BEFORE any
                     # emit/log in this iteration, so it is masked from first sight.
                     self._register_input_secrets(tb.input, tb.name)
+                    debug_capture.log_command(agent.name, _turn, tb.name, tb.input)
 
                     # ── intercepted tools ──────────────────────────────────────
                     if tb.name == "annotate_finding":
@@ -1294,6 +1354,18 @@ class Orchestrator:
                             "type":        "tool_result",
                             "tool_use_id": tb.id,
                             "content":     json.dumps(self._handle_list_scripts(tb.input)),
+                        })
+                        continue
+
+                    if tb.name == "load_playbook":
+                        result = _load_playbook_fn(tb.input.get("names", []))
+                        names = ", ".join(result.get("loaded", [])) or "—"
+                        self._print(f"  [magenta]▣ playbook loaded:[/magenta] {names}")
+                        self._emit("playbook_loaded", names=result.get("loaded", []))
+                        tool_results.append({
+                            "type":        "tool_result",
+                            "tool_use_id": tb.id,
+                            "content":     json.dumps(result),   # whole — not offloaded
                         })
                         continue
 
@@ -1551,6 +1623,32 @@ class Orchestrator:
                                 "nothing recorded. Call annotate_finding for the code-execution/access NOW "
                                 "— verified=true, with the command and its output as evidence — before "
                                 "continuing. Put any credentials in record_credential, not the finding.]"
+                            ),
+                        })
+
+                    # Capitalize-on-exec nudge (engagement-level) — exec is proven but
+                    # nothing has been pulled from it. Pushes value extraction with the
+                    # primitive already in hand; cleared by looted creds/flags or a stable
+                    # channel — NOT by chasing a prettier shell. Re-fires until something
+                    # lands. (A live run got RCE then burned ~25 min breaking a working
+                    # exploit to plant an SSH key, looting nothing.)
+                    cap_n = self.state.capitalize_due(cap_after, cap_repeat)
+                    if cap_n:
+                        self._print("  [yellow]💰 capitalize nudge — exec confirmed, nothing extracted[/yellow]")
+                        self._emit("capitalize_nudge", turns=cap_n)
+                        tool_results.append({
+                            "type": "text",
+                            "text": (
+                                "[Engine notice: you have CODE EXECUTION but have not pulled anything from it "
+                                "yet. Use the primitive you ALREADY have to grab immediate wins NOW — `id`/"
+                                "`sudo -l`, the user flag, readable creds/config, SUID/cron/writable-path "
+                                "privesc vectors — and record them (record_credential / record_flag / "
+                                "annotate_finding). A one-shot/blind primitive is fine for this; you do NOT "
+                                "need a full shell to read files. Stabilize into a shell (reverse shell / SSH "
+                                "key) only if sustained interactive work needs it — and never break a working "
+                                "exploit chasing a prettier channel. If a command fails where a simple one "
+                                "worked, the channel mangled its spaces/quotes — keep the format that worked "
+                                "and change only the command.]"
                             ),
                         })
 
@@ -1820,8 +1918,8 @@ class Orchestrator:
             self.state.store_cache(name, job.inputs, result, summary)
             self.state.ingest_tool_result(name, result, source_agent=agent_name)
             self._emit_state_update()
-            # hashcat recovered plaintext(s) → surface as credential event(s)
-            if name == "hashcat_crack":
+            # hashcat/john recovered plaintext(s) → surface as credential event(s)
+            if name in ("hashcat_crack", "john"):
                 for c in result.get("cracked", []):
                     pw = c.get("plaintext")
                     if pw:
@@ -1912,16 +2010,31 @@ class Orchestrator:
     def _handle_artifact_query(self, name: str, inputs: dict) -> dict:
         aid = inputs.get("artifact_id", "")
         if name == "grep_artifact":
-            return self._artifacts.grep(
+            result = self._artifacts.grep(
                 aid, inputs.get("pattern", ""),
                 ignore_case=inputs.get("ignore_case", True),
                 context=inputs.get("context", 0),
                 max_matches=inputs.get("max_matches", 200),
                 invert=inputs.get("invert", False),
             )
-        return self._artifacts.read(
-            aid, offset=inputs.get("offset", 0), limit=inputs.get("limit", 200),
-        )
+            sig = f"grep:{aid}:{inputs.get('pattern','')}"
+        else:
+            result = self._artifacts.read(
+                aid, offset=inputs.get("offset", 0), limit=inputs.get("limit", 200),
+            )
+            sig = f"read:{aid}:{inputs.get('offset', 0)}:{inputs.get('limit', 200)}"
+        # Re-read guard: pulling the IDENTICAL slice/grep back into context wastes a
+        # turn and re-bills the same bytes. Flag it so the agent fetches something new
+        # (a different window/pattern) or moves on, instead of re-reading on a loop.
+        if isinstance(result, dict) and sig in self._artifact_views:
+            result = dict(result)
+            result["_already_viewed"] = (
+                "You already pulled this exact slice earlier this run. Re-reading it "
+                "adds nothing — use a different offset/limit or grep_artifact pattern "
+                "to see something new, or act on what you have."
+            )
+        self._artifact_views.add(sig)
+        return result
 
     def _cap_artifact_view(self, result):
         """Bound a read_artifact/grep_artifact result for the prompt by truncating its

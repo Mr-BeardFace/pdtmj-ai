@@ -85,6 +85,12 @@ def test_session_carries_cookies_across_redirect_and_calls():
         # without the session, no cookie is sent
         r3 = http_request("GET", "http://127.0.0.1:8732/echo")
         assert "(none)" in r3["body"]
+
+        # a no-session request that SETS a cookie gets an in-band nudge to use one;
+        # a request made WITH a session does not.
+        r4 = http_request("GET", "http://127.0.0.1:8732/login")
+        assert "_session_hint" in r4
+        assert "_session_hint" not in r1            # r1 used a session
     finally:
         srv.shutdown()
         import os

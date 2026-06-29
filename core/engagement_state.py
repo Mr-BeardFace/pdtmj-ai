@@ -320,13 +320,14 @@ class EngagementState(BaseModel):
         return self._exec_confirmed
 
     def note_exec_confirmed(self) -> None:
-        """Code execution on a target was observed (an `id`/`whoami` readback, a
-        caught shell, a successful shell_exec). Idempotent — only the first matters;
-        the foothold-banking nudge keys off it until a verified finding is banked."""
+        """Code execution observed (id/whoami readback, caught shell, shell_exec).
+        Idempotent — snapshots loot counts so post-exec progress can be detected."""
         if not self._exec_confirmed:
             self._exec_confirmed = True
             self._foothold_banked = False
             self._turns_since_exec = 0
+            self._creds_at_exec = len(self.credentials)
+            self._flags_at_exec = len(self.flags)
 
     def note_foothold_banked(self) -> None:
         """A verified finding was annotated after exec was confirmed — the foothold
@@ -344,6 +345,52 @@ class EngagementState(BaseModel):
         if self._turns_since_exec >= threshold and not self._foothold_nudged:
             self._foothold_nudged = True
             return self._turns_since_exec
+        return 0
+
+    # ── capitalize-on-exec nudge ────────────────────────────────────────────────
+    # Exec proven but no value pulled from it. The failure cuts both ways: a run can
+    # re-grind one-shot exec reading files one at a time, OR bolt straight for a stable
+    # channel/persistence and break a working exploit chasing a shell — both end with
+    # nothing banked. So the nudge pushes EXTRACTING VALUE (flag, creds, sudo -l,
+    # privesc), satisfied by any loot OR a stable channel. Re-fires; this is a streak.
+    _shell_confirmed: bool = PrivateAttr(default=False)        # drove a cmd through a live shell
+    _persistence_recorded: bool = PrivateAttr(default=False)   # record_persistence called
+    _creds_at_exec: int = PrivateAttr(default=0)
+    _flags_at_exec: int = PrivateAttr(default=0)
+    _turns_since_exec_stab: int = PrivateAttr(default=0)
+    _capitalize_nudges: int = PrivateAttr(default=0)
+
+    def note_shell_confirmed(self) -> None:
+        """A command was driven through a live shell session — a stable channel exists."""
+        self._shell_confirmed = True
+
+    def note_persistence_recorded(self) -> None:
+        """A durable foothold (key/webshell/user/cron) was planted and recorded."""
+        self._persistence_recorded = True
+
+    def capitalized(self) -> bool:
+        """Value has been pulled from the exec: a stable channel, planted persistence,
+        or looted creds/flags. (Annotating the RCE finding alone doesn't count.)"""
+        return (self._shell_confirmed or self._persistence_recorded
+                or len(self.credentials) > self._creds_at_exec
+                or len(self.flags) > self._flags_at_exec)
+
+    def capitalize_due(self, threshold: int, repeat_every: int = 0) -> int:
+        """Tick once per turn. Returns turns-since-exec when the nudge is due (exec
+        confirmed, nothing extracted yet, threshold reached), else 0. Re-fires every
+        `repeat_every` turns after the first while nothing has been extracted."""
+        if not (threshold and self._exec_confirmed and not self.capitalized()):
+            return 0
+        self._turns_since_exec_stab += 1
+        n = self._turns_since_exec_stab
+        if n < threshold:
+            return 0
+        if self._capitalize_nudges == 0:
+            self._capitalize_nudges += 1
+            return n
+        if repeat_every and (n - threshold) % repeat_every == 0:
+            self._capitalize_nudges += 1
+            return n
         return 0
 
     def model_post_init(self, __context) -> None:
@@ -390,6 +437,12 @@ class EngagementState(BaseModel):
         clone._foothold_banked = self._foothold_banked
         clone._turns_since_exec = self._turns_since_exec
         clone._foothold_nudged = self._foothold_nudged
+        clone._shell_confirmed = self._shell_confirmed
+        clone._persistence_recorded = self._persistence_recorded
+        clone._creds_at_exec = self._creds_at_exec
+        clone._flags_at_exec = self._flags_at_exec
+        clone._turns_since_exec_stab = self._turns_since_exec_stab
+        clone._capitalize_nudges = self._capitalize_nudges
         return clone
 
     def merge_marks(self) -> dict:
@@ -516,6 +569,11 @@ class EngagementState(BaseModel):
             self.note_exec_confirmed()
         if other._foothold_banked:
             self._foothold_banked = True
+        # stabilization is sticky too — a shell/persistence on any worker capitalizes
+        if other._shell_confirmed:
+            self._shell_confirmed = True
+        if other._persistence_recorded:
+            self._persistence_recorded = True
 
         # objective — first worker to conclude wins
         if other.concluded and not self.concluded:

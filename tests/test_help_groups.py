@@ -34,8 +34,7 @@ def test_overview_is_grouped_and_aligned():
     # group headers present
     for title, _ in _HELP_GROUPS:
         assert title in blob
-    # the long /parallel arg-string is NOT in the overview (lives in /help parallel)
-    assert "agents N|surfaces N" not in blob
-    # but it IS in the per-command detail
-    detail = "\n".join(dispatch("/help parallel")[0])
-    assert "surfaces" in detail
+    # a long arg-string lives in the per-command detail, not the overview
+    assert "<assessment-id>" not in blob
+    detail = "\n".join(dispatch("/help assessment")[0])
+    assert "assessment-id" in detail

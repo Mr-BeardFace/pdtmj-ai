@@ -33,8 +33,11 @@ product. It's under active, continuous testing and the internals change often.
 
 Point it at a target with an objective; the engine enumerates, identifies attack
 surfaces, exploits what it can confirm, turns code execution into a stable
-foothold, escalates, and writes up findings. It runs as an interactive TUI so you
-can watch each step, interrupt, feed it credentials, and steer.
+foothold, loots and cracks credentials (offline cracking, file-format hashes, and
+NTLM capture/relay), escalates, and writes up findings. Files pulled off a target
+are saved locally and analyzed on the box; every change made to a target is
+tracked and reversible. It runs as an interactive TUI so you can watch each step,
+interrupt, feed it credentials, and steer.
 
 Personas tune behavior: `pentest` (full, methodical) and `pentest-ctf`
 (flag-focused, fast, pinned to a generalist agent so it solves a box without
@@ -119,8 +122,9 @@ Each pass:
 
 A lead's kind and rung decide the broad move (enumerate it, exploit it, escalate
 from it), and for a specific service there's a default specialist — `http → web`,
-`smb`/`ldap`/`kerberos → active-directory`, `mysql`/`mssql`/`redis → database`,
-`ssh`/`ftp`/`smtp` → network, `aws`/`gcp` → cloud.
+`ldap`/`kerberos → active-directory` (a real domain controller, not a bare SMB
+host), `mysql`/`mssql`/`redis → database`, `smb`/`ssh`/`ftp`/`smtp` → network,
+`aws`/`gcp` → cloud.
 
 Selection is **reasoning-first with that map as a floor**: when a specialist is
 available, a small LLM router decides between it and the generalist `exploitation`
@@ -132,10 +136,31 @@ Finally, the **persona controls which agents are even in play**. `pentest` expos
 all of them — full specialist routing, surfaces worked in parallel. `pentest-ctf`
 loads only a generalist spine (enumeration, exploitation, post-exploitation,
 validation, report), so on a single box exploitation always lands on the generalist
-with no routing decision to get wrong. Either way, shared methodology — like turning
-code execution into a stable foothold — lives in one place and is pulled into every
-agent that needs it, so the generalist and the specialists work a foothold the same
-way.
+with no routing decision to get wrong.
+
+### Two ways to deliver domain depth: route, or retrieve
+
+There are two ways the same domain methodology reaches an agent, and the project is
+mid-transition between them:
+
+- **Route to a specialist (the `pentest` persona).** A web/AD/DB surface is dispatched
+  to the `web` / `active-directory` / `database` agent — a separate run with that
+  domain's methodology as its system prompt.
+- **Retrieve a playbook (the `pentest-ctf` persona).** There are no specialists in the
+  pool; the generalist recognizes the domain from what it enumerated and calls the
+  `load_playbook` tool to pull that methodology **into its own context** — same
+  knowledge, no routing, no handoff. The `playbooks/` directory holds one document per
+  domain (`web`, `active-directory`, `database`, `network`, `cloud`); the specialist
+  agents and the playbooks are the same methodology in two delivery forms.
+
+The retrieval model is deliberate: routing reliability stops gating domain depth, one
+agent holds the whole picture, and you only pay for the playbooks a box actually needs.
+The direction is to move the `pentest` persona onto retrieval too — a generalist that
+retrieves, run in parallel one-per-host for larger scopes.
+
+Shared *foothold* methodology (turning code execution into a stable session) is handled
+a third way — a partial spliced into every exploitation-capable agent at load time — so
+the generalist and the specialists work a foothold identically.
 
 ## Status
 
@@ -145,8 +170,8 @@ see [Known limitations](#known-limitations).
 ## Requirements
 
 - **A Kali-style Linux host** (this is built and tested on Kali) with the usual
-  offensive tooling on `PATH` — `nmap`, `netexec`, `impacket`, `hashcat`, etc.
-  See `install.sh`.
+  offensive tooling on `PATH` — `nmap`, `netexec`, `impacket`, `hashcat`, `john`,
+  `responder`, `smbclient`, etc. `install.sh` provisions what's needed.
 - **Passwordless `sudo` for the user that runs the tool.** Many tools shell out
   to commands that need root (raw-socket scans, `/etc/hosts` edits, etc.), and
   the engine does not stop to prompt for a password mid-run. Configure the

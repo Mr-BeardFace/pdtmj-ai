@@ -31,8 +31,34 @@ def test_info_overview():
     lines, ok = handle_info()
     assert ok is True
     blob = "\n".join(lines)
-    for label in ("Persona", "Provider", "Global model", "Loop caps", "API keys"):
+    # The fixed anchors are always shown.
+    for label in ("Persona", "Provider", "Global model",
+                  "Exploitation", "Reporting", "Confirm exploit"):
         assert label in blob
+    # No command hints, and the old always-on rows are gone from the anchor block.
+    assert "(/persona set)" not in blob and "(/exploit" not in blob
+    assert "Loop caps" not in blob and "LLM routing" not in blob
+
+
+def test_config_exploit_toggles():
+    # Exploitation + confirm gate are now set through /config (the single config cmd).
+    from core.config import get
+    dispatch("/config confirm_exploitation off")
+    assert get("confirm_exploitation", True) is False
+    dispatch("/config confirm_exploitation on")
+    assert get("confirm_exploitation", True) is True
+    dispatch("/config exploitation_enabled off")
+    assert get("exploitation_enabled", True) is False
+    assert get("confirm_exploitation", True) is True   # independent of the phase toggle
+    dispatch("/config exploitation_enabled on")
+    assert get("exploitation_enabled", True) is True
+
+
+def test_old_toggle_commands_removed():
+    for cmd in ("/exploit on", "/turns 5", "/websearch off", "/parallel on", "/debug on"):
+        res = dispatch(cmd)
+        assert res is not None and res[1] is False
+        assert any("Unknown command" in ln for ln in res[0])
 
 
 def test_info_routed_through_dispatch():

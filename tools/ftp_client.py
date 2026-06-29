@@ -1,6 +1,9 @@
 """FTP client tool — login, list, retrieve, and upload over FTP (ftplib)."""
+import os
 from io import BytesIO
 from typing import Optional
+
+from core import paths
 
 CONTENT_CAP = 16000
 
@@ -50,8 +53,14 @@ def ftp(host: str, port: int = 21, username: str = "anonymous",
             buf = BytesIO()
             client.retrbinary("RETR " + path, buf.write)
             raw = buf.getvalue()
+            # Save the bytes to the local downloads dir so binaries survive intact
+            # and other tools can reach the file; still return a text preview.
+            dest = os.path.join(str(paths.downloads_dir()), os.path.basename(path.replace("\\", "/")))
+            with open(dest, "wb") as fh:
+                fh.write(raw)
             text = raw.decode("utf-8", errors="replace")
             result["path"] = path
+            result["saved_to"] = dest
             result["size_bytes"] = len(raw)
             result["content"] = text[:CONTENT_CAP]
             result["truncated"] = len(text) > CONTENT_CAP

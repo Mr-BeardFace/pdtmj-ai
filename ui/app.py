@@ -640,7 +640,7 @@ class PentestApp(App):
         # hosts/ports/services. One row per host:port; host-level columns
         # (Hostname/OS) repeat down a host's rows so each line stands alone.
         ht = self.query_one("#hosts-table", DataTable)
-        for label in ("IP", "Hostname", "OS", "Port", "Service", "Fingerprint", "Tech"):
+        for label in ("IP", "Hostname", "OS", "Port", "Protocol", "Service", "Fingerprint", "Tech"):
             ht.add_column(label, key=label)
 
         # Flags table (CTF) — columns set up; tab shown only for the CTF persona
@@ -1178,14 +1178,17 @@ class PentestApp(App):
                     self._show_cmd_output(["Nothing to resume. Start a new run instead."], False)
             return
 
-        # /report — bare: generate HTML now; on|off: toggle auto-reporting at end
+        # /report — bare: generate HTML now; regen: re-synthesize a loaded assessment.
+        # (Auto-reporting toggle moved to /config reporting_enabled.)
         if parsed and parsed[0] == "/report":
             arg = (parsed[1][0].lower() if parsed[1] else "")
             if arg in ("on", "off", "true", "false", "enable", "disable",
                        "enabled", "disabled", "yes", "no", "0", "1"):
-                from ui.commands import handle_report
-                lines, ok = handle_report(parsed[1])
-                self._show_cmd_output(lines, ok)
+                self._show_cmd_output(
+                    ["Auto-reporting is now set via /config reporting_enabled "
+                     f"{'on' if arg in ('on','true','enable','enabled','yes','1') else 'off'}.",
+                     "  /report (no arg) still renders a report now; /report regen re-synthesizes."],
+                    False)
             elif arg in ("regen", "resynth", "resynthesize", "synth", "new"):
                 # Re-run the report AGENT (LLM) against a loaded assessment's findings
                 # and write a fresh narrative report — recovers a full write-up from a
@@ -1799,7 +1802,8 @@ class PentestApp(App):
         if self._current_assessment and self._current_assessment.runs:
             try:
                 path = generate_merged_report(
-                    self._current_assessment.runs, RESULTS_DIR,
+                    self._current_assessment.runs,
+                    self._current_assessment_dir or RESULTS_DIR,
                     fmt="html", target=self._current_assessment.target,
                 )
                 self._show_cmd_output([f"Report saved: {path}"], True)
@@ -1830,7 +1834,7 @@ class PentestApp(App):
                         if d.get("target") == first_target:
                             runs.append(EngagementRun(**d))
                     runs.sort(key=lambda r: r.start_time)
-                    path = generate_merged_report(runs, RESULTS_DIR, fmt="html", target=first_target)
+                    path = generate_merged_report(runs, files[0].parent, fmt="html", target=first_target)
                     self._show_cmd_output([f"Report saved: {path}"], True)
                     self._activity(f"[green]HTML Report:[/green] {path}")
                 except Exception as e:
@@ -1840,7 +1844,7 @@ class PentestApp(App):
                 d = json.loads(assessment_files[0].read_text(encoding="utf-8"))
                 assessment = Assessment(**d)
                 path = generate_merged_report(
-                    assessment.runs, RESULTS_DIR,
+                    assessment.runs, assessment_files[0].parent,
                     fmt="html", target=assessment.target,
                 )
                 self._show_cmd_output([f"Report saved: {path}"], True)
@@ -1859,7 +1863,7 @@ class PentestApp(App):
         try:
             data = json.loads(matches[0].read_text(encoding="utf-8"))
             run  = EngagementRun(**data)
-            path = generate_report(run, RESULTS_DIR)
+            path = generate_report(run, matches[0].parent)
             self._activity(f"[green]Report:[/green] {path}")
         except Exception as e:
             self._activity(f"[red]Report failed: {e}[/red]")
@@ -2082,8 +2086,8 @@ class PentestApp(App):
     def _add_host_row(self, ip: str, port_entry: dict, authoritative: bool = False) -> None:
         """Add or update one row in the single target tracker.
 
-        One row per host:port. Columns: IP | Hostname | OS | Port | Service |
-        Fingerprint | Tech. `authoritative` distinguishes the agent's own
+        One row per host:port. Columns: IP | Hostname | OS | Port | Protocol |
+        Service | Fingerprint | Tech. `authoritative` distinguishes the agent's own
         interpretation (record_service — wins, and locks the cell) from the raw
         nmap baseline (only fills blanks, never clobbers an agent-set cell). This
         stops the scan baseline re-posting every cycle from reverting the LLM's
@@ -2092,6 +2096,7 @@ class PentestApp(App):
         dt       = self.query_one("#hosts-table", DataTable)
         port     = str(port_entry.get("port", ""))
         proto    = port_entry.get("protocol", "tcp")
+        proto_disp = (proto or "tcp").upper()      # TCP / UDP column
         service  = port_entry.get("service", "") or ""
         fingerprint = port_entry.get("version", "") or port_entry.get("product", "") or ""
         tech     = port_entry.get("tech", "") or ""
@@ -2124,7 +2129,7 @@ class PentestApp(App):
 
         self._host_rows.add(row_key)
         self._host_rowkeys[row_key] = dt.add_row(
-            ip, hostname, os_str, port, service, fingerprint, tech, key=row_key)
+            ip, hostname, os_str, port, proto_disp, service, fingerprint, tech, key=row_key)
         if authoritative:
             for col, val in (("Service", service), ("Fingerprint", fingerprint),
                              ("Tech", tech), ("Hostname", hostname), ("OS", os_str)):
@@ -2134,22 +2139,23 @@ class PentestApp(App):
 
     @staticmethod
     def _host_sort_key(values: tuple) -> tuple:
-        """Order rows by IP (numeric octet order), then port (numeric). IPv4
-        addresses sort ahead of any non-IPv4 host label; the leading group flag
-        keeps int- and str-keyed rows from being compared against each other."""
-        ip_val, port_val = values
+        """Order rows by IP (numeric octet order), then protocol (UDP before TCP),
+        then port (numeric). IPv4 addresses sort ahead of any non-IPv4 host label;
+        the leading group flag keeps int- and str-keyed rows from being compared."""
+        ip_val, proto_val, port_val = values
+        proto_key = 0 if str(proto_val).upper() == "UDP" else 1   # UDP first
         try:
             port_key = int(port_val)
         except (ValueError, TypeError):
             port_key = 0
         parts = str(ip_val).split(".")
         if len(parts) == 4 and all(p.isdigit() for p in parts):
-            return (0, tuple(int(p) for p in parts), port_key)
-        return (1, str(ip_val), port_key)
+            return (0, tuple(int(p) for p in parts), proto_key, port_key)
+        return (1, str(ip_val), proto_key, port_key)
 
     def _sort_hosts(self, dt: "DataTable | None" = None) -> None:
         dt = dt or self.query_one("#hosts-table", DataTable)
-        dt.sort("IP", "Port", key=self._host_sort_key)
+        dt.sort("IP", "Protocol", "Port", key=self._host_sort_key)
 
     def _update_host_field(self, ip: str, column: str, value: str) -> None:
         """Backfill a host-level column (OS/Hostname) across every row for an IP."""
@@ -2686,7 +2692,7 @@ class PentestApp(App):
             llm          = LLMClient(on_retry=_on_retry)
             registry     = build_registry()
             orchestrator = Orchestrator(
-                llm, registry, RESULTS_DIR,
+                llm, registry, adir,        # everything (debug log, run saves) into the folder
                 log_callback=self._make_log_cb(), quiet=True,
                 engagement_state=state,
                 interrupt_queue=self._interrupt_queue,
@@ -2889,6 +2895,14 @@ class PentestApp(App):
         except Exception:
             pass
         try:
+            from tools.run_daemon import stop_all as _stop_daemons
+            res = _stop_daemons()           # kill responder/ntlmrelayx/mitm6 still running
+            if res.get("stopped"):
+                self.post_message(PentestApp.Activity(
+                    f"[dim]  teardown — stopped {res['stopped']} daemon(s).[/dim]"))
+        except Exception:
+            pass
+        try:
             from tools.hosts_entry import hosts_entry
             out = hosts_entry("remove")     # drop every PDTMJ-AI-managed /etc/hosts line
             removed = out.get("removed") if isinstance(out, dict) else None
@@ -2976,8 +2990,9 @@ class PentestApp(App):
             self._rehydrate_report_state(state, assessment)
             self._current_state = state
 
-            ts     = datetime.now().strftime("%Y%m%d_%H%M%S")
-            logger = SessionLogger(LOGS_DIR / f"resynth_report_{ts}.log")
+            ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
+            out_dir  = adir or RESULTS_DIR
+            logger   = SessionLogger(out_dir / f"resynth_report_{ts}.log")
             self._session_logger = logger
             self.post_message(PentestApp.Activity(
                 f"[cyan]Re-synthesizing report from {len(findings)} saved finding(s)…[/cyan]"))
@@ -2986,7 +3001,7 @@ class PentestApp(App):
             registry  = build_registry()
             art_store = ArtifactStore(adir / "artifacts") if adir else None
             orchestrator = Orchestrator(
-                llm, registry, RESULTS_DIR, log_callback=self._make_log_cb(), quiet=True,
+                llm, registry, out_dir, log_callback=self._make_log_cb(), quiet=True,
                 engagement_state=state, active_persona=self._active_persona,
                 session_logger=logger, artifact_store=art_store,
             )
@@ -3026,13 +3041,15 @@ class PentestApp(App):
             state = EngagementState(target=target)
             self._current_state = state
 
-            ts        = datetime.now().strftime("%Y%m%d_%H%M%S")
-            safe_a    = _safe_filename_part(agent_name)
-            safe_t    = _safe_filename_part(target)
-            logger    = SessionLogger(LOGS_DIR / f"run_{safe_a}_{safe_t}_{ts}.log")
+            # A single-agent run gets its own assessment folder too, so all of its
+            # output (log, scratch, artifacts, saved run) lives in one place — nothing
+            # scattered to the global logs/ or results/ dirs. set_assessment_dir also
+            # points transient tool tempfiles at the folder's scratch/.
+            import uuid
+            adir = set_assessment_dir(uuid.uuid4().hex[:8], target)
+            self._current_assessment_dir = adir
+            logger    = SessionLogger(adir / "engagement.log")
             self._session_logger = logger
-            # Keep transient tool tempfiles in a per-run working dir, not /tmp.
-            use_assessment_scratch(f"{safe_a}_{safe_t}_{ts}")
             logger.header(target, objective, persona=self._active_persona,
                           mode=f"single:{agent_name}")
             self.post_message(PentestApp.Activity(f"[dim]Log: {logger.path}[/dim]"))
@@ -3047,7 +3064,7 @@ class PentestApp(App):
             llm       = LLMClient()
             registry  = build_registry()
             orchestrator = Orchestrator(
-                llm, registry, RESULTS_DIR,
+                llm, registry, adir,
                 log_callback=self._make_log_cb(), quiet=True,
                 engagement_state=state,
                 interrupt_queue=self._interrupt_queue,

@@ -16,6 +16,11 @@ from core.llm_client import (
 # completions and validation so a new provider needs no edits here.
 _PROVIDER_NAMES = tuple(PROVIDERS)
 
+# /config completions — every setting key plus the group names, derived from the
+# settings registry so a new setting is tab-completable with no edits here.
+from core.settings import all_keys as _setting_keys, GROUPS as _setting_groups
+_CONFIG_COMPLETIONS = _setting_keys() + tuple(g.lower() for g in _setting_groups)
+
 # ── Command registry ──────────────────────────────────────────────────────────
 # Single source of truth. Parsing, tab-completion, the grouped /help overview,
 # and per-command help (/help <cmd>) are all derived from this — so adding or
@@ -49,8 +54,11 @@ class Command:
 
 
 COMMANDS: list[Command] = [
-    Command("/info", "Show all current settings — persona, provider, models, keys, loop caps",
-            (Sub("", "Show all current settings — persona, provider, models, keys, loop caps"),)),
+    Command("/info", "Snapshot: anchors, anything off-default, and your keys",
+            (Sub("", "Snapshot of the active config — anchors + changed-from-default + keys"),)),
+    Command("/config", "View or change any setting (the single place to configure)",
+            (Sub("", "List all (grouped), /config <group>, /config <key>, or /config <key> <value>",
+                 "[key|group] [value]", _CONFIG_COMPLETIONS),)),
     Command("/key", "Manage API keys (stored in the system keychain)", (
         Sub("set",   "Store a key (provider auto-detected, or name it explicitly)", "[provider] <api-key>"),
         Sub("list",  "Show API key status for all providers"),
@@ -82,24 +90,14 @@ COMMANDS: list[Command] = [
         Sub("set",  "Switch active provider (local also takes a base URL)",
             f"<{'|'.join(_PROVIDER_NAMES)}> [baseURL]", _PROVIDER_NAMES),
         Sub("list", "Show current provider and key status"),
+        Sub("login", "Authenticate a provider that uses a login flow",
+            "<provider> [code]", _PROVIDER_NAMES),
     )),
     Command("/scope", "Manage the engagement's in-scope targets", (
         Sub("add",    "Approve a target for agent followups", "<target>"),
         Sub("remove", "Take a host/IP/CIDR out of scope (and keep it out)", "<target>"),
         Sub("list",   "Show approved (and excluded) scope targets"),
     )),
-    Command("/exploit", "Enable/disable the exploitation phase (default on)",
-            (Sub("", "Enable/disable the exploitation phase (default on)", "<on|off>",
-                 ("on", "off")),)),
-    Command("/websearch", "Enable/disable web research (web_search + fetch_url)",
-            (Sub("", "Enable/disable the web-research tools (web_search + fetch_url)", "<on|off>",
-                 ("on", "off")),)),
-    Command("/turns", "Set the per-agent turn budget (default 60; off = unlimited)",
-            (Sub("", "Set the per-agent turn budget (default 60; off = unlimited)", "<n|off>"),)),
-    Command("/parallel", "Parallel mode: work surfaces + hypotheses concurrently (default off)",
-            (Sub("", "on|off|status, or set a fan-out width: agents|surfaces|hypotheses <n>",
-                 "<on|off|status|agents N|surfaces N|hypotheses N>",
-                 ("on", "off", "status", "agents", "surfaces", "hypotheses")),)),
     Command("/job", "List running background jobs (and recent finished) or kill one by id",
             (Sub("list", "List running jobs plus the last few finished"),
              Sub("kill", "Terminate a running job and its process by id (or 'all')", "<id|all>",
@@ -119,10 +117,10 @@ COMMANDS: list[Command] = [
         Sub("load", "Reload a saved assessment into the panels by id", "<assessment-id>"),
         Sub("new",  "Clear the board to start a fresh assessment"),
     )),
-    Command("/report", "Generate a report now, regen to re-synthesize, or on|off to toggle",
-            (Sub("", "No arg re-renders now; regen re-runs the report agent on a loaded "
-                 "assessment; on|off toggles auto-reporting at engagement end",
-                 "[on|off|regen]", ("on", "off", "regen")),)),
+    Command("/report", "Generate a report now, or regen to re-synthesize a loaded assessment",
+            (Sub("", "No arg re-renders the report now; regen re-runs the report agent on a "
+                 "loaded assessment. (Toggle auto-reporting with /config reporting_enabled.)",
+                 "[regen]", ("regen",)),)),
     Command("/clear", "Reset to a blank window — panels, agent log, and token meter (saved files on disk are kept)",
             (Sub("", "Reset to a blank window — panels, agent log, and token meter (saved files on disk are kept)"),)),
     Command("/help", "Show this help — '/help <command>' for one command in detail",
@@ -209,8 +207,8 @@ def usage(cmd_path: str) -> str:
 # Command families for the grouped /help overview. Every command name MUST appear
 # in exactly one group (a startup check in _overview_lines guards against drift).
 _HELP_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Setup & config",        ("/info", "/key", "/models", "/agent", "/persona", "/provider")),
-    ("Engagement setup",      ("/scope", "/cred", "/exploit", "/websearch", "/turns", "/parallel")),
+    ("Setup & config",        ("/info", "/config", "/key", "/models", "/agent", "/persona", "/provider")),
+    ("Engagement setup",      ("/scope", "/cred")),
     ("Control (while running)", ("/abort", "/skip", "/pause", "/continue", "/end", "/job")),
     ("Assessments & reports", ("/assessment", "/report")),
     ("Session",               ("/clear", "/help", "/exit", "/quit")),
@@ -239,7 +237,7 @@ def _overview_lines() -> list[str]:
             lines.append(f"  [cyan]{_form(c):<{width}}[/cyan] {c.summary}")
         lines.append("")
     lines += [
-        "[dim]/help <command>[/dim]  — detail + arguments for one command  (e.g. /help parallel)",
+        "[dim]/help <command>[/dim]  — detail + arguments for one command  (e.g. /help config)",
         "While an agent runs, anything without / is sent to the agent as an instruction.",
         "",
         "Keyboard shortcuts:",
@@ -588,171 +586,142 @@ def handle_agent_set_temp(args: list[str]) -> tuple[list[str], bool]:
         return [f"Error writing config: {e}"], False
 
 
-def handle_exploit(args: list[str]) -> tuple[list[str], bool]:
-    from core.config import get, set_value
+def _config_list(group: str | None = None) -> list[str]:
+    from core import settings
+    groups = [group] if group else list(settings.GROUPS)
+    shown = [s for g in groups for s in settings.settings_in_group(g)]
+    kw = max((len(s.key) for s in shown), default=10)
+    lines = ["Settings  —  /config <key> <value> to change · /config <key> for detail", ""]
+    for g in groups:
+        gs = settings.settings_in_group(g)
+        if not gs:
+            continue
+        lines.append(f"  {g}")
+        for s in gs:
+            star = "*" if settings.is_changed(s) else " "
+            val = settings.format_value(settings.current_value(s))
+            lines.append(f"   {star} {s.key:<{kw}}  {val:<7}  {s.desc}")
+        lines.append("")
+    lines.append("  * = changed from default")
+    return lines
+
+
+def _config_show(s) -> list[str]:
+    from core import settings
+    val  = settings.format_value(settings.current_value(s))
+    dflt = settings.format_value(s.default)
+    if s.choices:
+        typ = " | ".join(s.choices)
+    elif s.type == "bool":
+        typ = "on | off"
+    elif s.type == "int":
+        typ = "integer" + (f" ≥ {s.minimum}" if s.minimum is not None else "") + (" or null" if s.allow_null else "")
+    else:
+        typ = "text" + (" or null" if s.allow_null else "")
+    return [
+        f"  {s.key} = {val}",
+        f"    {s.desc}",
+        f"    Type: {typ}     Default: {dflt}     Group: {s.group}",
+        f"    Change with: /config {s.key} <value>",
+    ]
+
+
+def _config_unknown(name: str) -> list[str]:
+    import difflib
+    from core import settings
+    out = [f"Unknown setting: {name!r}"]
+    near = difflib.get_close_matches(name, settings.all_keys(), n=3)
+    if near:
+        out.append("  Did you mean: " + ", ".join(near) + "?")
+    out.append("  /config to list everything, or /config <group>.")
+    return out
+
+
+def handle_config(args: list[str]) -> tuple[list[str], bool]:
+    """The single place to view/change scalar settings. /config lists all (grouped),
+    /config <group> filters, /config <key> shows detail, /config <key> <value> sets."""
+    from core import settings
+    from core.config import set_value
     if not args:
-        cur = get("exploitation_enabled", True)
-        return [f"Exploitation phase is {'ON' if cur else 'OFF'}.",
-                "Use /exploit on  or  /exploit off  to change."], True
-    val = args[0].lower()
-    if val in ("on", "true", "enable", "enabled", "yes", "1"):
-        set_value("exploitation_enabled", True)
-        return ["Exploitation ENABLED — plan → exploit → validate will run."], True
-    if val in ("off", "false", "disable", "disabled", "no", "0"):
-        set_value("exploitation_enabled", False)
-        return ["Exploitation DISABLED — assessment only (enumeration + reporting)."], True
-    return ["Usage: /exploit on|off"], False
+        return _config_list(), True
 
+    first = args[0]
+    if len(args) == 1:
+        if first.lower() in (g.lower() for g in settings.GROUPS):
+            return _config_list(first), True
+        s = settings.get_setting(first)
+        if s:
+            return _config_show(s), True
+        return _config_unknown(first), False
 
-def handle_websearch(args: list[str]) -> tuple[list[str], bool]:
-    """Enable/disable the web-research tools (web_search + fetch_url) for all agents."""
-    from core.config import get, set_value
-    if not args:
-        cur = get("allow_web_search", True)
-        return [f"Web research (web_search + fetch_url) is {'ON' if cur else 'OFF'}.",
-                "Use /websearch on | /websearch off."], True
-    val = args[0].lower()
-    if val in ("on", "true", "enable", "enabled", "yes", "1"):
-        set_value("allow_web_search", True)
-        return ["Web research ENABLED — web_search + fetch_url are available."], True
-    if val in ("off", "false", "disable", "disabled", "no", "0"):
-        set_value("allow_web_search", False)
-        return ["Web research DISABLED — web_search + fetch_url blocked for all agents."], True
-    return ["Usage: /websearch on|off"], False
-
-
-def handle_report(args: list[str]) -> tuple[list[str], bool]:
-    """Toggle auto-reporting at engagement end. (A bare /report renders one NOW, and
-    /report regen re-runs the report agent on a loaded assessment; both are handled
-    in the app, which holds the run state.)"""
-    from core.config import get, set_value
-    if not args:
-        cur = get("reporting_enabled", True)
-        return [f"Auto-reporting is {'ON' if cur else 'OFF'}.",
-                "Use /report on | /report off.",
-                "  /report          — re-render HTML from saved data (no LLM)",
-                "  /report regen    — re-run the report agent to re-synthesize a loaded assessment"], True
-    val = args[0].lower()
-    if val in ("on", "true", "enable", "enabled", "yes", "1"):
-        set_value("reporting_enabled", True)
-        return ["Auto-reporting ENABLED — a report is generated at engagement end."], True
-    if val in ("off", "false", "disable", "disabled", "no", "0"):
-        set_value("reporting_enabled", False)
-        return ["Auto-reporting DISABLED — no report at end. Run /report to make one on demand."], True
-    return ["Usage: /report [on|off]   (no arg = generate a report now)"], False
-
-
-def handle_parallel(args: list[str]) -> tuple[list[str], bool]:
-    """Toggle parallel mode and tune the fan-out widths. Takes effect on the next
-    engagement (it picks the driver at start)."""
-    from core.config import get, set_value
-
-    def _status() -> list[str]:
-        return [
-            f"Parallel mode is {'ON' if get('parallel_enabled', False) else 'OFF'}.",
-            f"  max agents (global cap):  {get('max_parallel_agents', 3)}   (/parallel agents <n>)",
-            f"  surfaces at once:         {get('surface_fanout', 3)}   (/parallel surfaces <n>)",
-            f"  hypotheses per exploit:   {get('hypothesis_fanout', 3)}   (/parallel hypotheses <n>)",
-            f"  per-hypothesis turns:     {get('hypothesis_worker_turns', 12)}",
-            "Note: K parallel agents reach the account rate limit ~K× faster — keep the cap modest.",
-        ]
-
-    if not args:
-        return _status(), True
-    sub = args[0].lower()
-    if sub in ("on", "true", "enable", "enabled", "yes", "1"):
-        set_value("parallel_enabled", True)
-        return ["Parallel mode ENABLED — surfaces and hypotheses run concurrently "
-                "next engagement."] + _status()[1:], True
-    if sub in ("off", "false", "disable", "disabled", "no", "0"):
-        set_value("parallel_enabled", False)
-        return ["Parallel mode DISABLED — back to the serial driver."], True
-    if sub == "status":
-        return _status(), True
-    # numeric tuners
-    key_map = {"agents": "max_parallel_agents", "surfaces": "surface_fanout",
-               "hypotheses": "hypothesis_fanout"}
-    if sub in key_map and len(args) >= 2:
-        try:
-            n = max(1, int(args[1]))
-        except ValueError:
-            return [f"Usage: /parallel {sub} <positive integer>"], False
-        set_value(key_map[sub], n)
-        return [f"Set {key_map[sub]} = {n}."], True
-    return ["Usage: /parallel on|off|status  |  /parallel agents|surfaces|hypotheses <n>"], False
-
-
-def _fmt_turns(n: int) -> str:
-    return "unlimited (no cap)" if n <= 0 else str(n)
-
-
-def handle_turns(args: list[str]) -> tuple[list[str], bool]:
-    """Show or set the per-agent turn budget. 0/off = unlimited."""
-    from core.config import get, set_value
-    if not args:
-        cur = int(get("max_turns_default", 60))
-        return [f"Max turns per agent: {_fmt_turns(cur)}.",
-                "Set with /turns <n>  (e.g. /turns 60)  ·  /turns off for unlimited."], True
-    val = args[0].strip().lower()
-    if val in ("off", "unlimited", "none", "0", "inf"):
-        set_value("max_turns_default", 0)
-        return ["Max turns per agent: UNLIMITED — an agent runs until it stops on its own.",
-                "Loop caps (cycles/surfaces) still bound the overall engagement."], True
-    try:
-        n = int(val)
-    except ValueError:
-        return ["Usage: /turns <number>  or  /turns off", f"  '{args[0]}' is not a number."], False
-    if n < 1:
-        return ["Usage: /turns <number ≥ 1>  or  /turns off (unlimited)."], False
-    set_value("max_turns_default", n)
-    return [f"Max turns per agent set to {n}.",
-            "Applies to the next engagement you start."], True
+    # /config <key> <value...>
+    s = settings.get_setting(first)
+    if not s:
+        return _config_unknown(first), False
+    value, err = settings.coerce(s, " ".join(args[1:]))
+    if err:
+        return [err], False
+    old = settings.current_value(s)
+    set_value(s.key, value)
+    return [f"{s.key} = {settings.format_value(value)}   "
+            f"(was {settings.format_value(old)})"], True
 
 
 def handle_info() -> tuple[list[str], bool]:
-    """Single-screen overview of the active configuration."""
+    """A signal-only snapshot: the fixed anchors you always want to see, plus
+    anything moved off its default and the keys you actually have. Everything at
+    its default stays hidden — to browse/change all settings, use /config."""
     from core.config import load_config, get_global_model
+    from core import settings
 
     cfg      = load_config()
     persona  = cfg.get("active_persona", "pentest")
     provider = cfg.get("active_provider", "anthropic")
     gmodel   = get_global_model()
 
-    def _row(label: str, value: str, hint: str = "") -> str:
-        # Fixed label + value columns so the trailing command hints line up
-        # regardless of how long the value is.
-        line = f"  {label:<17}{value:<24}"
-        return (line + hint).rstrip()
+    def _row(label: str, value: str) -> str:
+        return f"  {label:<17}{value}".rstrip()
 
+    def _on(key: str, default: bool) -> str:
+        return "ON" if cfg.get(key, default) else "OFF"
+
+    # Fixed anchors — always shown, even at default. No command hints.
     lines = [
         "Current configuration",
         "",
-        _row("Persona", persona, "(/persona set)"),
-        _row("Provider", provider, "(/provider set)"),
-        _row("Global model", gmodel or "— (per-agent defaults)", "(/agent set model global)"),
-        _row("Max turns/agent", _fmt_turns(int(cfg.get("max_turns_default", 60))), "(/turns <n|off>)"),
-        _row("Exploitation", "ON" if cfg.get("exploitation_enabled", True) else "OFF", "(/exploit on|off)"),
-        _row("Reporting", "ON" if cfg.get("reporting_enabled", True) else "OFF", "(/report on|off)"),
-        _row("Web research", "ON" if cfg.get("allow_web_search", True) else "OFF", "(/websearch on|off)"),
-        _row("Confirm exploit", str(cfg.get("confirm_exploitation", True))),
-        _row("Loop caps", f"{cfg.get('max_cycles_per_surface', 4)} cycles/surface"
-                           f"  ·  {cfg.get('max_total_cycles', 40)} total"
-                           f"  ·  {cfg.get('max_surfaces', 50)} surfaces"),
-        _row("LLM routing", f"{'ON' if cfg.get('llm_routing', True) else 'OFF (keyword heuristics)'}"
-                            f"  ·  loop nudge @ {cfg.get('repeat_nudge_threshold', 3)} repeats"),
-        "",
-        "  API keys:",
-        *(f"    {spec.label:<12} {_masked_key_source(spec)}" for spec in PROVIDERS.values()),
-        "",
+        _row("Persona", persona),
+        _row("Provider", provider),
+        _row("Global model", gmodel or "— (per-agent defaults)"),
+        _row("Exploitation", _on("exploitation_enabled", True)),
+        _row("Reporting", _on("reporting_enabled", True)),
+        _row("Confirm exploit", _on("confirm_exploitation", True)),
     ]
 
+    # Anything moved off its default (excluding the always-shown anchors).
+    changed = [s for s in settings.SETTINGS
+               if not s.info_static and settings.is_changed(s)]
+    if changed:
+        lines += ["", "  Changed from defaults:"]
+        kw = max(len(s.label) for s in changed)
+        for s in changed:
+            val  = settings.format_value(settings.current_value(s))
+            dflt = settings.format_value(s.default)
+            lines.append(f"    {s.label:<{kw}}  {val:<10} (default {dflt})")
+
+    # Per-agent model overrides — only when set.
     overrides = {k: v for k, v in (cfg.get("agent_models", {}) or {}).items() if k != "global"}
     if overrides:
-        lines.append("  Per-agent model overrides:")
+        lines += ["", "  Per-agent model overrides:"]
         for name, model in overrides.items():
             lines.append(f"    {name:<28} → {model}")
-    else:
-        lines.append("  Per-agent model overrides: none")
+
+    # API keys — populated providers only.
+    keyed = [(spec.label, _masked_key_source(spec))
+             for spec in PROVIDERS.values() if resolve_provider_key(spec)]
+    if keyed:
+        lines += ["", "  API keys:"]
+        for label, src in keyed:
+            lines.append(f"    {label:<12} {src}")
 
     return lines, True
 
@@ -925,6 +894,29 @@ def handle_provider_set(args: list[str]) -> tuple[list[str], bool]:
     return out, True
 
 
+def handle_provider_login(args: list[str]) -> tuple[list[str], bool]:
+    """Run a provider's login flow, if it has one. Most providers authenticate with
+    an API key (/key set) and have no login step; a provider only supports this if it
+    registered a `login` callable (an operator-private extension). The callable takes
+    the remaining args and returns (lines, ok), so it can be multi-step (issue a URL on
+    the first call, complete the exchange when a code is pasted on the second)."""
+    if not args:
+        return ["Usage: /provider login <provider> [code]"], False
+    provider = args[0].lower()
+    spec = PROVIDERS.get(provider)
+    if spec is None:
+        return [f"Unknown provider: {provider!r}",
+                f"  Supported: {', '.join(_PROVIDER_NAMES)}"], False
+    login = getattr(spec, "login", None)
+    if not callable(login):
+        return [f"{spec.label} doesn't use a login flow — set an API key with "
+                f"/key set instead."], False
+    try:
+        return login(args[1:])
+    except Exception as e:
+        return [f"{spec.label} login failed: {e}"], False
+
+
 # ── Main dispatcher ───────────────────────────────────────────────────────────
 
 def dispatch(text: str) -> tuple[list[str], bool] | None:
@@ -952,14 +944,8 @@ def dispatch(text: str) -> tuple[list[str], bool] | None:
         return handle_help(args)
     if cmd == "/info":
         return handle_info()
-    if cmd == "/exploit":
-        return handle_exploit(args)
-    if cmd == "/websearch":
-        return handle_websearch(args)
-    if cmd == "/parallel":
-        return handle_parallel(args)
-    if cmd == "/turns":
-        return handle_turns(args)
+    if cmd == "/config":
+        return handle_config(args)
     if cmd == "/key list":
         return handle_key_list()
     if cmd == "/key clear":
@@ -996,6 +982,8 @@ def dispatch(text: str) -> tuple[list[str], bool] | None:
         return handle_provider_list()
     if cmd == "/provider set":
         return handle_provider_set(args)
+    if cmd == "/provider login":
+        return handle_provider_login(args)
 
     # Unknown command
     return [
