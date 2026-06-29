@@ -144,6 +144,7 @@ _ALWAYS_BACKGROUND = {
     "masscan",
     "kerbrute",          # userenum/spray/brute over a wordlist — long runner
     "hydra",             # online password brute/spray — long runner
+    "bloodhound_python", # AD collection pass — long runner
 }
 
 # Tool output handling. A single string field longer than this is offloaded to a

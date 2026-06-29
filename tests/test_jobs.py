@@ -93,8 +93,8 @@ def test_background_flag_defers_tool_and_flush_ingests(tmp_path):
 
 
 def test_long_runners_are_always_background():
-    for t in ("hashcat_crack", "gobuster_dir", "ffuf", "nuclei_scan",
-              "sqlmap_scan", "masscan", "kerbrute", "hydra"):
+    for t in ("hashcat_crack", "gobuster_dir", "ffuf", "nuclei_scan", "sqlmap_scan",
+              "masscan", "kerbrute", "hydra", "bloodhound_python"):
         assert t in _ALWAYS_BACKGROUND
 
 
