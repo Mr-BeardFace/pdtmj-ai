@@ -33,8 +33,11 @@ product. It's under active, continuous testing and the internals change often.
 
 Point it at a target with an objective; the engine enumerates, identifies attack
 surfaces, exploits what it can confirm, turns code execution into a stable
-foothold, escalates, and writes up findings. It runs as an interactive TUI so you
-can watch each step, interrupt, feed it credentials, and steer.
+foothold, loots and cracks credentials (offline cracking, file-format hashes, and
+NTLM capture/relay), escalates, and writes up findings. Files pulled off a target
+are saved locally and analyzed on the box; every change made to a target is
+tracked and reversible. It runs as an interactive TUI so you can watch each step,
+interrupt, feed it credentials, and steer.
 
 Personas tune behavior: `pentest` (full, methodical) and `pentest-ctf`
 (flag-focused, fast, pinned to a generalist agent so it solves a box without
@@ -119,8 +122,9 @@ Each pass:
 
 A lead's kind and rung decide the broad move (enumerate it, exploit it, escalate
 from it), and for a specific service there's a default specialist — `http → web`,
-`smb`/`ldap`/`kerberos → active-directory`, `mysql`/`mssql`/`redis → database`,
-`ssh`/`ftp`/`smtp` → network, `aws`/`gcp` → cloud.
+`ldap`/`kerberos → active-directory` (a real domain controller, not a bare SMB
+host), `mysql`/`mssql`/`redis → database`, `smb`/`ssh`/`ftp`/`smtp` → network,
+`aws`/`gcp` → cloud.
 
 Selection is **reasoning-first with that map as a floor**: when a specialist is
 available, a small LLM router decides between it and the generalist `exploitation`
@@ -166,8 +170,8 @@ see [Known limitations](#known-limitations).
 ## Requirements
 
 - **A Kali-style Linux host** (this is built and tested on Kali) with the usual
-  offensive tooling on `PATH` — `nmap`, `netexec`, `impacket`, `hashcat`, etc.
-  See `install.sh`.
+  offensive tooling on `PATH` — `nmap`, `netexec`, `impacket`, `hashcat`, `john`,
+  `responder`, `smbclient`, etc. `install.sh` provisions what's needed.
 - **Passwordless `sudo` for the user that runs the tool.** Many tools shell out
   to commands that need root (raw-socket scans, `/etc/hosts` edits, etc.), and
   the engine does not stop to prompt for a password mid-run. Configure the
