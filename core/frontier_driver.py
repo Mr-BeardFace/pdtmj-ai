@@ -37,6 +37,66 @@ from core.strategist import Strategist
 from core.models import Surface
 
 
+def _open_ports(res: dict, proto: str) -> set[int]:
+    out: set[int] = set()
+    for h in (res or {}).get("hosts", []):
+        for p in h.get("open_ports", []):
+            if p.get("protocol", "tcp") == proto and p.get("port"):
+                out.add(int(p["port"]))
+    return out
+
+
+def _merge_nmap_results(results: list) -> dict:
+    """Union several nmap result dicts into one; for a given host:port the entry
+    that carries version/product info wins (so the -sV pass beats bare discovery)."""
+    by_ip: dict[str, dict] = {}
+    target = ""
+    for res in results:
+        if not isinstance(res, dict):
+            continue
+        target = target or res.get("target", "")
+        for h in res.get("hosts", []):
+            ip = h.get("ip", "")
+            slot = by_ip.setdefault(ip, {"ip": ip, "hostnames": h.get("hostnames", []),
+                                         "open_ports": {}, "os_matches": h.get("os_matches", [])})
+            if h.get("hostnames"):
+                slot["hostnames"] = h["hostnames"]
+            if h.get("os_matches"):
+                slot["os_matches"] = h["os_matches"]
+            for p in h.get("open_ports", []):
+                key = (p.get("port"), p.get("protocol", "tcp"))
+                prev = slot["open_ports"].get(key)
+                if prev is None or (p.get("version") or p.get("product")) and not (
+                        prev.get("version") or prev.get("product")):
+                    slot["open_ports"][key] = p
+    hosts = [{"ip": s["ip"], "hostnames": s["hostnames"],
+              "open_ports": list(s["open_ports"].values()), "os_matches": s["os_matches"]}
+             for s in by_ip.values()]
+    return {"target": target, "hosts": hosts, "host_count": len(hosts)}
+
+
+def _deep_scan_and_service_id(target: str, nmap) -> dict:
+    """Background job body: deep TCP + UDP port discovery, then a `-sV -sC` service
+    scan on EVERY open port found, so deep/UDP ports come back identified, not bare.
+    Returns one merged nmap-shaped result for the normal job-ingest path to fold in."""
+    tcp = nmap.execute(target=target, fast=True, flags="--top-ports 45000", timeout=1200)
+    udp = nmap.execute(target=target, fast=True, flags="-sU --top-ports 250", timeout=900)
+    tcp_ports = _open_ports(tcp, "tcp")
+    udp_ports = _open_ports(udp, "udp")
+
+    scans: list = []
+    if tcp_ports:                                   # fast=False → -sV -sC on just these ports
+        scans.append(nmap.execute(target=target,
+                                  ports=",".join(str(p) for p in sorted(tcp_ports)),
+                                  timeout=1200))
+    if udp_ports:                                   # -sU added to the default -sV -sC
+        scans.append(nmap.execute(target=target, flags="-sU",
+                                  ports=",".join(str(p) for p in sorted(udp_ports)),
+                                  timeout=1200))
+    # Prefer the versioned scans; fall back to raw discovery if none ran / both empty.
+    return _merge_nmap_results(scans) if scans else _merge_nmap_results([tcp, udp])
+
+
 # Controller events → operator-facing activity lines.
 _EVENT_LABELS = {
     "work_lead":      lambda p: f"▶ lead [{p.reach_level}] {p.description[:72]}",
@@ -150,13 +210,14 @@ class FrontierDriver(ParallelDriver):
         """Hardcoded staged nmap discovery so the initial scan is fast and
         consistent instead of an agent improvising sweep after sweep.
 
-          ① top-1000 TCP, -sV  — synchronous, returns in seconds → immediate board
-          ② top-45000 TCP      — background job (port discovery, no -sV)
-          ③ top-250  UDP       — background job
+          ① top-1000 TCP, -sV   — synchronous, returns in seconds → immediate board
+          ② deep discovery + service scan — ONE background job:
+               top-45000 TCP + top-250 UDP discovery, then `-sV -sC` on EVERY open
+               port found, so deep/UDP ports come back version-identified, not bare.
 
-        Stages ② and ③ fold into recon automatically as they finish (the
-        orchestrator drains completed jobs at each turn boundary and before the
-        report), so the agent can start working ① while the deep scans run.
+        Stage ② folds into recon automatically when it finishes (the orchestrator
+        drains completed jobs at each turn boundary and before the report), so the
+        agent can start working the ① board while the deep scan runs.
         """
         self._banner(f"Discovery — staged port sweep of {target}")
         try:
@@ -179,17 +240,14 @@ class FrontierDriver(ParallelDriver):
         except Exception as e:  # noqa: BLE001
             self._activity(f"  ① sweep error: {e}")
 
-        # ② + ③ deeper TCP and UDP — backgrounded so they never stall the engagement.
+        # ② deep discovery + service scan on everything found — one background job
+        # so it never stalls the engagement and folds back a fully versioned board.
         jobs = getattr(self.orch, "_jobs", None)
         if jobs is None:
             return
-        self._activity("  ② top-45000 TCP + ③ top-250 UDP → background")
-        jobs.start("nmap_scan", {"target": target, "flags": "--top-ports 45000"},
-                   lambda t=target, n=nmap: n.execute(
-                       target=t, fast=True, flags="--top-ports 45000", timeout=1200))
-        jobs.start("nmap_scan", {"target": target, "flags": "-sU --top-ports 250"},
-                   lambda t=target, n=nmap: n.execute(
-                       target=t, fast=True, flags="-sU --top-ports 250", timeout=1200))
+        self._activity("  ② deep TCP/UDP discovery + service scan on all ports → background")
+        jobs.start("nmap_scan", {"target": target, "flags": "deep discovery + -sV on all ports"},
+                   lambda t=target, n=nmap: _deep_scan_and_service_id(t, n))
 
     def _note_sweep(self, res: dict) -> None:
         """One-line activity summary of what the synchronous stage-1 sweep found."""
