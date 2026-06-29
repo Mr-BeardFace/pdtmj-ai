@@ -43,6 +43,8 @@ _TOOL_MODULES: list[tuple[str, str]] = [
     ("tools.kerbrute",            "kerbrute"),
     ("tools.impacket_kerberos",   "impacket_kerberos"),
     ("tools.hashcat_crack",       "hashcat_crack"),
+    ("tools.john",                "john"),
+    ("tools.hash_extract",        "hash_extract"),
     ("tools.bloodhound_python",   "bloodhound_python"),
     ("tools.certipy_ad",          "certipy_ad"),
     ("tools.impacket_ntlmrelay",  "impacket_ntlmrelay"),

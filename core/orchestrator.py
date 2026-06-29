@@ -145,6 +145,7 @@ _ALWAYS_BACKGROUND = {
     "kerbrute",          # userenum/spray/brute over a wordlist — long runner
     "hydra",             # online password brute/spray — long runner
     "bloodhound_python", # AD collection pass — long runner
+    "john",              # offline cracking — long runner (like hashcat_crack)
 }
 
 # Tool output handling. A single string field longer than this is offloaded to a
@@ -1917,8 +1918,8 @@ class Orchestrator:
             self.state.store_cache(name, job.inputs, result, summary)
             self.state.ingest_tool_result(name, result, source_agent=agent_name)
             self._emit_state_update()
-            # hashcat recovered plaintext(s) → surface as credential event(s)
-            if name == "hashcat_crack":
+            # hashcat/john recovered plaintext(s) → surface as credential event(s)
+            if name in ("hashcat_crack", "john"):
                 for c in result.get("cracked", []):
                     pw = c.get("plaintext")
                     if pw:
