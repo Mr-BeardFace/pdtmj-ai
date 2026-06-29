@@ -128,17 +128,14 @@ _DEFAULTS: dict[str, Any] = {
     "grind_nudge_after_scripts": 12,
     # Foothold capitalization. Two engagement-level nudges once code execution is
     # confirmed (an id/whoami readback, a caught shell, a driven shell_exec):
-    #  • bank: turns to allow before nudging to annotate the foothold as a verified
-    #    finding. Small — confirm exec, then record it within a turn or two.
-    #  • stabilize: turns of NOT stabilizing (no command driven through a live shell
-    #    and no persistence recorded) before nudging to convert one-shot exec into a
-    #    stable channel + record_persistence. Re-fires every `repeat` turns after the
-    #    first, because re-grinding fragile one-shot exec is a streak, not a single
-    #    missed action (a run got RCE at turn 8 and burned ~50 turns re-driving it).
-    #    0 disables either nudge.
+    #  • bank: turns before nudging to annotate the foothold as a verified finding.
+    #  • capitalize: turns of exec-confirmed-but-nothing-extracted before nudging to
+    #    loot it (flag/creds/privesc) with the primitive already in hand. Cleared by
+    #    looted creds/flags or a stable channel — not by chasing a shell. Re-fires
+    #    every `repeat` turns until something lands. 0 disables either nudge.
     "foothold_bank_nudge_after_turns": 2,
-    "foothold_stabilize_nudge_after_turns": 3,
-    "foothold_stabilize_repeat_turns": 5,
+    "foothold_capitalize_nudge_after_turns": 3,
+    "foothold_capitalize_repeat_turns": 5,
     # Tools exempt from the bulk /abort kill — ones where terminating a process
     # mid-flight is riskier than letting it finish (a package transaction can
     # corrupt the dpkg/pip state). /abort leaves these running; a targeted

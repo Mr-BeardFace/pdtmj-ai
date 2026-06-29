@@ -1027,11 +1027,11 @@ class Orchestrator:
         # Foothold-banking: turns after exec is confirmed to allow before nudging to
         # annotate it. Small — confirm exec, then bank within a turn or two.
         foothold_bank_after = int(_cfg_get("foothold_bank_nudge_after_turns", 2) or 0)
-        # Foothold-stabilization: turns of exec-confirmed-but-not-stabilized before
-        # nudging to convert one-shot exec into a stable channel + record_persistence;
-        # re-fires every `stab_repeat` turns while still unstabilized.
-        stab_after  = int(_cfg_get("foothold_stabilize_nudge_after_turns", 3) or 0)
-        stab_repeat = int(_cfg_get("foothold_stabilize_repeat_turns", 5) or 0)
+        # Capitalize-on-exec: turns of exec-confirmed-but-nothing-extracted before
+        # nudging to loot the foothold (flag/creds/privesc) with the primitive it has;
+        # re-fires every `cap_repeat` turns until something is banked.
+        cap_after  = int(_cfg_get("foothold_capitalize_nudge_after_turns", 3) or 0)
+        cap_repeat = int(_cfg_get("foothold_capitalize_repeat_turns", 5) or 0)
         # Last substantive agent text — becomes the handoff to the next agent if the
         # run ends without a clean text-only close-out (e.g. hits the turn cap).
         last_text = ""
@@ -1622,31 +1622,29 @@ class Orchestrator:
                             ),
                         })
 
-                    # Foothold-stabilization nudge (engagement-level) — exec is proven
-                    # but never converted into a stable channel. This is the costly grind:
-                    # re-driving fragile one-shot exec (a command at a time) to read files
-                    # it could read in seconds from a shell. Fires while unstabilized and
-                    # re-fires, because banking the finding does NOT clear it (a recorded
-                    # finding with no stable access still loses the foothold on a dropped
-                    # connection / turn cap). Cleared by a driven shell_exec OR persistence.
-                    stab_n = self.state.stabilize_due(stab_after, stab_repeat)
-                    if stab_n:
-                        self._print("  [yellow]🔗 stabilize nudge — exec confirmed, no stable channel[/yellow]")
-                        self._emit("stabilize_nudge", turns=stab_n)
+                    # Capitalize-on-exec nudge (engagement-level) — exec is proven but
+                    # nothing has been pulled from it. Pushes value extraction with the
+                    # primitive already in hand; cleared by looted creds/flags or a stable
+                    # channel — NOT by chasing a prettier shell. Re-fires until something
+                    # lands. (A live run got RCE then burned ~25 min breaking a working
+                    # exploit to plant an SSH key, looting nothing.)
+                    cap_n = self.state.capitalize_due(cap_after, cap_repeat)
+                    if cap_n:
+                        self._print("  [yellow]💰 capitalize nudge — exec confirmed, nothing extracted[/yellow]")
+                        self._emit("capitalize_nudge", turns=cap_n)
                         tool_results.append({
                             "type": "text",
                             "text": (
-                                "[Engine notice: you have CODE EXECUTION but have not stabilized it — no "
-                                "command has been driven through a live shell and no persistence is recorded. "
-                                "Stop re-running one-shot exec to read things a command at a time; that "
-                                "re-achieves access you already have and burns the turn budget. CAPITALIZE "
-                                "NOW: (1) convert to a stable channel — catch a reverse shell (start_listener "
-                                "then trigger it; if the channel runs no shell use `bash -c` or stage to disk), "
-                                "or drop an SSH key to authorized_keys, or plant a webshell — and CONFIRM it "
-                                "with shell_exec; (2) record_persistence for what you planted (so a dropped "
-                                "connection doesn't cost the foothold). If outbound is filtered, prefer the "
-                                "SSH-key route over a reverse shell. Only after a stable channel exists should "
-                                "you continue local enumeration / privesc.]"
+                                "[Engine notice: you have CODE EXECUTION but have not pulled anything from it "
+                                "yet. Use the primitive you ALREADY have to grab immediate wins NOW — `id`/"
+                                "`sudo -l`, the user flag, readable creds/config, SUID/cron/writable-path "
+                                "privesc vectors — and record them (record_credential / record_flag / "
+                                "annotate_finding). A one-shot/blind primitive is fine for this; you do NOT "
+                                "need a full shell to read files. Stabilize into a shell (reverse shell / SSH "
+                                "key) only if sustained interactive work needs it — and never break a working "
+                                "exploit chasing a prettier channel. If a command fails where a simple one "
+                                "worked, the channel mangled its spaces/quotes — keep the format that worked "
+                                "and change only the command.]"
                             ),
                         })
 

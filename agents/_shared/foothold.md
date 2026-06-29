@@ -20,6 +20,11 @@ Confirm the primitive actually executes (a single callback ping) before building
 ### Bank the foothold the instant exec is confirmed
 The moment code execution is proven, call `annotate_finding` for it — **verified, with the evidence (the command and its output)** — before anything else. The foothold is the headline finding; everything after builds on it, and your run can stop at the turn cap mid-privesc. Confirm exec → annotate → continue. Fingerprint the OS and current user immediately; everything forks on that.
 
+### Loot with the primitive you have — before chasing a better channel
+The exec you already have is enough to read files. The moment it's confirmed, use it to grab the immediate wins — `id`/`sudo -l`, the user flag, readable creds/config, SUID/cron/writable-path privesc vectors — and record them (`record_credential`/`record_flag`/`annotate_finding`). A one-shot or blind primitive is fine for this; you do not need a full shell to read files. Invest in a stable channel only when sustained interactive work needs one (see below), and never abandon a working exploit to chase a prettier shell.
+
+**Exec channels are finicky with formatting.** Once a command runs (e.g. a one-token `id`), FREEZE that exact request/encoding and change ONLY the command string — don't refactor the transport (string↔bytes, re-encoding), it silently breaks. If a command with spaces or quotes fails where `id` worked, the channel mangled it — a form parser turning `+` into spaces, URL-encoding `"`→`%22`, the sink's own quoting. Avoid spaces/quotes: use `${IFS}`, base64-decode (`echo <b64>|base64 -d|sh`), or stage a script to disk and run it. Don't hammer a rate/session-limited exploit — you already proved access; reuse it sparingly.
+
 ### Upgrade the channel — but don't get stuck chasing a shell
 A clean, framed session is *nicer* to work through, so make a brief, time-boxed attempt to upgrade — but it is a means, not the goal. There's a preference order, but **the real selector is stability: try them roughly in this order and keep whichever holds up most reliably for *this* target, not whichever is highest on the list.**
 
