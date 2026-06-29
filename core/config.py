@@ -109,9 +109,9 @@ _DEFAULTS: dict[str, Any] = {
     "repeat_nudge_threshold": 3,
     # Tools exempt from the loop nudge — ones that are *meant* to be called
     # repeatedly with identical args (polling for OOB callbacks, background-job
-    # completion, or a reverse shell connecting back). Repeating these is normal
-    # operation, not a stuck loop, so they never count toward or trigger a nudge.
-    "nudge_exempt_tools": ["oob_listener", "check_jobs", "list_shells", "wait"],
+    # completion, a reverse shell connecting back, or a run_daemon capturing hashes).
+    # Repeating these is normal operation, not a stuck loop, so they never nudge.
+    "nudge_exempt_tools": ["oob_listener", "check_jobs", "list_shells", "wait", "run_daemon"],
     # Pivot nudge: after this many CONSECUTIVE failed/empty tool results (errors or
     # non-zero exit codes), tell the agent it may be on a dead end — bank what it
     # has and change approach. Catches the "retry near-identical thing forever"
