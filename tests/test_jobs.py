@@ -92,6 +92,12 @@ def test_background_flag_defers_tool_and_flush_ingests(tmp_path):
     assert any(e.tool_name == "ffuf" for e in state.tool_log)
 
 
+def test_long_runners_are_always_background():
+    for t in ("hashcat_crack", "gobuster_dir", "ffuf", "nuclei_scan",
+              "sqlmap_scan", "masscan", "kerbrute", "hydra"):
+        assert t in _ALWAYS_BACKGROUND
+
+
 def test_hashcat_is_always_background_and_feeds_credential(tmp_path):
     assert "hashcat_crack" in _ALWAYS_BACKGROUND
 

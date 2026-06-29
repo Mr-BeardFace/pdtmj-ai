@@ -142,6 +142,8 @@ _ALWAYS_BACKGROUND = {
     "nuclei_scan",
     "sqlmap_scan",
     "masscan",
+    "kerbrute",          # userenum/spray/brute over a wordlist — long runner
+    "hydra",             # online password brute/spray — long runner
 }
 
 # Tool output handling. A single string field longer than this is offloaded to a
