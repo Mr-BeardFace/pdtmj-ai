@@ -2895,6 +2895,14 @@ class PentestApp(App):
         except Exception:
             pass
         try:
+            from tools.run_daemon import stop_all as _stop_daemons
+            res = _stop_daemons()           # kill responder/ntlmrelayx/mitm6 still running
+            if res.get("stopped"):
+                self.post_message(PentestApp.Activity(
+                    f"[dim]  teardown — stopped {res['stopped']} daemon(s).[/dim]"))
+        except Exception:
+            pass
+        try:
             from tools.hosts_entry import hosts_entry
             out = hosts_entry("remove")     # drop every PDTMJ-AI-managed /etc/hosts line
             removed = out.get("removed") if isinstance(out, dict) else None

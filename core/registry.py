@@ -89,6 +89,8 @@ _TOOL_MODULES: list[tuple[str, str]] = [
     ("tools.run_script",       "run_script"),
     # Local shell for inspecting downloaded/local files (strings/cat/grep/unzip)
     ("tools.local_exec",       "local_exec"),
+    # Long-lived offensive daemons (responder / ntlmrelayx / mitm6) with read/stop
+    ("tools.run_daemon",       "run_daemon"),
     # Self-provisioning missing tooling
     ("tools.pip_install",      "pip_install"),
     ("tools.apt_install",      "apt_install"),
