@@ -97,6 +97,35 @@ def _annotate_download(result: dict, command: str) -> None:
 # special shares that exist on virtually every host and are rarely the foothold.
 _ADMIN_SHARES = {"ADMIN$", "IPC$", "PRINT$"}
 
+# smbclient prints these even on a SUCCESSFUL connect: NetBIOS name lookup fails so
+# it falls back to the IP, and the SMB1 workgroup probe fails harmlessly. They are
+# NOT auth/connection failures — counting them flips a working null session to
+# "failed" and the caller advances to the next auth variant for no reason.
+_BENIGN_NOISE = (
+    "NT_STATUS_RESOURCE_NAME_NOT_FOUND",
+    "Reconnecting with SMB1",
+    "Unable to connect with SMB1",
+    "no workgroup available",
+)
+# Status lines that DO mean the session/share genuinely failed.
+_REAL_FAILURE = (
+    "NT_STATUS_ACCESS_DENIED",
+    "NT_STATUS_LOGON_FAILURE",
+    "NT_STATUS_BAD_NETWORK_NAME",
+    "NT_STATUS_ACCOUNT_LOCKED_OUT",
+    "NT_STATUS_PASSWORD_EXPIRED",
+    "NT_STATUS_NO_LOGON_SERVERS",
+    "tree connect failed",
+)
+
+
+def _is_real_error(line: str) -> bool:
+    """A line is a real failure only if it carries a genuine failure status and is
+    not one of smbclient's benign name-resolution / SMB1 fallback messages."""
+    if any(b in line for b in _BENIGN_NOISE):
+        return False
+    return any(e in line for e in _REAL_FAILURE)
+
 
 def _parse_shares(output: str, target: str) -> dict:
     """Parse `smbclient -L` output into a list of shares. The table looks like:
@@ -118,8 +147,7 @@ def _parse_shares(output: str, target: str) -> dict:
                 "comment": m.group(3).strip(),
                 "admin":   name.upper() in _ADMIN_SHARES,
             })
-        if any(err in line for err in ["NT_STATUS_", "Error", "DENIED", "failed"]) \
-                and "NT_STATUS_OK" not in line:
+        if _is_real_error(line):
             errors.append(line.strip())
 
     listable = [s["name"] for s in shares if not s["admin"]]
@@ -140,22 +168,25 @@ def _parse_output(output: str, target: str, share: str, command: str) -> dict:
     errors: list = []
 
     for line in output.splitlines():
-        # File listing: drwxr-xr-x or -rwxr-xr-x style, or Windows SMB ls format
-        # smbclient ls output: "  filename  D  0  Mon Jan 1 00:00:00 2024"
-        file_m = re.match(r"^\s+(.+?)\s+(D|A|N|H|S|R)\s+(\d+)\s+", line)
+        # smbclient ls row: "  name   <attrs>   <size>   <date>". Attrs are one or
+        # more of D/A/H/N/S/R combined (e.g. DH, AH, DHS) — match the whole run, not
+        # a single char, or every hidden/system entry is dropped.
+        file_m = re.match(r"^\s+(.+?)\s+([DAHNSR]+)\s+(\d+)\s+", line)
         if file_m:
+            attrs = file_m.group(2)
             files.append({
                 "name":  file_m.group(1).strip(),
-                "type":  "directory" if file_m.group(2) == "D" else "file",
+                "type":  "directory" if "D" in attrs else "file",
                 "size":  int(file_m.group(3)),
             })
 
-        if any(err in line for err in ["NT_STATUS_", "Error", "DENIED", "failed"]):
+        if _is_real_error(line):
             errors.append(line.strip())
 
-    connected = "NT_STATUS_" not in output or "NT_STATUS_OK" in output
-    if errors and not files:
-        connected = False
+    # Connected unless a genuine failure showed up. Listing files (or a clean run
+    # with no real error, e.g. a `get` or an empty dir) means the session is up —
+    # benign name-resolution noise no longer flips this to False.
+    connected = bool(files) or not errors
 
     return {
         "target":    target,

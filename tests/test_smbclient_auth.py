@@ -83,3 +83,36 @@ def test_guest_with_password_is_a_real_login(monkeypatch):
     c = calls["cmds"][0]
     assert c[c.index("-U") + 1] == "guest%x"
     assert "-N" not in c
+
+
+# A real null-session `ls`: smbclient prints a benign NetBIOS-name-resolution
+# failure, then lists files whose attributes are multi-char (DH, AH). The parser
+# must read this as connected with files — NOT flip to failed and fall through to
+# the -U variant (the bug that made agents bail to raw local_exec).
+_NULL_LS_OUT = (
+    "do_connect: Connection to 10.10.10.10 failed (Error NT_STATUS_RESOURCE_NAME_NOT_FOUND)\n"
+    "  .                                  DH        0  Fri May 16 20:27:07 2025\n"
+    "  Monitoring                         DH        0  Fri May 16 20:32:43 2025\n"
+    "  EntityFramework.dll                AH  4991352  Thu Apr 16 15:38:42 2020\n"
+    "\t\t7147007 blocks of size 4096.\n"
+)
+
+
+def test_successful_null_ls_does_not_fall_through_to_anonymous(monkeypatch):
+    calls = _capture(monkeypatch, outputs=[_NULL_LS_OUT])
+    res = smb.smbclient("10.10.10.10", share="software$", command="ls")
+    assert len(calls["cmds"]) == 1                     # connected → no -U fallback
+    assert res["_auth_mode"] == "null"
+    assert res["connected"] is True
+    assert {"Monitoring", "EntityFramework.dll"} <= {f["name"] for f in res["files"]}
+
+
+def test_benign_name_resolution_noise_is_not_an_error(monkeypatch):
+    r = smb._parse_output(_NULL_LS_OUT, "10.10.10.10", "software$", "ls")
+    assert r["connected"] is True and r["errors"] == []
+
+
+def test_real_access_denied_is_not_connected(monkeypatch):
+    r = smb._parse_output("tree connect failed: NT_STATUS_ACCESS_DENIED",
+                          "10.10.10.10", "C$", "ls")
+    assert r["connected"] is False and r["errors"]
