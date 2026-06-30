@@ -2,6 +2,28 @@
 
 When your work lands a **command-execution primitive** — any way to run a command on the target — the next job is to turn it into a **stable session plus a reliable output channel**, then loot, escalate, and hand off. What follows is methodology, not a script: work out the specific commands, payloads, and encodings yourself for the actual target, OS, and filters in front of you. Stay in scope, keep it non-destructive (a foothold is never a reason to damage data or disrupt a service), and record everything you plant.
 
+### From a file-write primitive to execution
+Several services give you the ability to **write a file**, not run a command — a
+writable NFS/SMB share, a Redis/Postgres/MySQL file-write, an FTP/WebDAV upload, a
+writable web root. Convert write → exec by writing where the target will *act on* the
+file; pick by **where** you can write and **as whom**:
+- **Web root → webshell.** A write under a directory the web server executes → drop a
+  minimal shell in the stack's language (`.php`/`.aspx`/`.jsp`) and request its URL.
+  look for: the document root from config or a known app path.
+- **A user's `~/.ssh/authorized_keys` → log in.** Writing into a home directory (common
+  when writing as root over `no_root_squash`, or as the service user) → append a key you
+  generated (`ssh_keygen`) and connect with `ssh_exec`. The most stable outcome — a
+  connect-in, not a held channel.
+- **cron → scheduled exec.** A writable `/etc/cron.d/`, `/etc/crontab`, or a user's
+  crontab runs your command as that user (root for system cron). Mind the format — cron
+  is strict about the user field and a trailing newline.
+- **SUID root binary — only when writing AS root.** Writing as uid 0 (e.g. `no_root_squash`
+  NFS) → drop a root-owned binary, set the SUID bit, run it from a normal shell for an
+  instant root shell.
+
+`record_persistence` whatever you plant with the exact cleanup, and remove it when done.
+Once one lands you have execution — continue below.
+
 ### The primitive may be blind
 Often you can run a command but not see its output (web command injection, SSTI, deserialization). Step zero is a feedback channel, in priority order:
 
