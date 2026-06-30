@@ -45,6 +45,15 @@ each step returns. The named tools are the capability to reach for.
 6. **Password spraying — last resort.** Only after the policy is understood and within
    the lockout discipline above; one password at a time.
 
+## Deep technique playbooks — load the one the path needs
+The progression above is the spine; for the exact commands of a specific abuse, load its playbook:
+- ADCS / certificate templates (ESC1–8, relay) → `load_playbook(["adcs"])`
+- a BloodHound write edge (GenericAll/GenericWrite/WriteDACL/WriteOwner/Owns) → `load_playbook(["dacl-abuse"])`
+- Resource-Based Constrained Delegation → `load_playbook(["rbcd"])`
+- Shadow Credentials (`msDS-KeyCredentialLink`) → `load_playbook(["shadow-credentials"])`
+- AS-REP roasting / Kerberoasting → `load_playbook(["roasting"])`
+- coercion (PetitPotam / PrinterBug / DFSCoerce) → `load_playbook(["coercion"])`
+
 Net-NTLMv2 capture via a discovered NTLM-authenticating web service is in play; so is
 ADIDNS record spoofing (below). LLMNR/NBNS poisoning is out of scope here (needs a
 network-position tool).
