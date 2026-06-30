@@ -37,6 +37,14 @@ from core.strategist import Strategist
 from core.models import Surface
 
 
+def _enum_stage_n() -> int:
+    """Operator-tunable turn budget for a staged enumeration pass (/config
+    enum_stage_turns). Enumeration gathers intel without banking findings, so the
+    progress-extension window never fires — this cap is what actually bounds it."""
+    from core.config import get as _cfg_get
+    return int(_cfg_get("enum_stage_turns", 20) or 20)
+
+
 def _open_ports(res: dict, proto: str) -> set[int]:
     out: set[int] = set()
     for h in (res or {}).get("hosts", []):
@@ -165,7 +173,7 @@ class FrontierDriver(ParallelDriver):
             self._refresh_ui()   # staged sweep ingests state directly — push it to the panels now
             self._banner("Service identification — fingerprinting discovered ports")
             self._run_agent(ENUM_AGENT, target, self._service_id_objective(target),
-                            max_turns=self._stage_turns(12))
+                            max_turns=self._stage_turns(_enum_stage_n()))
             self.state.derive_surfaces_from_recon(origin="initial")
             if not self.state.surfaces:
                 self.state.add_surface(target, origin="initial")
@@ -357,7 +365,7 @@ class FrontierDriver(ParallelDriver):
         # Surface / service / recon → deep enumeration by the right specialist.
         if lead.kind in ("surface", "service") or reach <= level_of("service"):
             return (self._enum_agent_for(surface),
-                    self._enum_objective(surface, self.target), self._stage_turns(16))
+                    self._enum_objective(surface, self.target), self._stage_turns(_enum_stage_n()))
 
         # Escalation / foothold / code-exec → the foothold specialist, full budget:
         # this is a kill chain (channel → session → privesc → flag), not a one-shot.
@@ -502,7 +510,7 @@ class FrontierDriver(ParallelDriver):
             self._banner("Breadth sweep — no hot lead; broad enumeration for new threads")
             self._run_agent(ENUM_AGENT, self.target,
                             self._enum_objective(None, self.target),
-                            max_turns=self._stage_turns(12))
+                            max_turns=self._stage_turns(_enum_stage_n()))
             self.state.derive_surfaces_from_recon(origin="lateral")
             return self.strategist.refresh(self.store, self.state, self.all_findings) > 0
         return False

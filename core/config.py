@@ -30,6 +30,11 @@ _DEFAULTS: dict[str, Any] = {
     # hard cap.
     "extend_turns_on_progress": True,
     "max_turns_progress_factor": 5,
+    # Turn budget for each STAGED enumeration pass (service-ID, per-surface enum,
+    # re-enum). Separate from max_turns_default: enumeration mostly GATHERS intel
+    # and rarely banks a finding/cred, so the progress-extension window never kicks
+    # in — it just runs into this cap. Raise it if enum keeps stopping short.
+    "enum_stage_turns": 20,
     "agent_models": {},
     # ── Sampling temperature (0 = focused/deterministic, 1 = the provider default,
     # more varied/creative) ───────────────────────────────────────────────────────

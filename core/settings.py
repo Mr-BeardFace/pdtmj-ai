@@ -59,6 +59,8 @@ SETTINGS: tuple[Setting, ...] = (
             "Dedicated agent independently reproduces each finding"),
     Setting("max_turns_default", "Max turns/agent", "Engagement", "int",
             "Per-agent turn budget (0 = unlimited)", minimum=0),
+    Setting("enum_stage_turns", "Enum turns/pass", "Engagement", "int",
+            "Turn budget for each staged enumeration pass", minimum=1),
 
     # Parallelism
     Setting("parallel_enabled", "Parallel", "Parallelism", "bool",
