@@ -1,6 +1,6 @@
 ---
 name: database
-services: [mysql, ms-sql-s, mssql, postgresql, postgres, mongodb, mongod, redis, oracle, elasticsearch]
+services: [mysql, postgresql, postgres, mongodb, mongod, redis, oracle, elasticsearch]
 summary: Database services — unauth/default access, privilege, data exposure, code-exec primitives
 ---
 
@@ -26,8 +26,8 @@ Use the protocol's real client (`impacket_mssql`, `mongosh_query`, `redis_query`
 - **MySQL (3306):** blank/weak root, anonymous; accessible DBs/users, privilege; file
   read / code-exec (`LOAD DATA INFILE`, UDF injection).
 - **PostgreSQL (5432):** weak creds, superuser status, `COPY … TO/FROM PROGRAM` exec (9.3+).
-- **MSSQL (1433):** blank/default SA, `sysadmin` membership, `xp_cmdshell`, linked
-  servers, NTLM-coercion. Prove exec with a benign `whoami` only.
+- **MSSQL (ms-sql-s):** has its own playbook — `load_playbook(["mssql"])` for auth,
+  privilege, code-exec, linked servers, and NTLM coercion.
 - **MongoDB (27017):** unauthenticated access (critical); enumerate collections, sample
   document structure; creds/PII/secrets in documents.
 - **Redis (6379):** check whether auth is required; if open, read config + keyspace.
