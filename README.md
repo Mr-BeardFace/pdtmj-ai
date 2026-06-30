@@ -252,7 +252,7 @@ the methodology references the playbooks are built from. Credit where it's due:
 **AI offensive-security projects** (design inspiration)
 - [PentAGI](https://github.com/vxcontrol/pentagi) — autonomous AI penetration-testing agents.
 - [CAI](https://github.com/aliasrobotics/cai) — Cybersecurity AI, an open framework for AI security agents (Alias Robotics).
-- CyberStrike — agentic red-team tooling. *(link to add)*
+- [CyberStrike](https://github.com/CyberStrikeus/CyberStrike) — AI-powered offensive-security agent: multi-agent, methodology-driven autonomous pentesting.
 - …and other agentic red-team projects I keep an eye on.
 
 **Methodology & technique references** (what the playbooks are built from)
