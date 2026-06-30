@@ -626,6 +626,20 @@ class Orchestrator:
             parts.append("Most recent actions (in flight at stop):\n- "
                          + "\n- ".join(reversed(actions)))
 
+        # The active test plan's open items ARE the forward thread — surface them so a
+        # cap-stopped run hands off "continue these next steps", not just a command
+        # list. Without this the next agent re-plans from findings and drops the chain.
+        plans = getattr(self.state, "plans", None) or []
+        if plans:
+            open_items = [it for it in (plans[-1].items or [])
+                          if getattr(it, "status", "pending") not in ("succeeded", "failed")]
+            steps = [(getattr(it, "action", "") or "").strip()[:160]
+                     for it in open_items[:5] if (getattr(it, "action", "") or "").strip()]
+            if steps:
+                label = getattr(plans[-1], "surface_label", "") or ""
+                parts.append(f"Planned next steps{(' for ' + label) if label else ''} "
+                             "(continue these before re-planning):\n- " + "\n- ".join(steps))
+
         return "\n\n".join(parts).strip()
 
     def _live_shells_block(self) -> str:

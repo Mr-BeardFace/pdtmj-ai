@@ -1288,19 +1288,24 @@ class EngagementState(BaseModel):
         # the real command results, not "exit 0 out:1450b". Older entries stay terse;
         # full raw output for any of them is in the captured artifacts (below).
         if self.tool_log:
-            lines.append("**Work already completed** (do not repeat these):")
+            lines.append("**Work already completed** (do not repeat these — full output is in the captured artifacts):")
             recent = self.tool_log[-30:]
-            detail_from = len(recent) - 6        # show output for the last 6 only
+            detail_from = len(recent) - 6        # show a short output head for the last 6 only
             for i, entry in enumerate(recent):
                 cmd = entry.command or entry.tool_name
                 lines.append(f"  [{entry.agent}] {cmd}")
+                # The summary IS the supporting line — the distilled result of the call.
                 if entry.summary:
                     lines.append(f"    → {entry.summary}")
+                # Raw output rides as a short head only; the full bytes are on disk
+                # (artifact index below) — grep_artifact pulls them on demand.
                 if i >= detail_from and entry.truncated_output:
                     out = entry.truncated_output.strip()
-                    out = out if len(out) <= 600 else out[:600] + "…"
-                    for ln in out.splitlines()[:12]:
-                        lines.append(f"      {ln}")
+                    body = out.splitlines()
+                    for ln in body[:4]:
+                        lines.append(f"      {ln[:300]}" + ("…" if len(ln) > 300 else ""))
+                    if len(body) > 4 or len(out) > 1200:
+                        lines.append("      … (full output in artifacts — grep_artifact to query)")
             lines.append("")
 
         # Credentials
@@ -1364,36 +1369,53 @@ class EngagementState(BaseModel):
         if svc_bits:
             lines.append(f"**Identified services:** {'; '.join(svc_bits)}")
 
-        # Findings summary
-        if all_findings:
+        # Findings summary. Sorted CONFIRMED-first, then by severity — a proven fact
+        # always outranks an unconfirmed lead, so an agent-labelled "critical" guess
+        # can't dominate the block over something actually reproduced. Each detailed
+        # entry renders one evidence line (claim + the single supporting datum); full
+        # context lives in the artifacts.
+        main_findings = [f for f in (all_findings or []) if f.type != "dead_end"]
+        if main_findings:
             sev_sort = sorted(
-                all_findings,
-                key=lambda f: SEV_ORDER.get(f.severity, 0),
+                main_findings,
+                key=lambda f: (f.verified, SEV_ORDER.get(f.severity, 0)),
                 reverse=True,
             )
             lines.append(
                 f"\n**Findings so far ({len(sev_sort)} total)** — [CONFIRMED] = reproduced/"
                 "exploited with evidence; [UNCONFIRMED] = a LEAD still to be proven (e.g. a CVE "
                 "inferred from a version/banner), NOT an established fact:")
-            # The most significant handful carry a one-line description + a key
-            # evidence snippet so the next agent inherits a real lead, not just a
-            # title; the long tail stays title-only to keep the block bounded.
-            DETAIL_N = 6
-            for i, f in enumerate(sev_sort[:20]):
+            DETAIL_N = 3
+            for i, f in enumerate(sev_sort[:10]):
                 status = "CONFIRMED" if f.verified else "UNCONFIRMED"
                 lines.append(f"  [{f.severity.upper()}] [{status}] {f.title}  (id={f.id})")
                 if i < DETAIL_N:
                     desc = " ".join((f.description or "").split())
                     if desc:
-                        lines.append(f"      {desc[:240]}" + ("…" if len(desc) > 240 else ""))
-                    bits = []
-                    for k, v in list((f.evidence or {}).items())[:3]:
-                        vs = " ".join(str(v).split())
-                        bits.append(f"{k}={vs[:80] + ('…' if len(vs) > 80 else '')}")
-                    if bits:
-                        lines.append(f"      evidence: {'; '.join(bits)}")
-            if len(sev_sort) > 20:
-                lines.append(f"  ... and {len(sev_sort) - 20} more")
+                        lines.append(f"      {desc[:140]}" + ("…" if len(desc) > 140 else ""))
+                    ev = next(iter((f.evidence or {}).items()), None)
+                    if ev:
+                        vs = " ".join(str(ev[1]).split())
+                        lines.append(f"      evidence: {ev[0]}={vs[:100]}" + ("…" if len(vs) > 100 else ""))
+            if len(sev_sort) > 10:
+                lines.append(f"  ... and {len(sev_sort) - 10} more")
+            lines.append("")
+
+        # Confirmed dead-ends — banked negatives (an attempt that provably failed), so
+        # they aren't re-checked. Gated: must be verified AND carry evidence (a command
+        # behind it), never an exploitability guess. Advisory, not absolute — scoped to
+        # the access noted, and a new foothold/credential can reopen them.
+        dead_ends = [f for f in (all_findings or [])
+                     if f.type == "dead_end" and f.verified and f.evidence]
+        if dead_ends:
+            lines.append("**Confirmed dead-ends** (don't re-check at the SAME access level — "
+                         "a new foothold/credential can reopen these):")
+            for f in dead_ends[:12]:
+                lines.append(f"  ✗ {f.title}")
+                ev = next(iter((f.evidence or {}).items()), None)
+                if ev:
+                    vs = " ".join(str(ev[1]).split())
+                    lines.append(f"      {ev[0]}={vs[:100]}" + ("…" if len(vs) > 100 else ""))
             lines.append("")
 
         lines += [

@@ -72,10 +72,11 @@ When the objective is genuinely achieved — a root/SYSTEM shell, reliable RCE, 
 
 ## Hand off to the next agent
 Your **final message** is read by the next agent as its handoff — not a thin one-liner. Write a tight, concrete close-out:
+- **ACTIVE THREAD (lead with this).** If you stopped mid-attack, state it in one block: the hypothesis you're pursuing, the *exact next step* (the literal next command/action), and any infrastructure already in place (DNS record added, listener running, file staged, tunnel open). The next agent **continues this thread — it does not re-plan from scratch.** If you parked a path, name it and why, so it isn't re-attempted from zero.
 - **What you tested** — the services/paths/vectors you exercised and each result (e.g. "SMB null session :445 — denied; anonymous LDAP :389 — dumped 14 users").
 - **The exact working technique** — for anything that worked, the LITERAL reproducible detail: the precise command, payload, request, URL, or exploit primitive, copied verbatim. If you got code execution, paste the one-liner that triggers it and how to read its output. The next agent must re-fire it without re-deriving it.
 - **Your reasoning** — the key conclusions you reached and why, and your recommended next step.
-- **What you ruled out** — confirmed dead ends, so nobody repeats them.
+- **What you ruled out** — confirmed dead ends, so nobody repeats them. Bank the important ones as you go with `annotate_finding(type="dead_end", verified=true)` + the command/output that proves it and the access level you tested under — only attempts that provably failed, never an exploitability guess.
 - **Most promising leads you did NOT finish** — the openings worth pursuing, with host/port/endpoint, what you saw, and the specific next step. Be most detailed here.
 - **What you handed forward** — credentials, shells, or footholds now available (by reference) and what they unlock.
 

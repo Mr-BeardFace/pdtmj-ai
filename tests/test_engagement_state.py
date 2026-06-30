@@ -185,6 +185,21 @@ def test_context_block_labels_confirmed_vs_unconfirmed():
     assert "is a LEAD, not a fact" in block            # the clarifying rule is present
 
 
+def test_context_block_sorts_confirmed_before_unconfirmed():
+    # A proven fact must outrank an unconfirmed lead regardless of the agent's
+    # severity label — so a guessed "critical" can't dominate the block over
+    # something actually reproduced (the Overwatch false-GenericAll failure mode).
+    s = _state()
+    findings = [
+        Finding(type="vuln", severity="medium", title="Proven SMB Cred",
+                description="d", target="t", verified=True),
+        Finding(type="vuln", severity="critical", title="Guessed DA Path",
+                description="d", target="t", verified=False),
+    ]
+    block = s.build_context_block(findings)
+    assert block.index("Proven SMB Cred") < block.index("Guessed DA Path")
+
+
 def test_context_block_shows_recent_tool_output():
     # The most recent tool calls carry their ACTUAL output, not just the one-line
     # summary, so the next agent inherits the real command results.

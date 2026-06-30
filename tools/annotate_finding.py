@@ -12,7 +12,14 @@ TOOL_DEFINITION = {
         "a parameter that might be injectable, anything that warrants follow-up. "
         "Set verified=false for potential findings you haven't confirmed yet. "
         "Set verified=true when you've confirmed exploitability with evidence. "
-        "To enrich or update a finding you already annotated, pass its finding_id."
+        "To enrich or update a finding you already annotated, pass its finding_id. "
+        "Use type='dead_end' to BANK A CONFIRMED NEGATIVE — an attempt you actually ran "
+        "that provably failed — so it isn't re-tried. Gate: only with verified=true AND the "
+        "exact command+output in evidence (a fact you can point at), never an exploitability "
+        "guess. Record the FAILED ATTEMPT, not a dead path: 'xp_dirtree to my SMB share "
+        "captured nothing as sqlsvc' — NOT 'NTLM capture is impossible'. Always note the "
+        "access level/principal it was tested under, because a new foothold can change the "
+        "result. A flawed attempt on a valid path is a dead_end for that attempt, not the path."
     ),
     "input_schema": {
         "type": "object",
@@ -30,8 +37,8 @@ TOOL_DEFINITION = {
             },
             "type": {
                 "type": "string",
-                "enum": ["recon", "vuln", "config", "exposure"],
-                "description": "recon=intelligence, vuln=exploitable weakness, config=misconfiguration, exposure=data/interface exposed",
+                "enum": ["recon", "vuln", "config", "exposure", "dead_end"],
+                "description": "recon=intelligence, vuln=exploitable weakness, config=misconfiguration, exposure=data/interface exposed, dead_end=a confirmed negative (an attempt that provably failed) — see the gate in the tool description",
             },
             "severity": {
                 "type": "string",
