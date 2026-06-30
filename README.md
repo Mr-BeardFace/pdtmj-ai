@@ -243,6 +243,25 @@ is surprised:
 If something is broken in a way that isn't listed here, that's expected too — it's
 that kind of project.
 
+## Resources & inspiration
+
+This is a learning project, and it stands on a lot of other people's work — both the
+open AI-security projects that shaped how I think about agentic offensive tooling, and
+the methodology references the playbooks are built from. Credit where it's due:
+
+**AI offensive-security projects** (design inspiration)
+- [PentAGI](https://github.com/vxcontrol/pentagi) — autonomous AI penetration-testing agents.
+- [CAI](https://github.com/aliasrobotics/cai) — Cybersecurity AI, an open framework for AI security agents (Alias Robotics).
+- CyberStrike — agentic red-team tooling. *(link to add)*
+- …and other agentic red-team projects I keep an eye on.
+
+**Methodology & technique references** (what the playbooks are built from)
+- [ired.team](https://www.ired.team/) — Active Directory & offensive-security technique reference.
+- [Hackviser — Pentesting Tactics](https://hackviser.com/tactics/pentesting) — service-by-service enumeration and exploitation.
+- [MSSQL Pentesting Cheatsheet (thewhiteh4t)](https://thewhiteh4t.github.io/blog/mssql-pentesting-cheatsheet/) — source for the MSSQL playbook.
+
+This list grows as the playbook library does.
+
 ## Authorized use only
 
 This is a dual-use offensive security tool intended for authorized penetration
