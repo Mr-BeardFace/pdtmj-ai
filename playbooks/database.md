@@ -28,15 +28,14 @@ Several engines have their own focused playbook; load it for the worked techniqu
 - **Redis** → `load_playbook(["redis"])` — unauth, config file-write → RCE, modules, replication
 - **PostgreSQL** → `load_playbook(["postgresql"])` — COPY…PROGRAM RCE, file read/write
 - **MySQL/MariaDB** → `load_playbook(["mysql"])` — FILE-priv file read/write → webshell, UDF RCE
+- **MongoDB** → `load_playbook(["mongodb"])` — unauth access, data/credential exposure
+- **PostgreSQL** is above; **Elasticsearch** → `load_playbook(["elasticsearch"])` — unauth API, data, RCE CVEs
+- **Memcached** → `load_playbook(["memcached"])` — unauth, cached session/credential extraction
+- **Oracle** → `load_playbook(["oracle"])` — SID discovery, default creds, ODAT file R/W + exec
 
 Engines without a dedicated playbook yet — same shape (unauth/default first, assess
-privilege and data exposure, record any code-exec primitive):
-- **MongoDB (27017):** unauthenticated access (critical); enumerate collections, sample
-  document structure; creds/PII/secrets in documents (`mongosh_query`).
-- **Elasticsearch (9200) / CouchDB (5984):** probe the HTTP API for unauth access, list
-  indices/databases, sample data; CouchDB "admin party" (no admin password).
-- **Oracle, Cassandra, Neo4j, Memcached:** unauth/default first, assess privilege + data
-  exposure, record any code-exec primitive.
+privilege and data exposure, record any code-exec primitive): CouchDB ("admin party"),
+Cassandra, Neo4j, and the rest.
 
 Record every credential with `record_credential`; crackable hashes → `hashcat_crack`.
 If you obtain code execution, move to the foothold methodology.

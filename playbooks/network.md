@@ -18,7 +18,15 @@ for every service, cheapest-and-quietest first:
 Do nothing disruptive: read, enumerate, prove — confirm any write capability with a
 benign marker, don't damage data.
 
-## Per-service focus
+## Services with a dedicated playbook — load it
+- **NFS** → `load_playbook(["nfs"])` — exports, `no_root_squash` privesc, writable-export exec
+- **FTP** → `load_playbook(["ftp"])` — anon access, writable → webshell, cleartext reuse
+- **SMTP** → `load_playbook(["smtp"])` — user enum (VRFY/EXPN), open relay
+- **SNMP** → `load_playbook(["snmp"])` — community strings, credential/config disclosure
+- **rsync** → `load_playbook(["rsync"])` — anon module read/write
+- **WebDAV** → `load_playbook(["webdav"])` — writable upload → webshell (RCE)
+
+## Other services — worked here
 - **SMB (139/445):** enumerate the full share list, then read every non-admin share
   recursively — the foothold is almost always a file in a share, not `IPC$`. `netexec`/
   `smbclient` (no share = list mode); `rpcclient` for null-session user/RID. Catch:
@@ -26,18 +34,12 @@ benign marker, don't damage data.
 - **SSH (22):** the realistic way in is reused credentials — replay every discovered
   cred first. Catch: password auth where key-only is expected, exposed keys. Brute is
   almost never the path.
-- **FTP (21):** anonymous access and what it exposes; readable files, writable dirs, traversal.
 - **RDP (3389):** assess exposure/patch without logging in — NLA disabled, weak crypto,
   BlueKeep-class CVEs.
-- **SNMP (161/UDP):** try common community strings; if one works, pull system info,
-  processes, software, routing. Catch: working strings, v1/v2c, infra disclosure.
-- **Telnet (23):** identify the service/banner; flag the cleartext protocol itself.
-- **SMTP (25/587/465):** open relay, VRFY/EXPN user enum, missing STARTTLS.
 - **WinRM (5985/5986):** reachability and, with any creds, whether they grant command
   execution (`netexec winrm`).
+- **Telnet (23):** identify the service/banner; flag the cleartext protocol itself.
 - **VNC (5900):** desktop reachable without / with trivial auth.
-- **NFS (2049):** list exports; world-readable/writable exports, sensitive files, and
-  `no_root_squash` (a direct privilege-escalation primitive).
 - **Other:** same shape — anon/unauth → defaults → reused creds → CVEs; reach for the
   protocol's real client, not a brute tool, to open it.
 
