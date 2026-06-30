@@ -5,14 +5,14 @@ password, so the tool must never emit -p."""
 from tools import impacket_mssql as m
 
 
-def _capture(monkeypatch):
+def _capture(monkeypatch, out="ok", rc=0):
     calls: dict = {}
     monkeypatch.setattr(m.shutil, "which", lambda _: "/usr/bin/impacket-mssqlclient")
 
     class _P:
-        stdout = "ok"
+        stdout = out
         stderr = ""
-        returncode = 0
+        returncode = rc
 
     def fake_run(cmd, **kw):
         calls["cmd"] = cmd
@@ -47,3 +47,17 @@ def test_hash_auth_no_password(monkeypatch):
     assert "admin@10.0.0.1" in cmd                          # no :pass appended
     assert cmd[cmd.index("-hashes") + 1] == "aad3b:5f4dcc"
     assert "-p" not in cmd
+
+
+# impacket exits 0 even when the login is rejected, so the auth verdict is read from
+# the output — a real SQL session vs a "Login failed" line — and feeds the auth ledger.
+def test_authenticated_true_on_sql_session(monkeypatch):
+    _capture(monkeypatch, out="[*] ENVCHANGE(DATABASE)... SQL (OVERWATCH\\sqlsvc guest@master)> ")
+    r = m.impacket_mssql("10.0.0.1", "sqlsvc", password="x", port=6520, query="SELECT 1")
+    assert r["authenticated"] is True and r["success"] is True
+
+
+def test_authenticated_false_on_login_failed(monkeypatch):
+    _capture(monkeypatch, out="[-] ERROR(S200401): Login failed for user 'sqlsvc'.")
+    r = m.impacket_mssql("10.0.0.1", "sqlsvc", password="x", port=6520, query="SELECT 1")
+    assert r["authenticated"] is False and r["success"] is False

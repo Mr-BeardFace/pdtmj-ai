@@ -69,11 +69,23 @@ def impacket_mssql(target: str, username: str, password: Optional[str] = None,
     output = proc.stdout + proc.stderr
     cmd_str = " ".join(cmd) + f" < {sql_file}"
 
+    # impacket exits 0 even when the login is REJECTED, so returncode is not an auth
+    # verdict — read it from the output: a real SQL session prints a "SQL (...)" prompt
+    # / ENVCHANGE, a rejected login prints "Login failed".
+    low = output.lower()
+    if "login failed" in low or "cannot open" in low:
+        authenticated = False
+    elif "sql (" in low or "envchange" in low or "ack: result" in low:
+        authenticated = True
+    else:
+        authenticated = None       # couldn't tell (connection error, timeout, …)
+
     return {
         "target":      f"{target}:{port}",
         "username":    username,
+        "authenticated": authenticated,
         "output":      output[:16000],
-        "success":     proc.returncode == 0,
+        "success":     (proc.returncode == 0) if authenticated is None else authenticated,
         "_command":    cmd_str,
     }
 

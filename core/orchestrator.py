@@ -259,6 +259,9 @@ def _auth_fields(tool_name: str, inputs: dict):
     if tool_name == "smbclient":
         return ("smb", inputs.get("target", ""), inputs.get("port"),
                 inputs.get("username"), inputs.get("password") or "")
+    if tool_name == "impacket_mssql":
+        return ("mssql", inputs.get("target", ""), inputs.get("port", 1433),
+                inputs.get("username"), inputs.get("password") or inputs.get("hash") or "")
     return None
 
 
@@ -273,7 +276,7 @@ def _auth_result(tool_name: str, result: dict) -> str | None:
         if "exit_code" in result:
             return "success"
         return None                     # connection error etc. — not an auth verdict
-    if tool_name == "netexec":
+    if tool_name in ("netexec", "impacket_mssql"):
         if result.get("authenticated") is True:
             return "success"
         if result.get("authenticated") is False:
