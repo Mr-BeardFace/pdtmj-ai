@@ -356,11 +356,14 @@ class FrontierDriver(ParallelDriver):
         surface = self._surface_for(lead)
 
         # Credential reuse → exploitation agent, spray-the-known-secret objective.
-        # Checked first: a cred lead's reach ('user') is high enough to otherwise
-        # fall into the foothold branch, but it's an auth attempt, not a kill chain.
+        # Budget is the full kill-chain one, not a spray-sized cap: a dead cred
+        # concludes in a few turns anyway (the objective says stop when nothing
+        # authenticates), but a cred that LANDS a shell (e.g. WinRM Pwn3d!) turns into
+        # a kill chain — the objective already tells it to pursue that, so it needs the
+        # room. A tight cap cut active exploitation off mid-chain and re-worked the lead.
         if lead.kind == "cred":
             return (self._exploit_agent_for(surface),
-                    self._cred_objective(lead), max(self._hyp_turns, 10))
+                    self._cred_objective(lead), self._foothold_budget())
 
         # Surface / service / recon → deep enumeration by the right specialist.
         if lead.kind in ("surface", "service") or reach <= level_of("service"):
