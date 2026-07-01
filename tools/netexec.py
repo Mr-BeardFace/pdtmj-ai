@@ -1,11 +1,8 @@
+import re
 import shlex
 import shutil
 import subprocess
 from core import proc as runner
-
-# Credential-bearing flags whose values must be redacted from logged commands.
-import re
-_CRED_FLAGS = re.compile(r'(?<= )(-p|-H|--password|--hash)( )(\S+)')
 
 
 def _validate_nxc_flags(flags: str) -> list[str]:
@@ -32,7 +29,10 @@ def _broken_install_msg(exe_name: str, detail: str) -> str:
 
 
 def _redact_command(cmd: list[str]) -> str:
-    """Return the command as a printable string with credential values masked."""
+    """Printable command with credential values masked and each argument shell-quoted,
+    so a `-x` payload containing spaces/`;`/`|` reads as ONE quoted token — not a line
+    that looks split. An unquoted display made an agent think its semicolon was being
+    split (it wasn't — proc.run execs the argv list, no shell) and abandon a working call."""
     out = []
     skip_next = False
     cred_args = {"-p", "--password", "-H", "--hash"}
@@ -44,7 +44,7 @@ def _redact_command(cmd: list[str]) -> str:
             out.append(token)
             skip_next = True
         else:
-            out.append(token)
+            out.append(shlex.quote(token))
     return " ".join(out)
 
 
