@@ -964,6 +964,26 @@ class EngagementState(BaseModel):
                 if secret_format and not existing.secret_format:
                     existing.secret_format = secret_format
                 return existing
+        # Attribution: a NAMED credential whose secret matches an existing
+        # USERNAMELESS record of the same type fills in that blank username (a
+        # password found with no known user, later tied to one) — updating the one
+        # line instead of adding a second. It only ever fills a BLANK: a different
+        # known username (password reuse across users) never matches here, so distinct
+        # users stay distinct records, and a different secret is untouched entirely.
+        # Never downgrades a verified record.
+        if username:
+            for existing in self.credentials:
+                if (existing.secret == secret and existing.cred_type == cred_type
+                        and not existing.username):
+                    existing.username = username
+                    existing.verified = existing.verified or verified
+                    if location and not existing.location:
+                        existing.location = location
+                    if secret_format and not existing.secret_format:
+                        existing.secret_format = secret_format
+                    if source_agent and not existing.source_agent:
+                        existing.source_agent = source_agent
+                    return existing
         cred = Credential(
             cred_type=cred_type, username=username, secret=secret,
             secret_masked=mask_secret(secret), secret_format=secret_format,

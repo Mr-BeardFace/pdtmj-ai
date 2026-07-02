@@ -95,7 +95,7 @@ COMMANDS: list[Command] = [
         Sub("list", "List all agents with their current model and temperature"),
     )),
     Command("/cred", "Pre-load or manage engagement credentials", (
-        Sub("add",    "Pre-load a credential", "<user> <secret> [service] [type]"),
+        Sub("add",    "Pre-load a credential", "[type] <user> <secret> [service]", _CRED_TYPES),
         Sub("list",   "List credentials (operator + agent-discovered), numbered"),
         Sub("remove", "Remove a credential by its number from /cred list", "<n>"),
         Sub("clear",  "Remove all manually added credentials"),
@@ -758,36 +758,57 @@ def handle_help(args: list[str] | None = None) -> tuple[list[str], bool]:
 # Session-level manual creds (list[dict]) stored in the app and injected into
 # EngagementState when a pipeline/run starts. Not persisted to disk.
 
+def _usage_cred_add() -> list[str]:
+    return [
+        "Usage: /cred add [type] <username> <secret> [service]",
+        "",
+        "type (optional, FIRST arg): " + ", ".join(_CRED_TYPES) + "  — default password",
+        "username is optional: a lone secret is a usernameless credential (a password",
+        "found with no known user, an API key). Put '-' in the username slot when you",
+        "have a service but no username.",
+        "",
+        "Examples:",
+        "  /cred add administrator Password123! smb",
+        "  /cred add hash svc_sql aad3b435...:31d6cfe0...",
+        "  /cred add api sk-abcd1234",
+        "  /cred add MyPass123                    (password, unknown user)",
+        "  /cred add - Password123! smb           (unknown user, with service)",
+    ]
+
+
 def handle_cred_add(args: list[str]) -> tuple[list[str], bool, dict | None]:
     """Always returns a 3-tuple — cred dict is None on usage errors.
 
-    Beyond <username> <secret>, the trailing args are order-independent: a token that
-    names a credential kind (password/hash/api_key/token/key, or an alias like api/ntlm)
-    sets the type; anything else is the service. Type defaults to password."""
-    if len(args) < 2:
-        return [
-            "Usage: /cred add <username> <secret> [service] [type]",
-            "",
-            "type is one of: " + ", ".join(_CRED_TYPES) + " (default password)",
-            "",
-            "Examples:",
-            "  /cred add administrator Password123! smb",
-            "  /cred add svc_sql aad3b435...:31d6cfe0... hash",
-            "  /cred add api_user sk-abcd1234 http api",
-        ], False, None
-    username = args[0]
-    secret   = args[1]
+    Form: /cred add [type] <username> <secret> [service]. An optional leading type
+    keyword (password/hash/api_key/token/key, or an alias like api/ntlm) defaults to
+    password. The remaining args are positional by count — 1=secret only (usernameless),
+    2=username+secret, 3=username+secret+service — so a password whose user is unknown,
+    or an API key, is a lone secret. '-' in the username slot means 'no username'."""
+    toks = list(args)
     cred_type = "password"
-    service   = ""
-    type_set  = False
-    for tok in args[2:]:
-        norm = _CRED_TYPE_ALIASES.get(tok.lower(), tok.lower())
-        if not type_set and norm in _CRED_TYPES:
-            cred_type, type_set = norm, True
-        elif not service:
-            service = tok
-    # Return the cred dict — caller stores it in app state
-    return [f"Credential added: {username}  type={cred_type}  service={service or 'any'}"], True, {
+    if toks:
+        norm = _CRED_TYPE_ALIASES.get(toks[0].lower(), toks[0].lower())
+        if norm in _CRED_TYPES:
+            cred_type = norm
+            toks = toks[1:]
+
+    username: str | None = None
+    secret = ""
+    service = ""
+    if len(toks) == 1:
+        secret = toks[0]
+    elif len(toks) == 2:
+        username, secret = toks[0], toks[1]
+    elif len(toks) >= 3:
+        username, secret, service = toks[0], toks[1], toks[2]
+    if username in ("-", ""):
+        username = None
+
+    if not secret:
+        return _usage_cred_add(), False, None
+
+    who = f"user={username}" if username else "user=(unknown)"
+    return [f"Credential added: type={cred_type}  {who}  service={service or 'any'}"], True, {
         "username":  username,
         "secret":    secret,
         "service":   service,
@@ -797,11 +818,13 @@ def handle_cred_add(args: list[str]) -> tuple[list[str], bool, dict | None]:
 
 def handle_cred_list(creds: list[dict]) -> tuple[list[str], bool]:
     if not creds:
-        return ["No manual credentials loaded.  Use /cred add <user> <pass> [service]"], True
+        return ["No manual credentials loaded.  Use /cred add [type] <user> <pass> [service]"], True
     from core.utils import mask_secret
-    lines = [f"{'Username':<20} {'Secret':<20} Service", ""]
+    lines = [f"{'Type':<10} {'Username':<20} {'Secret':<20} Service", ""]
     for c in creds:
-        lines.append(f"  {c['username']:<18} {mask_secret(c['secret']):<20} {c.get('service', '')}")
+        user = c.get("username") or "-"
+        lines.append(f"  {(c.get('cred_type') or 'password'):<8} {user:<20} "
+                     f"{mask_secret(c.get('secret', '')):<20} {c.get('service', '')}")
     return lines, True
 
 

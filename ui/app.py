@@ -2022,9 +2022,10 @@ class PentestApp(App):
             return lines
         if not self._manual_creds:
             return ["No credentials.  /cred add <user> <pass> [service], or run an engagement."]
-        lines = [f"  {'#':<3}{'Username':<18}{'Secret':<18}Service", ""]
+        lines = [f"  {'#':<3}{'Type':<9}{'Username':<18}{'Secret':<18}Service", ""]
         for i, c in enumerate(self._manual_creds, 1):
-            lines.append(f"  {i:<3}{c.get('username', ''):<18}"
+            lines.append(f"  {i:<3}{(c.get('cred_type') or 'password'):<9}"
+                         f"{(c.get('username') or ''):<18}"
                          f"{mask_secret(c.get('secret', '')):<18}{c.get('service', '')}")
         lines += ["", "Remove one with: /cred remove <#>"]
         return lines

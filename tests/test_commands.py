@@ -80,14 +80,26 @@ def test_cred_add_always_three_tuple():
     assert cred == {"username": "admin", "secret": "P@ss", "service": "smb", "cred_type": "password"}
 
 
-def test_cred_add_type_detection():
-    # type defaults to password
-    assert handle_cred_add(["u", "p"])[2]["cred_type"] == "password"
-    # a type keyword anywhere in the trailing args sets the type, order-independent
-    assert handle_cred_add(["u", "h", "hash"])[2] == {"username": "u", "secret": "h",
-                                                      "service": "", "cred_type": "hash"}
-    c = handle_cred_add(["u", "h", "smb", "hash"])[2]
-    assert c["cred_type"] == "hash" and c["service"] == "smb"
+def test_cred_add_type_first_and_default():
+    # no leading type keyword → default password, positional user+secret
+    assert handle_cred_add(["u", "p"])[2] == {"username": "u", "secret": "p",
+                                              "service": "", "cred_type": "password"}
+    # leading type keyword is consumed; rest is user+secret
+    assert handle_cred_add(["hash", "svc_sql", "aabbcc"])[2] == {
+        "username": "svc_sql", "secret": "aabbcc", "service": "", "cred_type": "hash"}
     # aliases normalize (ntlm -> hash, api -> api_key)
-    assert handle_cred_add(["u", "h", "ntlm"])[2]["cred_type"] == "hash"
-    assert handle_cred_add(["u", "k", "api"])[2]["cred_type"] == "api_key"
+    assert handle_cred_add(["ntlm", "svc", "h"])[2]["cred_type"] == "hash"
+    assert handle_cred_add(["api", "u", "sk-abc"])[2]["cred_type"] == "api_key"
+
+
+def test_cred_add_usernameless():
+    # a lone secret is usernameless (found password w/ unknown user, or an API key)
+    c = handle_cred_add(["MyPass123"])[2]
+    assert c == {"username": None, "secret": "MyPass123", "service": "", "cred_type": "password"}
+    assert handle_cred_add(["api", "sk-abcd1234"])[2] == {
+        "username": None, "secret": "sk-abcd1234", "service": "", "cred_type": "api_key"}
+    # '-' placeholder gives no username but keeps a service
+    assert handle_cred_add(["-", "P@ss", "smb"])[2] == {
+        "username": None, "secret": "P@ss", "service": "smb", "cred_type": "password"}
+    # empty / no secret is a usage error
+    assert handle_cred_add([])[1] is False
