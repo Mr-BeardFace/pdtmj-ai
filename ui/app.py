@@ -1008,6 +1008,17 @@ class PentestApp(App):
             if success and cred:
                 self._manual_creds.append(cred)
                 self._show_cred_in_table(cred, source="manual")
+                # Manual creds are seeded into state only at engagement creation. Added
+                # mid-run, they'd never reach the running agent — inject them live so a
+                # cred handed to an in-flight engagement becomes an actionable lead now.
+                if self._current_state is not None:
+                    self._current_state.add_credential(
+                        cred_type=cred.get("cred_type", "password"),
+                        username=cred.get("username"),
+                        secret=cred["secret"], service=cred.get("service", ""),
+                        location=cred.get("location", "") or cred.get("service", ""),
+                        source_agent="operator", verified=False,
+                    )
             self._show_cmd_output(lines, success)
             return
 

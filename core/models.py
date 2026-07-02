@@ -44,6 +44,19 @@ class Finding(BaseModel):
     timestamp: datetime = Field(default_factory=lambda: now_local())
 
 
+class OperationalFact(BaseModel):
+    """A confirmed operational fact — scaffolding the next run needs to ACT, not a
+    reported vuln. Kept out of `findings` on purpose: these never reach the report,
+    they only keep an engagement from re-deriving (or contradicting) what it proved."""
+    id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
+    kind: str                    # target | channel
+    statement: str               # one-line established fact ("native DLL must be x64")
+    evidence: str = ""           # command + observed line proving it (required at write)
+    scope: str = ""              # host and/or principal it applies to
+    status: str = "confirmed"    # confirmed | invalidated (superseded by a correction)
+    timestamp: datetime = Field(default_factory=lambda: now_local())
+
+
 class EngagementRun(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[:12])
     agent: str

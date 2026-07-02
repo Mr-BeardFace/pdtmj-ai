@@ -42,6 +42,14 @@ Confirm the primitive actually executes (a single callback ping) before building
 ### Bank the foothold the instant exec is confirmed
 The moment code execution is proven, call `annotate_finding` for it — **verified, with the evidence (the command and its output)** — before anything else. The foothold is the headline finding; everything after builds on it, and your run can stop at the turn cap mid-privesc. Confirm exec → annotate → continue. Fingerprint the OS and current user immediately; everything forks on that.
 
+### Pin the operational facts so the next turn acts, not re-derives
+As you establish HOW this target is exploited and HOW your access behaves, `record_fact` the durable ones — this is act-on-this scaffolding, kept apart from findings so a later turn (or the next agent) builds on it instead of re-reading artifacts to reconstruct it, or worse, contradicting it. Two kinds, each proven with the command that established it:
+
+- **target** — a property that dictates the exploit. *Example:* you `file` a binary you'll inject into and it's a .NET AnyCPU/PE32 assembly → the LoadLibrary target runs 64-bit, so `record_fact(kind='target', 'native DLL must be x64', evidence='file UpdateMonitor.exe → PE32 Mono/.Net assembly')`. Check the property before you build against it — the fact is what stops you from rebuilding the wrong-arch payload three runs in a row.
+- **channel** — an access/exec channel you established and how it behaves. *Example:* a scheduled-task DLL gives exec but the reverse shell returns empty → `record_fact(kind='channel', 'DLL exec works but the shell is BLIND — stdout not piped; exfil over the OOB listener', evidence='whoami via shell → empty; same via OOB POST → logging\\jaylee')`. Also pin the working command channel itself (e.g. WinRM as which principal, via password or hash).
+
+If a later result corrects a fact you pinned, `record_fact` the correction with `supersedes=<old id>` so the wrong one is retired, not left to mislead the next turn.
+
 ### Loot with the primitive you have — before chasing a better channel
 The exec you already have is enough to read files. The moment it's confirmed, use it to grab the immediate wins — `id`/`sudo -l`, the user flag, readable creds/config, SUID/cron/writable-path privesc vectors — and record them (`record_credential`/`record_flag`/`annotate_finding`). A one-shot or blind primitive is fine for this; you do not need a full shell to read files. Invest in a stable channel only when sustained interactive work needs one (see below), and never abandon a working exploit to chase a prettier shell.
 

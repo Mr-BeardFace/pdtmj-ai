@@ -11,7 +11,7 @@ from typing import ClassVar, Optional
 
 from pydantic import BaseModel, Field, PrivateAttr
 
-from core.models import Surface, TestPlan
+from core.models import Surface, TestPlan, OperationalFact
 from core.utils import mask_secret
 
 # Tools whose results should not be cached (side effects or stateful)
@@ -232,6 +232,7 @@ class EngagementState(BaseModel):
     flags: list[Flag] = []          # CTF flags captured during the engagement
     auth_attempts: list[AuthAttempt] = []   # who/what was tried against which service
     persistence: list[PersistenceItem] = [] # footholds planted (for cleanup/report)
+    operational_facts: list[OperationalFact] = []  # confirmed act-on-this scaffolding (target/channel), NOT reported
     services: list[dict] = []        # agent-annotated service detail: {host,port,service,app,version,tech,os}
     scripts: list[dict] = []         # ad-hoc run_script library: {purpose,path,language,timestamp}
     handoffs: list[dict] = []        # per-agent close-out notes for the next agent: {agent,summary}
@@ -451,6 +452,7 @@ class EngagementState(BaseModel):
         return {
             "tool_log": len(self.tool_log),
             "persistence": len(self.persistence),
+            "operational_facts": len(self.operational_facts),
             "handoffs": len(self.handoffs),
             "_eng_script_calls": self._eng_script_calls,
             "_scripts_since_progress": self._scripts_since_progress,
@@ -553,6 +555,10 @@ class EngagementState(BaseModel):
         # append-only collections — extend past the fork-time length
         self.tool_log.extend(other.tool_log[marks.get("tool_log", 0):])
         self.persistence.extend(other.persistence[marks.get("persistence", 0):])
+        # Operational facts a worker pinned — replay through record_fact so the canonical
+        # state's dedup/supersede/cap apply (not a blind extend that could dupe or overflow).
+        for f in other.operational_facts[marks.get("operational_facts", 0):]:
+            self.record_fact(f.kind, f.statement, f.evidence, f.scope)
         self.handoffs.extend(other.handoffs[marks.get("handoffs", 0):])
         if len(self.handoffs) > self._HANDOFF_KEEP:
             self.handoffs = self.handoffs[-self._HANDOFF_KEEP:]
@@ -838,6 +844,43 @@ class EngagementState(BaseModel):
         self.plans.append(plan)
         return plan
 
+    _FACT_CAP = 8            # confirmed facts rendered/kept (single-box CTF)
+    _FACT_INVAL_KEEP = 2     # recent corrections shown so the next run sees the flip
+
+    def record_fact(self, kind: str, statement: str, evidence: str = "",
+                    scope: str = "", supersedes: str = "") -> OperationalFact:
+        """Pin a confirmed operational fact. Same statement+scope refreshes in place
+        (no dupes); `supersedes` retires a prior fact the correction replaces. Capped so
+        the block stays a few lines — it must REPLACE re-derivation, not add to context."""
+        norm = " ".join((statement or "").lower().split())
+        if supersedes:
+            for f in self.operational_facts:
+                if f.id == supersedes:
+                    f.status = "invalidated"
+        # Dedup: refresh an existing confirmed fact rather than stack a copy.
+        for f in self.operational_facts:
+            if (f.status == "confirmed" and f.scope == scope
+                    and " ".join(f.statement.lower().split()) == norm):
+                if evidence:
+                    f.evidence = evidence
+                f.timestamp = now_local()
+                return f
+        fact = OperationalFact(kind=kind, statement=statement,
+                               evidence=evidence, scope=scope)
+        self.operational_facts.append(fact)
+        self._evict_facts()
+        return fact
+
+    def _evict_facts(self) -> None:
+        """Keep at most _FACT_CAP confirmed (oldest out first) and the most recent
+        _FACT_INVAL_KEEP invalidated — bounded by construction."""
+        confirmed = [f for f in self.operational_facts if f.status == "confirmed"]
+        inval     = [f for f in self.operational_facts if f.status == "invalidated"]
+        confirmed = confirmed[-self._FACT_CAP:]
+        inval     = inval[-self._FACT_INVAL_KEEP:]
+        keep = {id(f) for f in confirmed} | {id(f) for f in inval}
+        self.operational_facts = [f for f in self.operational_facts if id(f) in keep]
+
     def intel_signature(self, findings: list | None = None) -> tuple:
         """A coarse fingerprint of accumulated intel. If this is unchanged after a
         full cycle, the surface produced nothing new and is exhausted.
@@ -1086,6 +1129,7 @@ class EngagementState(BaseModel):
             "credentials":   creds,
             "flags":         [f.model_dump(mode="json") for f in self.flags],
             "persistence":   [p.model_dump(mode="json") for p in self.persistence],
+            "operational_facts": [f.model_dump(mode="json") for f in self.operational_facts],
             "recon":         {"os_info":    dict(self.recon.os_info),
                               "host_names": dict(self.recon.host_names)},
             "scope_targets": list(self.scope_targets),
@@ -1282,6 +1326,26 @@ class EngagementState(BaseModel):
                     if para.strip():
                         lines.append(f"  {para.strip()}")
             lines.append("")
+
+        # Confirmed operational facts — the durable "how to act on this target" the next
+        # run would otherwise re-derive from the artifacts (target arch, working channel,
+        # blind-shell status). Sits up top with the handoff: read it before the tool log.
+        # A corrected fact renders as ✗ CORRECTED for a cycle so a reversal is impossible.
+        if self.operational_facts:
+            confirmed = [f for f in self.operational_facts if f.status == "confirmed"]
+            inval     = [f for f in self.operational_facts if f.status == "invalidated"]
+            if confirmed or inval:
+                lines.append("**Confirmed operational facts** (established this engagement — "
+                             "act on these, do NOT re-derive or contradict them):")
+                for f in confirmed[-self._FACT_CAP:]:
+                    sc = f" [{f.scope}]" if f.scope else ""
+                    lines.append(f"  • ({f.kind}){sc} {f.statement}  (id={f.id})")
+                    if f.evidence:
+                        ev = " ".join(f.evidence.split())
+                        lines.append(f"      evidence: {ev[:120]}" + ("…" if len(ev) > 120 else ""))
+                for f in inval[-self._FACT_INVAL_KEEP:]:
+                    lines.append(f"  ✗ CORRECTED (was wrong): {f.statement}")
+                lines.append("")
 
         # Tool log — last 30 entries. The most recent few also carry their actual
         # output snippet (not just the one-line summary) so the next agent inherits

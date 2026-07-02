@@ -25,6 +25,7 @@ from tools.record_plan import TOOL_DEFINITION as RECORD_PLAN_DEF
 from tools.register_surface import TOOL_DEFINITION as REGISTER_SURFACE_DEF
 from tools.record_credential import TOOL_DEFINITION as RECORD_CRED_DEF
 from tools.record_service import TOOL_DEFINITION as RECORD_SERVICE_DEF
+from tools.record_fact import TOOL_DEFINITION as RECORD_FACT_DEF
 from tools.grep_artifact import TOOL_DEFINITION as GREP_ARTIFACT_DEF
 from tools.read_artifact import TOOL_DEFINITION as READ_ARTIFACT_DEF
 from tools.check_jobs import TOOL_DEFINITION as CHECK_JOBS_DEF
@@ -51,7 +52,7 @@ SEV_COLOR = {
 
 # These tools are intercepted before reaching the registry
 _INTERCEPTED = {"annotate_finding", "queue_followup", "record_plan", "register_surface",
-                "record_credential", "record_service", "record_flag", "conclude_engagement",
+                "record_credential", "record_service", "record_fact", "record_flag", "conclude_engagement",
                 "grep_artifact", "read_artifact", "check_jobs", "list_scripts",
                 "start_listener", "shell_exec", "list_shells", "record_persistence", "wait",
                 "load_playbook"}
@@ -975,6 +976,7 @@ class Orchestrator:
         if phase not in ("planning", "reporting"):
             meta_defs.append(RECORD_CRED_DEF)
             meta_defs.append(RECORD_SERVICE_DEF)
+            meta_defs.append(RECORD_FACT_DEF)
             meta_defs.append(CHECK_JOBS_DEF)
             meta_defs.append(WAIT_DEF)      # let the agent actually wait for a reset/reboot
             meta_defs.append(CONCLUDE_DEF)
@@ -1264,6 +1266,15 @@ class Orchestrator:
 
                     if tb.name == "record_service":
                         result = self._handle_record_service(tb.input, agent.name)
+                        tool_results.append({
+                            "type":        "tool_result",
+                            "tool_use_id": tb.id,
+                            "content":     json.dumps(result),
+                        })
+                        continue
+
+                    if tb.name == "record_fact":
+                        result = self._handle_record_fact(tb.input)
                         tool_results.append({
                             "type":        "tool_result",
                             "tool_use_id": tb.id,
@@ -2116,6 +2127,27 @@ class Orchestrator:
             if isinstance(v, (int, float, bool)) or (isinstance(v, str) and len(v) < 120):
                 stub[k] = v
         return stub
+
+    def _handle_record_fact(self, inputs: dict) -> dict:
+        if not self.state:
+            return {"recorded": False, "error": "No engagement state attached"}
+        statement = (inputs.get("statement") or "").strip()
+        evidence  = (inputs.get("evidence") or "").strip()
+        if not statement:
+            return {"recorded": False, "error": "statement is required"}
+        if not evidence:
+            return {"recorded": False,
+                    "error": "evidence is required — a fact with no command+output proof is not confirmed"}
+        fact = self.state.record_fact(
+            kind=inputs.get("kind", "target") or "target",
+            statement=statement,
+            evidence=evidence,
+            scope=inputs.get("scope", "") or "",
+            supersedes=inputs.get("supersedes", "") or "",
+        )
+        sc = f" [{fact.scope}]" if fact.scope else ""
+        self._print(f"  [cyan][fact][/cyan] ({fact.kind}){sc} {fact.statement}")
+        return {"recorded": True, "id": fact.id, "kind": fact.kind}
 
     def _handle_record_credential(self, inputs: dict, source_agent: str) -> dict:
         if not self.state:
