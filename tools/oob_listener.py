@@ -11,6 +11,12 @@ from core.utils import get_interface_ip as _get_interface_ip
 _server:           Optional[http.server.HTTPServer] = None
 _server_thread:    Optional[threading.Thread]        = None
 _received:         list = []
+# Consecutive action='check' calls that saw NO new callback. oob_listener is exempt
+# from the engine's loop-nudge (polling is normal), so this is the ONLY thing that
+# tells an agent it's spinning on a callback that isn't coming (c03 polled 51x).
+_empty_checks:     int  = 0
+_last_check_count: int  = 0
+_EMPTY_HINT_AFTER: int  = 3
 _listener_port:    int  = 0
 _listener_ip:      str  = ""
 _serve_dir:        str  = ""     # directory of payloads to serve, if any
@@ -175,6 +181,8 @@ def oob_listener(
 
     if action == "start":
         _received = []
+        globals()["_empty_checks"] = 0
+        globals()["_last_check_count"] = 0
         err = _ensure_server(port, interface)
         if err:
             return err
@@ -198,6 +206,15 @@ def oob_listener(
 
     elif action == "check":
         hits = list(_received)
+        # Track empty polling — a check with no NEW callback since the last one. When
+        # this streaks, the payload almost certainly never fired or can't reach us;
+        # polling again won't change that.
+        global _empty_checks, _last_check_count
+        if len(hits) > _last_check_count:
+            _empty_checks = 0
+        else:
+            _empty_checks += 1
+        _last_check_count = len(hits)
         # 'bodies' = whole posted/put payloads (a key, a dump, any file too big for a
         # URL). Always raw. 'received' carries each callback (path + headers + body).
         bodies = [h.get("body") for h in hits if h.get("body")]
@@ -208,6 +225,14 @@ def oob_listener(
             "bodies":         bodies,
             "callback_url":   f"http://{_listener_ip}:{_listener_port}/" if _listener_ip else "",
         }
+        if not hits and _empty_checks >= _EMPTY_HINT_AFTER:
+            out["hint"] = (
+                f"Checked {_empty_checks}x with zero callbacks. Re-checking will not change this — "
+                "the payload most likely never executed or the target cannot reach your listener. "
+                "Stop polling and verify the vector: is the injection/command actually running? Can "
+                f"the target reach {_listener_ip}:{_listener_port} (right interface, egress not "
+                "firewalled)? Is the callback command well-formed? Fix the cause or switch exfil "
+                "channel instead of polling again.")
         # decode != raw → the LLM recognized an encoding in the raw capture and is
         # asking the tool to apply that exact codec. We decode the body if present,
         # else the last URL-path segment (where `$(cmd|base64)` exfil lands).

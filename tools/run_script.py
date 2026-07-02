@@ -85,7 +85,7 @@ def run_script(
     script: str,
     purpose: str = "",
     args: list[str] | None = None,
-    timeout: int = 30,
+    timeout: int = 120,
 ) -> dict:
     lang = language.strip().lower()
     if lang not in _SUPPORTED:
@@ -132,7 +132,9 @@ def run_script(
         )
     except subprocess.TimeoutExpired:
         return {
-            "error": f"script timed out after {timeout}s — use background=true for slow operations",
+            "error": f"script timed out after {timeout}s (it may have run partially) — for a "
+                     "genuinely slow script (multi-step upload, long scan) re-run with "
+                     "background=true or raise timeout; do not just retry the same synchronous call",
             "script_file": str(script_path),
             "_command": cmd_str,
         }
@@ -210,7 +212,7 @@ TOOL_DEFINITION = {
             },
             "timeout": {
                 "type": "integer",
-                "description": "Execution timeout seconds (default 30). Use background=true for slow jobs instead.",
+                "description": "Execution timeout seconds (default 120). Use background=true for slow jobs instead.",
             },
             "background": {
                 "type": "boolean",

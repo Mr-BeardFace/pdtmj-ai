@@ -18,6 +18,22 @@ def _post(port: int, data: bytes, method: str = "POST"):
     urllib.request.urlopen(req, timeout=5).read()
 
 
+def test_empty_poll_hint_after_streak():
+    # oob is exempt from the engine loop-nudge, so this hint is the only thing that
+    # tells an agent it's polling a callback that never arrives (c03 polled 51x).
+    oob._received = []
+    oob._empty_checks = 0
+    oob._last_check_count = 0
+    oob._listener_ip = "10.10.14.5"
+    for _ in range(oob._EMPTY_HINT_AFTER):
+        r = oob.oob_listener("check")
+    assert "hint" in r and "never executed" in r["hint"] or "reach" in r["hint"]
+    # a callback resets the streak — no hint
+    oob._received.append({"path": "/x"})
+    r = oob.oob_listener("check")
+    assert "hint" not in r and r["callback_fired"]
+
+
 def test_posted_body_captured_whole(monkeypatch):
     # The fix: a key/file too big for a URL is POSTed in the body and comes back
     # WHOLE under 'bodies' — the agent's "offload it another way" path actually works.
