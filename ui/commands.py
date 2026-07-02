@@ -489,11 +489,11 @@ def handle_agent_list() -> tuple[list[str], bool]:
             except Exception:
                 pass
 
-        td = cfg.get("temperature_default")
+        td = cfg.get("temp")
         lines += [
             "",
             f"  global model override:  {global_model}",
-            f"  temperature_default:    {'provider default' if td is None else td}"
+            f"  temp:    {'provider default' if td is None else td}"
             "   (/agent set temp <name|global> <0.0-1.0>)",
         ]
         return lines, True
@@ -546,7 +546,7 @@ def handle_agent_set_temp(args: list[str]) -> tuple[list[str], bool]:
     """
     Args: [<agent_name|global>, <0.0-1.0 | default>]
 
-    Per-agent override, or 'global' to set the baseline (temperature_default).
+    Per-agent override, or 'global' to set the baseline (temp).
     'default' clears: a per-agent override falls back to the baseline; 'global default'
     falls back to the provider default (no temperature sent).
     """
@@ -583,7 +583,7 @@ def handle_agent_set_temp(args: list[str]) -> tuple[list[str], bool]:
         temps: dict = cfg.setdefault("agent_temperatures", {})
 
         if agent_name == "global":
-            cfg["temperature_default"] = None if clearing else t
+            cfg["temp"] = None if clearing else t
             save_config(cfg)
             if clearing:
                 return ["Baseline temperature cleared — agents now use the provider default "
@@ -593,7 +593,7 @@ def handle_agent_set_temp(args: list[str]) -> tuple[list[str], bool]:
         if clearing:
             temps.pop(agent_name, None)
             save_config(cfg)
-            td = cfg.get("temperature_default")
+            td = cfg.get("temp")
             return [f"Temperature override for '{agent_name}' cleared — it now uses the baseline "
                     f"({'provider default' if td is None else td})."], True
 

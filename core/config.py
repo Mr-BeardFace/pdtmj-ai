@@ -39,13 +39,14 @@ _DEFAULTS: dict[str, Any] = {
     # ── Sampling temperature (0 = focused/deterministic, 1 = the provider default,
     # more varied/creative) ───────────────────────────────────────────────────────
     # Lower suits methodical, tool-heavy work and reproducibility; a little higher
-    # helps an agent break out of a rut. `temperature_default` applies to every agent
-    # unless overridden in `agent_temperatures` (by exact agent name, or "global" for
-    # all). null anywhere → fall through to the provider default.
-    "temperature_default": 0.4,
+    # helps an agent break out of a rut. `temp` applies to every agent unless overridden
+    # in `agent_temperatures` (by exact agent name, or "global" for all). null anywhere →
+    # fall through to the provider default. Some models (newer Opus) reject temperature —
+    # it's detected and dropped automatically for those (see llm_client).
+    "temp": 0.4,
     "agent_temperatures": {
         "pentest/report": 0.2,   # write-ups: consistent, factual, minimal drift
-        # rce + everything else use temperature_default (0.4)
+        # rce + everything else use the `temp` baseline (0.4)
     },
     "active_provider": "anthropic",  # "anthropic" | "openrouter" | "nvidia"
     # ── Methodology loop ──────────────────────────────────────────────────────
@@ -196,6 +197,7 @@ _KEY_ALIASES: dict[str, str] = {
     "run_script_volume_nudge": "reuse_nudge",
     "grind_nudge_after_scripts": "grind_nudge",
     "debug_capture": "debug",
+    "temperature_default": "temp",
 }
 
 # Mtime-based cache — avoids a YAML parse on every get() call.
@@ -286,7 +288,7 @@ def get_global_model() -> str | None:
 
 def get_temperature_for_agent(agent_name: str) -> float | None:
     """Resolve the sampling temperature for an agent: an exact per-agent override in
-    `agent_temperatures`, else a `global` override there, else `temperature_default`.
+    `agent_temperatures`, else a `global` override there, else the `temp` baseline.
     Returns None to mean 'use the provider default' (no temperature sent)."""
     cfg = load_config()
     per: dict = cfg.get("agent_temperatures", {}) or {}
@@ -294,4 +296,4 @@ def get_temperature_for_agent(agent_name: str) -> float | None:
         return per[agent_name]
     if "global" in per:
         return per["global"]
-    return cfg.get("temperature_default")
+    return cfg.get("temp")

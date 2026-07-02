@@ -5,7 +5,7 @@ agent_turns: 60
 sliding_turns: true
 turn_ceiling_factor: 5
 agent_models: {}
-temperature_default: 0.4
+temp: 0.4
 agent_temperatures:
   pentest/report: 0.2
 active_provider: anthropic

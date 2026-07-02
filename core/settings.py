@@ -10,7 +10,8 @@ Defaults are NOT duplicated — they're read from core.config._DEFAULTS, the sin
 source of truth, so this table can never drift from the real default.
 
 Out of scope on purpose (owned by their own commands or not a flat scalar):
-  - models / temperatures (global_model, agent_models, temperature_default) → /agent
+  - models + PER-AGENT temperatures (global_model, agent_models, agent_temperatures) → /agent
+    (the global `temp` baseline IS here, as a flat scalar)
   - provider / base URL (active_provider, local_base_url) → /provider
   - list-valued keys (nudge_exempt_tools, kill_exempt_tools) → config file
 """
@@ -33,8 +34,9 @@ class Setting:
     type:   str                 # "bool" | "int" | "str"
     desc:   str
     info_static: bool = False   # always show in /info (else: only when != default)
-    minimum: int | None = None  # int floor (inclusive)
-    allow_null: bool = False    # int/str may be null
+    minimum: float | None = None  # numeric floor (inclusive)
+    maximum: float | None = None  # numeric ceiling (inclusive), float only
+    allow_null: bool = False    # int/str/float may be null
     choices: tuple = field(default_factory=tuple)  # str enum, for completion/validation
 
     @property
@@ -61,6 +63,11 @@ SETTINGS: tuple[Setting, ...] = (
             "Per-agent turn budget (0 = unlimited)", minimum=0),
     Setting("enum_turns", "Enum turns/pass", "Engagement", "int",
             "Turn budget for each staged enumeration pass", minimum=1),
+    Setting("temp", "Temperature", "Engagement", "float",
+            "Sampling temperature baseline, 0=focused … 1=varied (null=provider default; "
+            "some models e.g. newer Opus reject it and it's dropped automatically). "
+            "Per-agent overrides live in /agent set temp.",
+            minimum=0.0, maximum=2.0, allow_null=True),
 
     # Parallelism
     Setting("parallel", "Parallel", "Parallelism", "bool",
@@ -180,6 +187,17 @@ def coerce(s: Setting, raw: str):
         if s.minimum is not None and n < s.minimum:
             return None, f"{s.key} must be ≥ {s.minimum} (got {n})."
         return n, None
+
+    if s.type == "float":
+        try:
+            f = float(raw)
+        except ValueError:
+            return None, f"{s.key} expects a number{' or null' if s.allow_null else ''} (got {raw!r})."
+        if s.minimum is not None and f < s.minimum:
+            return None, f"{s.key} must be ≥ {s.minimum} (got {f})."
+        if s.maximum is not None and f > s.maximum:
+            return None, f"{s.key} must be ≤ {s.maximum} (got {f})."
+        return f, None
 
     # str
     if s.choices and raw not in s.choices:

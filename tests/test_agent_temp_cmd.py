@@ -16,7 +16,7 @@ def test_set_temp_validation():
 
 
 def test_set_temp_writes(monkeypatch):
-    store = {"agent_temperatures": {}, "temperature_default": 0.4}
+    store = {"agent_temperatures": {}, "temp": 0.4}
     monkeypatch.setattr(cfgmod, "load_config", lambda: store)
     monkeypatch.setattr(cfgmod, "save_config", lambda c: None)
 
@@ -27,7 +27,7 @@ def test_set_temp_writes(monkeypatch):
     assert "pentest/rce" not in store["agent_temperatures"]            # cleared
 
     assert handle_agent_set_temp(["global", "0.25"])[1] is True
-    assert store["temperature_default"] == 0.25                        # baseline
+    assert store["temp"] == 0.25                        # baseline
 
     assert handle_agent_set_temp(["global", "off"])[1] is True
-    assert store["temperature_default"] is None                       # provider default
+    assert store["temp"] is None                       # provider default
