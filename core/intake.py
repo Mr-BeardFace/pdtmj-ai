@@ -60,7 +60,7 @@ def resolve_phases(phases) -> list[str]:
     """Normalise allowed_phases and apply the global exploitation toggle.
 
     discovery/assessment/reporting are always present. Exploitation is governed by
-    the `exploitation_enabled` config (default on), so it does not depend on the
+    the `exploitation` config (default on), so it does not depend on the
     operator using a specific keyword — toggle it with /exploit on|off.
     """
     from core.config import get
@@ -68,7 +68,7 @@ def resolve_phases(phases) -> list[str]:
     for required in ("discovery", "assessment", "reporting"):
         if required not in out:
             out.append(required)
-    if get("exploitation_enabled", True):
+    if get("exploitation", True):
         if "exploitation" not in out:
             out.append("exploitation")
     else:

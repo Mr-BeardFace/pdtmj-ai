@@ -43,13 +43,13 @@ def test_explicit_out_of_scope_still_wins():
 # ── /turns command ─────────────────────────────────────────────────────────────
 
 def test_turns_set_via_config(monkeypatch):
-    # Turn budget moved from /turns to /config max_turns_default.
+    # Turn budget moved from /turns to /config agent_turns.
     store = {}
     monkeypatch.setattr(config, "set_value", lambda k, v: store.__setitem__(k, v))
     monkeypatch.setattr(config, "get", lambda k, d=None: store.get(k, d))
     from ui.commands import dispatch
-    _, ok = dispatch("/config max_turns_default 60")
-    assert ok and store["max_turns_default"] == 60
+    _, ok = dispatch("/config agent_turns 60")
+    assert ok and store["agent_turns"] == 60
 
 
 def test_turns_zero_is_unlimited(monkeypatch):
@@ -57,20 +57,20 @@ def test_turns_zero_is_unlimited(monkeypatch):
     monkeypatch.setattr(config, "set_value", lambda k, v: store.__setitem__(k, v))
     monkeypatch.setattr(config, "get", lambda k, d=None: store.get(k, d))
     from ui.commands import dispatch
-    _, ok = dispatch("/config max_turns_default 0")   # 0 = unlimited
-    assert ok and store["max_turns_default"] == 0
+    _, ok = dispatch("/config agent_turns 0")   # 0 = unlimited
+    assert ok and store["agent_turns"] == 0
 
 
 def test_turns_rejects_garbage(monkeypatch):
     monkeypatch.setattr(config, "set_value", lambda k, v: None)
     from ui.commands import dispatch
-    _, ok = dispatch("/config max_turns_default abc")
+    _, ok = dispatch("/config agent_turns abc")
     assert ok is False
 
 
 def test_default_turns_is_60():
     # The shipped default (a fresh _DEFAULTS, not a user's config.yaml)
-    assert config._DEFAULTS["max_turns_default"] == 60
+    assert config._DEFAULTS["agent_turns"] == 60
 
 
 def test_old_turns_command_gone():

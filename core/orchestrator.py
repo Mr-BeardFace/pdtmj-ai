@@ -715,7 +715,7 @@ class Orchestrator:
         aware OPSEC guard — it knows the actual scope hosts and discovered credentials,
         which the standalone tool cannot."""
         from core.config import get as _get
-        if not _get("allow_web_search", True):
+        if not _get("web_search", True):
             return "web research is disabled (allow_web_search=false)"
         if not isinstance(inputs, dict):
             return None
@@ -953,7 +953,7 @@ class Orchestrator:
         # mid-engagement toggle takes effect on the next agent; appended to one file.
         from core import debug_capture
         debug_capture.configure(self.results_dir / "llm_debug.log",
-                                bool(_config_get("debug_capture", False)))
+                                bool(_config_get("debug", False)))
         effective_model = get_model_for_agent(agent.name) or get_global_model() or agent.model
         # Per-agent sampling temperature (None → provider default). Resolved once per run.
         effective_temperature = get_temperature_for_agent(agent.name)
@@ -1024,8 +1024,8 @@ class Orchestrator:
         import itertools
         from core.config import get as _cfg_get
         unlimited = max_turns <= 0
-        extend_on_progress = bool(_cfg_get("extend_turns_on_progress", True)) and not unlimited
-        progress_factor = max(1, int(_cfg_get("max_turns_progress_factor", 5) or 5))
+        extend_on_progress = bool(_cfg_get("sliding_turns", True)) and not unlimited
+        progress_factor = max(1, int(_cfg_get("turn_ceiling_factor", 5) or 5))
         hard_ceiling = 0 if unlimited else max_turns * progress_factor
         no_progress_turns = 0
         last_progress_fp = self._progress_fingerprint(run)
@@ -1033,7 +1033,7 @@ class Orchestrator:
 
         # Loop-nudge state: count identical tool calls and nudge (redirect) the
         # agent off a rut instead of letting it spin until the hard turn cap.
-        nudge_threshold = int(_cfg_get("repeat_nudge_threshold", 3) or 0)
+        nudge_threshold = int(_cfg_get("repeat_nudge", 3) or 0)
         # Tools that are legitimately called repeatedly with identical args
         # (polling an OOB listener, background jobs, or for a reverse shell) — a
         # repeat is normal operation for these, so they are excluded from nudging.
@@ -1041,12 +1041,12 @@ class Orchestrator:
         call_counts: dict[str, int] = {}
         nudged: set[str] = set()
         # Pivot nudge (per-run): consecutive hard failures within this agent run.
-        pivot_after = int(_cfg_get("pivot_nudge_after_failures", 4) or 0)
+        pivot_after = int(_cfg_get("pivot_nudge", 4) or 0)
         fail_streak = 0          # consecutive unproductive tool results
         # Reuse + grind nudges are ENGAGEMENT-level (counters live on self.state) so
         # they survive the agent cycling — thrash spread over many runs still trips.
-        reuse_threshold = int(_cfg_get("run_script_volume_nudge", 10) or 0)
-        grind_threshold = int(_cfg_get("grind_nudge_after_scripts", 12) or 0)
+        reuse_threshold = int(_cfg_get("reuse_nudge", 10) or 0)
+        grind_threshold = int(_cfg_get("grind_nudge", 12) or 0)
         # Foothold-banking: turns after exec is confirmed to allow before nudging to
         # annotate it. Small — confirm exec, then bank within a turn or two.
         foothold_bank_after = int(_cfg_get("foothold_bank_nudge_after_turns", 2) or 0)

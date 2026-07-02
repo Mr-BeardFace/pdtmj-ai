@@ -39,10 +39,10 @@ from core.models import Surface
 
 def _enum_stage_n() -> int:
     """Operator-tunable turn budget for a staged enumeration pass (/config
-    enum_stage_turns). Enumeration gathers intel without banking findings, so the
+    enum_turns). Enumeration gathers intel without banking findings, so the
     progress-extension window never fires — this cap is what actually bounds it."""
     from core.config import get as _cfg_get
-    return int(_cfg_get("enum_stage_turns", 20) or 20)
+    return int(_cfg_get("enum_turns", 20) or 20)
 
 
 def _open_ports(res: dict, proto: str) -> set[int]:
@@ -207,7 +207,7 @@ class FrontierDriver(ParallelDriver):
         # report here when paused (it would also reset the resume point's "no report
         # yet" state). /end (ended_early), a cap, or completion all still report.
         from core.config import get as _cfg_get
-        if self.all_findings and not self._stopped and _cfg_get("reporting_enabled", True):
+        if self.all_findings and not self._stopped and _cfg_get("reporting", True):
             self._banner("Reporting — synthesizing the engagement")
             self._run_agent(REPORT_AGENT, target, None)
         return self.runs

@@ -18,7 +18,7 @@ def test_keys_unique_and_grouped():
 
 
 def test_bool_coercion():
-    s = settings.get_setting("parallel_enabled")
+    s = settings.get_setting("parallel")
     assert settings.coerce(s, "on") == (True, None)
     assert settings.coerce(s, "off") == (False, None)
     val, err = settings.coerce(s, "maybe")
@@ -26,7 +26,7 @@ def test_bool_coercion():
 
 
 def test_int_coercion_and_floor():
-    s = settings.get_setting("max_parallel_agents")   # minimum=1
+    s = settings.get_setting("parallel_agents")   # minimum=1
     assert settings.coerce(s, "4") == (4, None)
     val, err = settings.coerce(s, "0")
     assert val is None and "≥ 1" in err
@@ -35,13 +35,13 @@ def test_int_coercion_and_floor():
 
 
 def test_nullable_int_accepts_null():
-    s = settings.get_setting("max_total_cycles")      # allow_null
+    s = settings.get_setting("total_cycles")      # allow_null
     assert settings.coerce(s, "null") == (None, None)
     assert settings.coerce(s, "100") == (100, None)
 
 
 def test_is_changed_tracks_default(monkeypatch):
-    s = settings.get_setting("max_parallel_agents")
+    s = settings.get_setting("parallel_agents")
     monkeypatch.setattr(config, "get", lambda k, d=None: s.default if k == s.key else d)
     assert settings.is_changed(s) is False
     monkeypatch.setattr(config, "get", lambda k, d=None: 9 if k == s.key else d)

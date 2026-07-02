@@ -43,15 +43,15 @@ def test_info_overview():
 def test_config_exploit_toggles():
     # Exploitation + confirm gate are now set through /config (the single config cmd).
     from core.config import get
-    dispatch("/config confirm_exploitation off")
-    assert get("confirm_exploitation", True) is False
-    dispatch("/config confirm_exploitation on")
-    assert get("confirm_exploitation", True) is True
-    dispatch("/config exploitation_enabled off")
-    assert get("exploitation_enabled", True) is False
-    assert get("confirm_exploitation", True) is True   # independent of the phase toggle
-    dispatch("/config exploitation_enabled on")
-    assert get("exploitation_enabled", True) is True
+    dispatch("/config confirm_exploit off")
+    assert get("confirm_exploit", True) is False
+    dispatch("/config confirm_exploit on")
+    assert get("confirm_exploit", True) is True
+    dispatch("/config exploitation off")
+    assert get("exploitation", True) is False
+    assert get("confirm_exploit", True) is True   # independent of the phase toggle
+    dispatch("/config exploitation on")
+    assert get("exploitation", True) is True
 
 
 def test_old_toggle_commands_removed():
@@ -77,4 +77,17 @@ def test_cred_add_always_three_tuple():
 
     lines, ok, cred = handle_cred_add(["admin", "P@ss", "smb"])
     assert ok is True
-    assert cred == {"username": "admin", "secret": "P@ss", "service": "smb"}
+    assert cred == {"username": "admin", "secret": "P@ss", "service": "smb", "cred_type": "password"}
+
+
+def test_cred_add_type_detection():
+    # type defaults to password
+    assert handle_cred_add(["u", "p"])[2]["cred_type"] == "password"
+    # a type keyword anywhere in the trailing args sets the type, order-independent
+    assert handle_cred_add(["u", "h", "hash"])[2] == {"username": "u", "secret": "h",
+                                                      "service": "", "cred_type": "hash"}
+    c = handle_cred_add(["u", "h", "smb", "hash"])[2]
+    assert c["cred_type"] == "hash" and c["service"] == "smb"
+    # aliases normalize (ntlm -> hash, api -> api_key)
+    assert handle_cred_add(["u", "h", "ntlm"])[2]["cred_type"] == "hash"
+    assert handle_cred_add(["u", "k", "api"])[2]["cred_type"] == "api_key"

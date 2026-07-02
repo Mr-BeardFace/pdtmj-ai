@@ -1190,13 +1190,13 @@ class PentestApp(App):
             return
 
         # /report — bare: generate HTML now; regen: re-synthesize a loaded assessment.
-        # (Auto-reporting toggle moved to /config reporting_enabled.)
+        # (Auto-reporting toggle moved to /config reporting.)
         if parsed and parsed[0] == "/report":
             arg = (parsed[1][0].lower() if parsed[1] else "")
             if arg in ("on", "off", "true", "false", "enable", "disable",
                        "enabled", "disabled", "yes", "no", "0", "1"):
                 self._show_cmd_output(
-                    ["Auto-reporting is now set via /config reporting_enabled "
+                    ["Auto-reporting is now set via /config reporting "
                      f"{'on' if arg in ('on','true','enable','enabled','yes','1') else 'off'}.",
                      "  /report (no arg) still renders a report now; /report regen re-synthesizes."],
                     False)
@@ -2639,8 +2639,8 @@ class PentestApp(App):
 
         target = brief.primary_target or ""
         try:
-            max_turns            = int(cfg_get("max_turns_default", 20))
-            confirm_exploitation = bool(cfg_get("confirm_exploitation", True))
+            max_turns            = int(cfg_get("agent_turns", 20))
+            confirm_exploitation = bool(cfg_get("confirm_exploit", True))
 
             # ── state: fresh or resumed ──────────────────────────────────────
             if _resume_from:
@@ -2745,9 +2745,9 @@ class PentestApp(App):
             driver_kwargs = dict(
                 max_turns=max_turns,
                 confirm_exploitation=confirm_exploitation,
-                max_cycles_per_surface=cfg_get("max_cycles_per_surface", 4),
-                max_total_cycles=cfg_get("max_total_cycles", 40),
-                max_surfaces=cfg_get("max_surfaces", 50),
+                max_cycles_per_surface=cfg_get("cycles_per_surface", 4),
+                max_total_cycles=cfg_get("total_cycles", 40),
+                max_surfaces=cfg_get("surfaces", 50),
                 emit_activity=emit_activity,
                 confirm_cb=self._confirm_exploitation_from_worker,
                 control=control,
@@ -2758,11 +2758,11 @@ class PentestApp(App):
             # or carry into breadth (pentest). parallel_enabled only sets the
             # fan-out WIDTH (off → serial focus, one lead at a time).
             from core.frontier_driver import FrontierDriver
-            parallel = cfg_get("parallel_enabled", False)
+            parallel = cfg_get("parallel", False)
             if parallel:
                 emit_activity(
                     f"◎ Frontier engagement — hottest lead to the objective; fan-out "
-                    f"×{cfg_get('surface_fanout', 3)}, ≤{cfg_get('max_parallel_agents', 3)} "
+                    f"×{cfg_get('surface_fanout', 3)}, ≤{cfg_get('parallel_agents', 3)} "
                     "agents at once.")
             else:
                 emit_activity(
@@ -2770,11 +2770,11 @@ class PentestApp(App):
                     "(serial focus). Confirm→advance, dead end→release, objective→halt.")
             driver = FrontierDriver(
                 orchestrator, all_agents, state, brief,
-                frontier_max_actions=cfg_get("frontier_max_actions", None),
-                attempts_cap=cfg_get("frontier_attempts_cap", 3),
+                frontier_max_actions=cfg_get("frontier_actions", None),
+                attempts_cap=cfg_get("frontier_attempts", 3),
                 surface_fanout=cfg_get("surface_fanout", 3) if parallel else 1,
                 hypothesis_fanout=cfg_get("hypothesis_fanout", 3) if parallel else 1,
-                hypothesis_worker_turns=cfg_get("hypothesis_worker_turns", 12),
+                hypothesis_worker_turns=cfg_get("hypothesis_turns", 12),
                 **driver_kwargs,
             )
             # On resume, seed the driver with findings already gathered so cross-run
@@ -2850,7 +2850,7 @@ class PentestApp(App):
             # pipeline report agent is skipped on pause too, so this stays consistent.
             paused = driver.stopped and not interrupted
             from core.config import get as _cfg_get
-            if all_findings and not paused and _cfg_get("reporting_enabled", True):
+            if all_findings and not paused and _cfg_get("reporting", True):
                 self._generate_pipeline_report(
                     target, completed_runs,
                     persistence=[p.model_dump() for p in state.persistence],
@@ -3048,7 +3048,7 @@ class PentestApp(App):
         try:
             from core.config import get as cfg_get
             from core.orchestrator import _safe_filename_part
-            max_turns = int(cfg_get("max_turns_default", 20))
+            max_turns = int(cfg_get("agent_turns", 20))
             state = EngagementState(target=target)
             self._current_state = state
 

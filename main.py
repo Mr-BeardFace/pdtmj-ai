@@ -128,7 +128,7 @@ def run(agent, target, objective, from_run, report, max_turns):
     from core.llm_client import LLMClient
     from core.orchestrator import Orchestrator
 
-    max_turns = max_turns or get("max_turns_default", 20)
+    max_turns = max_turns or get("agent_turns", 20)
 
     handoff_context = None
     if from_run:
@@ -271,8 +271,8 @@ def pipeline(target, entry, objective, report, max_turns, allowed_phases, no_con
     from core.pipeline import EngagementDriver
     from core.models import EngagementBrief, Assessment
 
-    max_turns = max_turns or get("max_turns_default", 20)
-    confirm_exploitation = (not no_confirm) and get("confirm_exploitation", True)
+    max_turns = max_turns or get("agent_turns", 20)
+    confirm_exploitation = (not no_confirm) and get("confirm_exploit", True)
 
     from core.intake import resolve_phases
     raw_phases = [p.strip().lower() for p in allowed_phases.split(",")] if allowed_phases else []
@@ -317,9 +317,9 @@ def pipeline(target, entry, objective, report, max_turns, allowed_phases, no_con
         orchestrator, all_agents, state, brief,
         max_turns=max_turns,
         confirm_exploitation=confirm_exploitation,
-        max_cycles_per_surface=get("max_cycles_per_surface", 4),
-        max_total_cycles=get("max_total_cycles", 40),
-        max_surfaces=get("max_surfaces", 50),
+        max_cycles_per_surface=get("cycles_per_surface", 4),
+        max_total_cycles=get("total_cycles", 40),
+        max_surfaces=get("surfaces", 50),
         emit_activity=lambda text: console.print(
             f"[bold cyan]{text}[/bold cyan]" if text.startswith("──") else f"[dim]{text}[/dim]"
         ),

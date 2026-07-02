@@ -32,7 +32,7 @@ def _already_present(pkg: str) -> bool:
 
 
 def apt_install(packages, timeout: int = 300) -> dict:
-    if not get("allow_package_install", True):
+    if not get("package_install", True):
         return {"error": "package installation is disabled (allow_package_install=false in config)"}
     if not shutil.which("apt-get"):
         return {"error": "apt-get not found — this is not a Debian/Ubuntu/Kali system"}

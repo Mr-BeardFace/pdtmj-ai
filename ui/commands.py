@@ -21,6 +21,24 @@ _PROVIDER_NAMES = tuple(PROVIDERS)
 from core.settings import all_keys as _setting_keys, GROUPS as _setting_groups
 _CONFIG_COMPLETIONS = _setting_keys() + tuple(g.lower() for g in _setting_groups)
 
+
+def _persona_names() -> tuple[str, ...]:
+    """Persona namespaces from agents/<ns>/persona.md — for /persona set completion."""
+    try:
+        from pathlib import Path
+        agents_dir = Path(__file__).parent.parent / "agents"
+        return tuple(sorted(p.parent.name for p in agents_dir.rglob("persona.md")))
+    except Exception:
+        return ()
+
+
+_PERSONA_COMPLETIONS = _persona_names()
+# Credential kinds for /cred add (matches record_credential's enum), with a few aliases.
+_CRED_TYPES = ("password", "hash", "api_key", "token", "key")
+_CRED_TYPE_ALIASES = {"api": "api_key", "apikey": "api_key", "ntlm": "hash",
+                      "pass": "password", "pw": "password", "privkey": "key",
+                      "ssh_key": "key", "jwt": "token"}
+
 # ── Command registry ──────────────────────────────────────────────────────────
 # Single source of truth. Parsing, tab-completion, the grouped /help overview,
 # and per-command help (/help <cmd>) are all derived from this — so adding or
@@ -77,13 +95,13 @@ COMMANDS: list[Command] = [
         Sub("list", "List all agents with their current model and temperature"),
     )),
     Command("/cred", "Pre-load or manage engagement credentials", (
-        Sub("add",    "Pre-load a credential", "<user> <secret> [service]"),
+        Sub("add",    "Pre-load a credential", "<user> <secret> [service] [type]"),
         Sub("list",   "List credentials (operator + agent-discovered), numbered"),
         Sub("remove", "Remove a credential by its number from /cred list", "<n>"),
         Sub("clear",  "Remove all manually added credentials"),
     )),
     Command("/persona", "Switch the engagement persona", (
-        Sub("set",  "Set the engagement persona", "<persona-name>"),
+        Sub("set",  "Set the engagement persona", "<persona-name>", _PERSONA_COMPLETIONS),
         Sub("list", "List available personas"),
     )),
     Command("/provider", "Switch the active LLM provider", (
@@ -119,7 +137,7 @@ COMMANDS: list[Command] = [
     )),
     Command("/report", "Generate a report now, or regen to re-synthesize a loaded assessment",
             (Sub("", "No arg re-renders the report now; regen re-runs the report agent on a "
-                 "loaded assessment. (Toggle auto-reporting with /config reporting_enabled.)",
+                 "loaded assessment. (Toggle auto-reporting with /config reporting.)",
                  "[regen]", ("regen",)),)),
     Command("/clear", "Reset to a blank window — panels, agent log, and token meter (saved files on disk are kept)",
             (Sub("", "Reset to a blank window — panels, agent log, and token meter (saved files on disk are kept)"),)),
@@ -692,9 +710,9 @@ def handle_info() -> tuple[list[str], bool]:
         _row("Persona", persona),
         _row("Provider", provider),
         _row("Global model", gmodel or "— (per-agent defaults)"),
-        _row("Exploitation", _on("exploitation_enabled", True)),
-        _row("Reporting", _on("reporting_enabled", True)),
-        _row("Confirm exploit", _on("confirm_exploitation", True)),
+        _row("Exploitation", _on("exploitation", True)),
+        _row("Reporting", _on("reporting", True)),
+        _row("Confirm exploit", _on("confirm_exploit", True)),
     ]
 
     # Anything moved off its default (excluding the always-shown anchors).
@@ -741,24 +759,39 @@ def handle_help(args: list[str] | None = None) -> tuple[list[str], bool]:
 # EngagementState when a pipeline/run starts. Not persisted to disk.
 
 def handle_cred_add(args: list[str]) -> tuple[list[str], bool, dict | None]:
-    """Always returns a 3-tuple — cred dict is None on usage errors."""
+    """Always returns a 3-tuple — cred dict is None on usage errors.
+
+    Beyond <username> <secret>, the trailing args are order-independent: a token that
+    names a credential kind (password/hash/api_key/token/key, or an alias like api/ntlm)
+    sets the type; anything else is the service. Type defaults to password."""
     if len(args) < 2:
         return [
-            "Usage: /cred add <username> <secret> [service]",
+            "Usage: /cred add <username> <secret> [service] [type]",
+            "",
+            "type is one of: " + ", ".join(_CRED_TYPES) + " (default password)",
             "",
             "Examples:",
             "  /cred add administrator Password123! smb",
-            "  /cred add root toor ssh",
-            "  /cred add admin 'P@ssw0rd' http",
+            "  /cred add svc_sql aad3b435...:31d6cfe0... hash",
+            "  /cred add api_user sk-abcd1234 http api",
         ], False, None
     username = args[0]
     secret   = args[1]
-    service  = args[2] if len(args) > 2 else ""
+    cred_type = "password"
+    service   = ""
+    type_set  = False
+    for tok in args[2:]:
+        norm = _CRED_TYPE_ALIASES.get(tok.lower(), tok.lower())
+        if not type_set and norm in _CRED_TYPES:
+            cred_type, type_set = norm, True
+        elif not service:
+            service = tok
     # Return the cred dict — caller stores it in app state
-    return [f"Credential added: {username}  service={service or 'any'}"], True, {
-        "username": username,
-        "secret":   secret,
-        "service":  service,
+    return [f"Credential added: {username}  type={cred_type}  service={service or 'any'}"], True, {
+        "username":  username,
+        "secret":    secret,
+        "service":   service,
+        "cred_type": cred_type,
     }
 
 
