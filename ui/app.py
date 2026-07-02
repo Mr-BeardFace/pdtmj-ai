@@ -66,6 +66,56 @@ _SEV_COLOR = {
 }
 _SEV_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
 
+# key:value / key=value pairs whose key looks credential-y. Best-effort defense so a
+# secret sitting in tool output shown in the pane is masked BEFORE the agent records
+# it (record_credential is what makes it a KNOWN secret, and that fires a call later —
+# until then the exact-secret redactor can't see it). e.g. BindPass: "Em3rg…".
+_SECRETISH = re.compile(
+    r'(?i)\b(pass(?:word)?|pwd|passwd|secret|token|api[_-]?key|bindpass|auth(?:orization)?)'
+    r'\b\s*[:=]\s*"?([^\s"\',;}]{4,})"?'
+)
+
+
+def _mask_val(v: str) -> str:
+    return (v[:2] + "…") if len(v) > 3 else "…"
+
+
+def _scrub_secretish(text: str) -> str:
+    """Mask the value in credential-shaped key:value pairs. Catches the common leak
+    (a password/bindpass/token printed verbatim in a log or command output) before
+    it's ever recorded, without needing to know the secret in advance."""
+    return _SECRETISH.sub(lambda m: m.group(0).replace(m.group(2), _mask_val(m.group(2))), text)
+
+
+def _result_text(output) -> str:
+    """The main human-readable text of a tool result dict (stdout/body/raw/…), else
+    a compact JSON of the non-empty structured fields."""
+    keys = ("stdout", "output", "text", "body", "raw", "result", "response", "content", "data")
+    if isinstance(output, dict):
+        for k in keys:
+            v = output.get(k)
+            if isinstance(v, str) and v.strip():
+                return v
+        slim = {k: v for k, v in output.items()
+                if k != "_command" and v not in (None, "", [], {})
+                and not (isinstance(v, str) and not v.strip())}
+        return json.dumps(slim, default=str) if slim else ""
+    return str(output or "")
+
+
+def _evidence_slice(text: str, needle: str, context: int = 3) -> list[str]:
+    """The line containing `needle` plus `context` lines either side, the found line
+    marked with '►'. Empty list if the needle isn't present. Used to surface the
+    exact line that triggered a recorded credential/finding, with its context."""
+    if not needle:
+        return []
+    lines = text.splitlines()
+    for i, ln in enumerate(lines):
+        if needle in ln:
+            lo, hi = max(0, i - context), min(len(lines), i + context + 1)
+            return [("► " if j == i else "  ") + lines[j].rstrip() for j in range(lo, hi)]
+    return []
+
 _CSS = """
 Screen {
     background: #0d1117;
@@ -536,6 +586,9 @@ class PentestApp(App):
 
         # Activity log text for Ctrl+L modal / Ctrl+Y copy
         self._activity_lines: list[str] = []
+        # Recent (tool, command, full_output_text), newest last — so when a credential
+        # or finding is recorded we can surface the exact source line + context. Bounded.
+        self._recent_outputs: list[tuple[str, str, str]] = []
         # True while re-rendering a loaded assessment's saved event stream — suppresses
         # state-mutating side effects in _handle_event (render-only).
         self._replaying: bool = False
@@ -832,11 +885,24 @@ class PentestApp(App):
         except Exception:
             pass
 
+    def _mask_known_secrets(self, text: str) -> str:
+        """Mask any RECORDED credential secret in text — for the full Ctrl+L log and
+        clipboard copy. By the time this is opened the secret has been recorded, so the
+        full output (which held it in the clear) renders masked."""
+        st = self._current_state
+        if not st:
+            return text
+        for c in getattr(st, "credentials", []):
+            s = getattr(c, "secret", "")
+            if s and len(s) >= 4 and s in text:
+                text = text.replace(s, getattr(c, "secret_masked", "") or _mask_val(s))
+        return text
+
     def action_show_activity_log(self) -> None:
-        self.push_screen(ActivityLogModal("\n".join(self._activity_lines)))
+        self.push_screen(ActivityLogModal(self._mask_known_secrets("\n".join(self._activity_lines))))
 
     def action_copy_activity_log(self) -> None:
-        text = "\n".join(self._activity_lines)
+        text = self._mask_known_secrets("\n".join(self._activity_lines))
         if self._copy_to_clipboard(text):
             n = len(self._activity_lines)
             self.query_one("#status-bar", Static).update(
@@ -1473,9 +1539,22 @@ class PentestApp(App):
     # ── UI helpers ────────────────────────────────────────────────────────────
 
     def _activity(self, msg: str) -> None:
+        # Goes to BOTH the pane and the full log (Ctrl+L). Headers, reasoning, tool
+        # summaries, findings, the surfaced evidence cluster.
         ts = datetime.now().strftime("%H:%M:%S")
         self._activity_lines.append(f"{ts}  {_strip_markup(msg)}")
         self.query_one("#activity-log", RichLog).write(f"[dim]{ts}[/dim]  {msg}")
+
+    def _pane_only(self, msg: str) -> None:
+        """Pane only — for the at-a-glance distilled view. Not added to the Ctrl+L log
+        (the FULL output goes there via _detail_only, so the log isn't a duplicate)."""
+        self.query_one("#activity-log", RichLog).write(f"  {msg}")
+
+    def _detail_only(self, text: str) -> None:
+        """Full-log only (Ctrl+L) — the complete tool output, never rendered to the
+        pane. This is the 'full output for the log, not the pane' split."""
+        for ln in str(text).splitlines():
+            self._activity_lines.append(f"        {ln}")
 
     def _update_status(self) -> None:
         persona_str = f"  [dim]persona: {self._active_persona}[/dim]" if self._active_persona else ""
@@ -2312,13 +2391,20 @@ class PentestApp(App):
                 self._activity(f"[cyan]▶ {name}[/cyan]  [dim]{brief}[/dim]")
 
         elif t == "tool_done":
+            out = event.get("output")
+            # Command + summary go to BOTH pane and full log.
             if event.get("command_str"):
                 self._activity(f"  [dim]$ {markup_escape(event['command_str'])}[/dim]")
             if event.get("summary"):
                 self._activity(f"  [green]✓[/green] {markup_escape(event['summary'])}")
-            for ln in self._output_snippet(event.get("output")):
-                self._activity(f"  [dim]┃ {markup_escape(ln)}[/dim]")
-            out = event.get("output")
+            # Pane preview: a few lines, secret-shaped values scrubbed so a not-yet-
+            # recorded credential can't flash in the clear here.
+            for ln in self._output_snippet(out):
+                self._pane_only(f"[dim]┃ {markup_escape(_scrub_secretish(ln))}[/dim]")
+            # Full output goes to the Ctrl+L log only (never truncated in the pane).
+            full = _result_text(out)
+            if full.strip():
+                self._detail_only(full)
             if isinstance(out, dict) and out.get("script_file"):
                 self._activity(f"  [dim]↳ script saved: {markup_escape(str(out['script_file']))}[/dim]")
 
@@ -2590,6 +2676,21 @@ class PentestApp(App):
                     used_at=ev.get("used_at", []),
                     verified=ev.get("verified", False),
                 ))
+                # Surface the source line + context that this secret came from — MASKED
+                # (we now know the secret, so the evidence renders masked, not clear).
+                secret = ev.get("secret", "")
+                masked = ev.get("secret_masked", "") or "***"
+                if secret:
+                    for _name, _cmd, _text in reversed(self._recent_outputs):
+                        sl = _evidence_slice(_text, secret, 3)
+                        if sl:
+                            self.post_message(PentestApp.Activity(
+                                f"  [dim]evidence · {markup_escape((_cmd or _name)[:70])}[/dim]"))
+                            for ln in sl:
+                                safe  = markup_escape(ln.replace(secret, masked))
+                                style = "yellow" if ln.startswith("► ") else "dim"
+                                self.post_message(PentestApp.Activity(f"    [{style}]{safe}[/{style}]"))
+                            break
                 _u = ev.get("username", "")
                 _tag = "✓" if ev.get("verified") else "?"
                 self.post_message(PentestApp.Activity(
@@ -2620,6 +2721,16 @@ class PentestApp(App):
                     f"  [bold green]🚩 FLAG[/bold green] {ev.get('value', '')}"
                     + (f"  [dim]@ {ev.get('location')}[/dim]" if ev.get("location") else "")
                 ))
+            elif t == "tool_done":
+                # Buffer the output so a credential/finding recorded right after can
+                # surface its source line. Done here (sequential worker thread) so the
+                # buffer is ready before the following credential event is processed.
+                _text = _result_text(ev.get("output"))
+                if _text.strip():
+                    self._recent_outputs.append(
+                        (ev.get("name", ""), ev.get("command_str", ""), _text))
+                    del self._recent_outputs[:-6]
+                self.post_message(PentestApp.PipelineEvent(ev))
             else:
                 self.post_message(PentestApp.PipelineEvent(ev))
 

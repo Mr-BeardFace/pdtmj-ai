@@ -31,6 +31,12 @@ class _Stub:
     def _activity(self, msg):
         self.activity.append(msg)
 
+    def _pane_only(self, msg):
+        self.activity.append(msg)
+
+    def _detail_only(self, text):
+        self.activity.extend(str(text).splitlines())
+
     def _add_finding(self, f):
         self.findings.append(f)
 
