@@ -103,6 +103,50 @@ def _result_text(output) -> str:
     return str(output or "")
 
 
+# Leads panel: marker + colour per lead status. LIVE statuses sort to the top; the
+# rest (worked/ruled-out) drop below a divider so the whole reasoning trail is visible.
+_LEAD_MARK = {
+    "active":    ("●", "bold cyan"),   # working now
+    "advancing": ("◐", "cyan"),        # produced progress, more to give
+    "open":      ("○", "white"),       # known, not yet worked
+    "confirmed": ("✓", "green"),       # succeeded — moved the frontier
+    "refuted":   ("✗", "red"),         # proven a dead end
+    "exhausted": ("⊘", "yellow"),      # tried to the attempt cap, gave up
+}
+_LEAD_LIVE = ("active", "advancing", "open")
+
+
+def _lead_rows(leads: list[dict]) -> list[tuple[str, object]]:
+    """Order leads for the panel: live ones first (active→advancing→open, higher
+    kill-chain rung first), then a divider, then the resolved ones (confirmed/refuted/
+    exhausted). Returns ('lead', dict) and ('divider', None) rows."""
+    from core.leads import FRONTIER_LEVELS
+    def rung(l): return FRONTIER_LEVELS.get((l.get("reach_level") or "").lower(), 0)
+    live_order = {"active": 0, "advancing": 1, "open": 2}
+    done_order = {"confirmed": 0, "refuted": 1, "exhausted": 2}
+    live = sorted((l for l in leads if l.get("status") in _LEAD_LIVE),
+                  key=lambda l: (live_order.get(l.get("status"), 9), -rung(l)))
+    done = sorted((l for l in leads if l.get("status") not in _LEAD_LIVE),
+                  key=lambda l: (done_order.get(l.get("status"), 9), -rung(l)))
+    rows: list[tuple[str, object]] = [("lead", l) for l in live]
+    if live and done:
+        rows.append(("divider", None))
+    rows += [("lead", l) for l in done]
+    return rows
+
+
+def _fmt_lead(l: dict) -> str:
+    """One lead → a markup row: marker, rung, action, and a tries count when >1."""
+    mark, style = _LEAD_MARK.get(l.get("status"), ("·", "white"))
+    rung = markup_escape((l.get("reach_level") or "")[:9])
+    desc = markup_escape(" ".join((l.get("description") or "").split()))
+    tries = f"  [dim]·{l['attempts']}t[/dim]" if (l.get("attempts") or 0) > 1 else ""
+    body = f"{rung:<9} {desc}{tries}"
+    if l.get("status") in ("refuted", "exhausted"):
+        return f"[dim]{mark} {body}[/dim]"
+    return f"[{style}]{mark}[/{style}] {body}"
+
+
 def _evidence_slice(text: str, needle: str, context: int = 3) -> list[str]:
     """The line containing `needle` plus `context` lines either side, the found line
     marked with '►'. Empty list if the needle isn't present. Used to surface the
@@ -141,6 +185,22 @@ Screen {
     width: 33%;
     border-right: solid #30363d;
     layout: vertical;
+}
+
+#leads-list {
+    height: 1fr;
+    min-height: 4;
+    background: #0d1117;
+    scrollbar-color: #30363d #0d1117;
+}
+
+#leads-list > ListItem {
+    background: #0d1117;
+    padding: 0 1;
+}
+
+#leads-list > ListItem:hover {
+    background: #161b22;
 }
 
 #findings-list {
@@ -618,6 +678,9 @@ class PentestApp(App):
         # Pane sizes (adjusted with Ctrl+arrows)
         self._left_width:    int = 33   # percent, left pane horizontal share (right gets the rest)
         self._right_act_fr:  int = 7    # activity-log fraction (out of 10 shared with cmd-dialogue)
+        # Left-column vertical shares (relative fr) — leads / findings / tabs. Ctrl+Up/Down
+        # grows whichever the focused widget lives in; fr is relative so the others shrink.
+        self._left_fr: dict[str, int] = {"leads": 1, "findings": 1, "tabs": 1}
 
         # O(1) finding dedup: normalized_title → finding dict (same ref as in _findings)
         self._findings_title_map: dict[str, dict] = {}
@@ -654,6 +717,8 @@ class PentestApp(App):
         with Horizontal(id="main-panes"):
             # ── Left ──────────────────────────────────────────────────────────
             with Vertical(id="left-pane"):
+                yield Static("◆ LEADS  [dim](frontier — working / ruled out)[/dim]", classes="pane-header")
+                yield ListView(id="leads-list")
                 yield Static("● FINDINGS", classes="pane-header")
                 yield ListView(id="findings-list")
                 with TabbedContent(id="info-tabs"):
@@ -1000,25 +1065,67 @@ class PentestApp(App):
         self.query_one("#left-pane").styles.width = f"{self._left_width}%"
 
     def action_pane_grow_right(self) -> None:
-        """Ctrl+Up — grow activity log, shrink cmd-dialogue."""
-        self._right_act_fr = min(9, self._right_act_fr + 1)
+        """Ctrl+Up — grow the focused column's active section (defaults to the right)."""
+        self._resize_vertical(+1)
+
+    def action_pane_shrink_right(self) -> None:
+        """Ctrl+Down — shrink the focused column's active section (defaults to the right)."""
+        self._resize_vertical(-1)
+
+    def _focused_column(self) -> str:
+        """'left' or 'right' — which column the focused widget lives in. Focus usually
+        sits on the command input (neither column) → default to 'right' (prior behavior)."""
+        w = self.focused
+        while w is not None:
+            wid = getattr(w, "id", None)
+            if wid == "left-pane":
+                return "left"
+            if wid == "right-pane":
+                return "right"
+            w = getattr(w, "parent", None)
+        return "right"
+
+    def _focused_left_section(self) -> str:
+        """Which left-column section (leads / findings / tabs) holds focus — for grow."""
+        w = self.focused
+        while w is not None:
+            wid = getattr(w, "id", None)
+            if wid == "leads-list":
+                return "leads"
+            if wid == "findings-list":
+                return "findings"
+            if wid == "info-tabs":
+                return "tabs"
+            w = getattr(w, "parent", None)
+        return "findings"
+
+    def _resize_vertical(self, delta: int) -> None:
+        if self._focused_column() == "left":
+            self._resize_left_split(delta)
+        else:
+            self._resize_right_split(delta)
+
+    def _resize_right_split(self, delta: int) -> None:
+        self._right_act_fr = max(2, min(9, self._right_act_fr + delta))
         self.query_one("#activity-log").styles.height = f"{self._right_act_fr}fr"
         dlg = self.query_one("#cmd-dialogue")
+        if delta < 0 and not dlg.display:
+            dlg.display = True
         if dlg.display:
             dlg.styles.height = f"{10 - self._right_act_fr}fr"
 
-    def action_pane_shrink_right(self) -> None:
-        """Ctrl+Down — shrink activity log, grow cmd-dialogue (shows it if hidden)."""
-        self._right_act_fr = max(2, self._right_act_fr - 1)
-        self.query_one("#activity-log").styles.height = f"{self._right_act_fr}fr"
-        dlg = self.query_one("#cmd-dialogue")
-        if not dlg.display:
-            dlg.display = True
-        dlg.styles.height = f"{10 - self._right_act_fr}fr"
+    def _resize_left_split(self, delta: int) -> None:
+        section = self._focused_left_section()
+        self._left_fr[section] = max(1, min(9, self._left_fr[section] + delta))
+        self.query_one("#leads-list").styles.height    = f"{self._left_fr['leads']}fr"
+        self.query_one("#findings-list").styles.height = f"{self._left_fr['findings']}fr"
+        self.query_one("#info-tabs").styles.height     = f"{self._left_fr['tabs']}fr"
 
     # ── Findings list click ───────────────────────────────────────────────────
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
+        if event.list_view.id != "findings-list":
+            return                                   # leads-list clicks aren't finding rows
         idx = event.list_view.index
         if idx is not None and 0 <= idx < len(self._findings):
             self.push_screen(FindingDetailModal(self._findings[idx]))
@@ -1979,6 +2086,7 @@ class PentestApp(App):
         self._agent_cols.clear(); self._agent_os_ips.clear()
 
         self.query_one("#findings-list", ListView).clear()
+        self.query_one("#leads-list", ListView).clear()
         self._findings.clear(); self._findings_title_map.clear()
 
         if full:
@@ -2330,6 +2438,20 @@ class PentestApp(App):
     _SNIPPET_MAX_LINES = 8
     _SNIPPET_MAX_WIDTH = 160
 
+    def _render_leads(self, leads: list) -> None:
+        """Repopulate the Leads panel from a snapshot: live leads on top, then a
+        divider, then the worked/ruled-out ones. Whole-panel rebuild each update —
+        the board is small, and this keeps the display an exact mirror of the store."""
+        lv = self.query_one("#leads-list", ListView)
+        lv.clear()
+        for kind, lead in _lead_rows(leads or []):
+            if kind == "divider":
+                item = ListItem(Label("[dim]── worked / ruled out ──[/dim]"))
+                item.disabled = True
+            else:
+                item = ListItem(Label(_fmt_lead(lead)))
+            lv.append(item)
+
     def _output_snippet(self, output) -> list[str]:
         """A few lines of the ACTUAL tool output for the activity log. Full output
         stays in the artifact store / Ctrl+L log; this is the at-a-glance preview."""
@@ -2407,6 +2529,9 @@ class PentestApp(App):
                 self._detail_only(full)
             if isinstance(out, dict) and out.get("script_file"):
                 self._activity(f"  [dim]↳ script saved: {markup_escape(str(out['script_file']))}[/dim]")
+
+        elif t == "leads_update":
+            self._render_leads(event.get("leads", []))
 
         elif t == "tool_cached":
             self._activity(
