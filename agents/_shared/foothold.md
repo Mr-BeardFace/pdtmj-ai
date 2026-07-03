@@ -6,20 +6,26 @@ When your work lands a **command-execution primitive** — any way to run a comm
 Several services give you the ability to **write a file**, not run a command — a
 writable NFS/SMB share, a Redis/Postgres/MySQL file-write, an FTP/WebDAV upload, a
 writable web root. Convert write → exec by writing where the target will *act on* the
-file; pick by **where** you can write and **as whom**:
+file; pick by **where** you can write, **as whom**, and **what the host will run it with**
+— the selector is which *mechanism/service is actually present*, not the OS label:
 - **Web root → webshell.** A write under a directory the web server executes → drop a
-  minimal shell in the stack's language (`.php`/`.aspx`/`.jsp`) and request its URL.
-  look for: the document root from config or a known app path.
-- **A user's `~/.ssh/authorized_keys` → log in.** Writing into a home directory (common
-  when writing as root over `no_root_squash`, or as the service user) → append a key you
-  generated (`ssh_keygen`) and connect with `ssh_exec`. The most stable outcome — a
-  connect-in, not a held channel.
-- **cron → scheduled exec.** A writable `/etc/cron.d/`, `/etc/crontab`, or a user's
-  crontab runs your command as that user (root for system cron). Mind the format — cron
-  is strict about the user field and a trailing newline.
-- **SUID root binary — only when writing AS root.** Writing as uid 0 (e.g. `no_root_squash`
-  NFS) → drop a root-owned binary, set the SUID bit, run it from a normal shell for an
-  instant root shell.
+  minimal shell in the stack's language (`.php`/`.aspx`/`.jsp`) and request its URL
+  (`.aspx` on IIS, etc.). look for: the document root from config or a known app path.
+- **`authorized_keys` → log in — where an SSH service is reachable.** If sshd is exposed
+  and you can write the target account's `authorized_keys`, append a key you generated
+  (`ssh_keygen`) and connect with `ssh_exec` — the most stable outcome, a connect-in not a
+  held channel. **This is gated on the SSH *service*, not the OS**: Windows OpenSSH counts
+  (admin keys live in `C:\ProgramData\ssh\administrators_authorized_keys`). Skip it only
+  when no SSH is reachable — then nothing authenticates the key.
+- **cron → scheduled exec (Unix mechanism).** A writable `/etc/cron.d/`, `/etc/crontab`, or
+  a user's crontab runs your command as that user (root for system cron). Mind the format —
+  cron is strict about the user field and a trailing newline.
+- **SUID root binary — only when writing AS root (Unix mechanism).** Writing as uid 0 (e.g.
+  `no_root_squash` NFS) → drop a root-owned binary, set the SUID bit, run it from a normal
+  shell for an instant root shell.
+- **Windows-native locations.** A writable Startup folder (`.bat`/`.lnk` runs at logon), a
+  service or scheduled-task binary/script path, or a DLL-search-order directory a program
+  side-loads from → plant there and the OS runs it as that user/SYSTEM.
 
 `record_persistence` whatever you plant with the exact cleanup, and remove it when done.
 Once one lands you have execution — continue below.
@@ -35,7 +41,7 @@ Confirm the primitive actually executes (a single callback ping) before building
 
 **If the primitive executes a binary directly rather than through a shell** (common with command-injection and SSTI sinks), shell metacharacters and redirections are NOT interpreted — a redirection-based reverse-shell one-liner is passed as literal arguments and never connects. Either wrap the whole payload as a single argument to an explicitly-invoked shell, or stage it to a file and execute that file. This is also why a reverse shell can silently fail while OOB exfil works — don't conclude outbound is blocked until you've tried invoking a shell explicitly.
 
-**A connect-*in* method survives egress filtering where a reverse shell won't** — injecting a key and connecting back with `ssh_exec`, or plain OOB HTTP exfil, needs no outbound shell. Reach for those first when outbound looks blocked, but treat each as a single attempt.
+**A connect-*in* method survives egress filtering where a reverse shell won't** — an SSH key + `ssh_exec` wherever sshd is reachable, `netexec winrm`/RDP with creds you hold, or plain OOB HTTP exfil — all need no outbound shell. Reach for whichever remote-access service the target actually exposes when outbound looks blocked, and treat each as a single attempt.
 
 **When the primitive needs custom code no tool can produce** — a non-trivial deserialization payload, a binary handshake, a specific filter-evasion encoder — write it with `run_script` (Python preferred) as a last resort and drive the target through your channel. Try dedicated tools first.
 
@@ -58,11 +64,24 @@ The exec you already have is enough to read files. The moment it's confirmed, us
 ### Upgrade the channel — but don't get stuck chasing a shell
 A clean, framed session is *nicer* to work through, so make a brief, time-boxed attempt to upgrade — but it is a means, not the goal. There's a preference order, but **the real selector is stability: try them roughly in this order and keep whichever holds up most reliably for *this* target, not whichever is highest on the list.**
 
-1. **Connect-in over a real service — most stable.** A login you initiate beats a session you're holding open: it survives egress filtering, process death, and session timeouts. On **Linux**, inject a generated key (`ssh_keygen`) into the user's authorized_keys and connect back with `ssh_exec`, or reuse credentials you've already recovered. On **Windows**, drive recovered/created credentials with `netexec winrm`, or enable a remote-management service. This is the "SSH implant / identified creds" tier — prefer it when it's available.
+1. **Connect-in over a real service — most stable.** A login you initiate beats a session you're holding open: it survives egress filtering, process death, and session timeouts. Use whichever remote-access service the target actually exposes: where **sshd is reachable** (Linux, or Windows OpenSSH) inject a generated key (`ssh_keygen`) into that account's authorized_keys and connect back with `ssh_exec`; otherwise reuse/created credentials via `netexec winrm` or RDP (typical on Windows), or enable a remote-management service. This is the "SSH implant / identified creds" tier — prefer it when it's available.
 2. **Reverse shell (framed).** If a connect-in isn't available but arbitrary outbound is allowed, hold a `start_listener` session and drive it with `shell_exec`. Stable enough to work through, but dies with the process and won't survive egress filtering.
 3. **The initial access vector itself.** The primitive you already have — blind OOB exfil, web command injection, the exploit sink — is always available because it's how you got in. Least convenient, but a guaranteed fallback: it's enough to enumerate, read files, harvest credentials, check privesc, and reach the objective.
 
-So: attempt 1, fall to 2, and if neither holds, **stop stabilising and just work through 3** — at most a couple of focused tries before you pivot. Don't burn the run chasing a prettier shell when the access vector already lets you operate. Recognise when a tier *can't* work and skip it: a service/daemon account with no interactive login (an injected key is pointless), filtered egress (a reverse shell never connects — OOB exfil often still works), or app-enforced session limits that make any held channel flaky. Need a tool on the target? Host it with `oob_listener(action='host', …)` and pull it down.
+So: attempt 1, fall to 2, and if neither holds, **stop stabilising and just work through 3** — at most a couple of focused tries before you pivot. Don't burn the run chasing a prettier shell when the access vector already lets you operate. Recognise when a tier *can't* work and skip it: an SSH key where no SSH service is reachable (a Windows host with no OpenSSH, or sshd firewalled off — nothing authenticates the key) or the target account has no interactive login, filtered egress (a reverse shell never connects — OOB exfil often still works), or app-enforced session limits that make any held channel flaky. Need a tool on the target? Host it with `oob_listener(action='host', …)` and pull it down.
+
+### If the remote path can't reach, run the tool on the host
+Remote tooling (Impacket, certipy, netexec from Kali) needs no upload, so it's the natural
+first reach — but it authenticates the identity over the network, so it only works while you
+*hold* that identity's password or hash. When what you have instead is code-execution **as**
+a principal you can't replay remotely — a blind privesc as a user whose secret you never
+recovered — the same abuse usually runs fine **locally, in that token's context**: stage a
+tool that fits the host and the technique with `oob_listener(action='host', …)`, pull it down
+through the exec primitive you already have, and run it there. On Windows the on-host family
+covers what the remote path can't — Rubeus for Kerberos tickets/roasting, Certify for ADCS
+templates, a potato for SeImpersonate. It's a normal fallback, not a last resort: if a remote
+attack keeps bouncing off a credential you don't have, that missing credential is the cue to
+switch to on-host rather than keep retrying the same remote call.
 
 ### Always record what you change
 `record_persistence` is the engagement's IOC ledger — call it the moment you change the target, for anything *planted* (an authorized key, a new account, an enabled service, a dropped payload, a scheduled task) **and** anything *modified* (a changed password, an edited config, a flipped registry value). Give the exact `cleanup`/revert command, and for a modification put the original value in `before`. Keep every change reversible and non-destructive; an undocumented or unrevertable change is unacceptable.
