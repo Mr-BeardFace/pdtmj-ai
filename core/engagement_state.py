@@ -131,6 +131,14 @@ def _extract_host(target: str) -> str:
     return t.strip("[]")
 
 
+def _is_loopback_host(value: str) -> bool:
+    """True for the loopback/localhost of ANY machine — an ambiguous identity (target
+    loopback vs the pivot's local forward vs the Kali box), so it must never be a
+    recorded host. A loopback service is recorded under its host's real IP with bind."""
+    h = _extract_host(value or "").split("%")[0]
+    return h in ("localhost", "::1") or h.startswith("127.")
+
+
 # Result fields that hold the human-meaningful output of a tool call, in priority
 # order — used to keep a clean snippet (not the raw JSON envelope) so the next agent
 # sees actual command output, not "exit 0  out: 1450b".
@@ -499,6 +507,7 @@ class EngagementState(BaseModel):
                 service=svc.get("service", ""), app=svc.get("app", ""),
                 version=svc.get("version", ""), tech=svc.get("tech", ""),
                 os=svc.get("os", ""), vhost=svc.get("vhost", ""),
+                bind=svc.get("bind", ""),
                 source_agent=svc.get("source_agent", ""))
 
         # credentials / flags (content-deduped)
@@ -617,11 +626,13 @@ class EngagementState(BaseModel):
 
     def annotate_service(self, host: str, port=None, service: str = "", app: str = "",
                          version: str = "", tech: str = "", os: str = "",
-                         hostname: str = "", vhost: str = "", source_agent: str = "") -> dict:
+                         hostname: str = "", vhost: str = "", bind: str = "",
+                         source_agent: str = "") -> dict:
         """Record/refine the agent's structured understanding of a service. Upgrades
         the existing entry for the same (host, port, vhost) — only non-empty fields
         overwrite. hostname = the machine's DNS/LDAP identity; vhost = a website (HTTP
-        Host header) served on this IP:port — each vhost is its own service entry."""
+        Host header) served on this IP:port; bind = network reachability ('loopback' for
+        a service bound to the host's 127.0.0.1, reachable only via a pivot)."""
         host = (host or "").strip()
         vhost = _extract_host(vhost or "")
         # OS is host-level — also feed os_info so it shows on every row for the host.
@@ -635,11 +646,11 @@ class EngagementState(BaseModel):
                          if s.get("host") == host and s.get("port") == port
                          and (s.get("vhost", "") or "") == vhost), None)
         if existing is None:
-            existing = {"host": host, "port": port, "vhost": vhost, "service": "", "app": "",
-                        "version": "", "tech": "", "os": "", "source_agent": source_agent}
+            existing = {"host": host, "port": port, "vhost": vhost, "bind": "", "service": "",
+                        "app": "", "version": "", "tech": "", "os": "", "source_agent": source_agent}
             self.services.append(existing)
         for k, v in (("service", service), ("app", app), ("version", version),
-                     ("tech", tech), ("os", os)):
+                     ("tech", tech), ("os", os), ("bind", bind)):
             if v:
                 existing[k] = v
         return existing
@@ -1261,6 +1272,33 @@ class EngagementState(BaseModel):
                         "service":  "",
                         "version":  "",
                     })
+
+        elif tool_name == "port_forward":
+            # A pivot exposes an internal service — record it on the board so it isn't
+            # invisible. Loopback service → it lives ON the foothold (bind=loopback);
+            # an internal IP → its own host, reached via the foothold. Either way the
+            # channel (where to hit it locally) is pinned as a fact.
+            if result.get("action") == "start":
+                foothold = (result.get("foothold") or "").strip()
+                local    = result.get("local", "")
+                rhost    = (result.get("remote_host") or "").strip()
+                rport    = result.get("remote_port")
+                if result.get("mode") == "dynamic" or not (rhost and rport):
+                    if foothold:
+                        self.record_fact(kind="channel",
+                            statement=f"SOCKS proxy at {local} reaches the internal network via {foothold}",
+                            evidence=result.get("spec", local), scope=foothold)
+                else:
+                    loop = _is_loopback_host(rhost)
+                    svc_host = foothold if loop else rhost
+                    if svc_host:
+                        self.annotate_service(host=svc_host, port=rport,
+                                              bind="loopback" if loop else "",
+                                              source_agent=source_agent)
+                        self.record_fact(kind="channel",
+                            statement=(f"{'loopback' if loop else rhost}:{rport} on {svc_host} "
+                                       f"reachable at {local} via {foothold}"),
+                            evidence=result.get("spec", local), scope=svc_host)
 
         elif tool_name in ("enum4linux_ng", "rpcclient", "ldapsearch_query"):
             for u in result.get("users", []):

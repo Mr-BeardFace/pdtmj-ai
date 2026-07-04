@@ -14,7 +14,7 @@ from core.agent_loader import AgentDefinition
 from core.tool_registry import ToolRegistry
 from core.llm_client import LLMClient, APIAuthError, APIAccountLimitError
 from core.pricing import estimate_cost
-from core.engagement_state import EngagementState
+from core.engagement_state import EngagementState, _is_loopback_host
 from core.artifacts import ArtifactStore
 from core.jobs import JobManager, Job
 from core.proc import ProcessRegistry, bind as proc_bind
@@ -144,6 +144,13 @@ def _first_json_object(text):
                 except json.JSONDecodeError:
                     return None
     return None
+
+
+_LOOPBACK_HINT = (
+    "127.0.0.1/localhost is ambiguous — it could be the target's loopback, the pivot's "
+    "local forward, or the Kali box. Record this under the FOOTHOLD's real IP and set "
+    "bind='loopback' (the service runs on that host, just bound to loopback)."
+)
 
 
 def _as_evidence_dict(val):
@@ -1880,6 +1887,8 @@ class Orchestrator:
             all_existing += [f for f in all_findings if f.id not in seen_ids]
         title = self._redact_secrets(inputs.get("title", "Untitled"))
         ann_target = inputs.get("target", target)
+        if _is_loopback_host(ann_target):
+            return {"status": "error", "message": _LOOPBACK_HINT}
 
         if self.state:
             duplicate = self.state.find_duplicate(
@@ -2010,6 +2019,8 @@ class Orchestrator:
         host = inputs.get("host", "")
         if not host:
             return {"registered": False, "error": "host is required"}
+        if _is_loopback_host(host):
+            return {"registered": False, "error": _LOOPBACK_HINT}
         surface = self.state.add_surface(
             host=host, service=inputs.get("service", ""), port=inputs.get("port"),
             component=inputs.get("component", ""), origin=inputs.get("origin", "deeper"),
@@ -2307,6 +2318,8 @@ class Orchestrator:
         host = (inputs.get("host") or "").strip()
         if not host:
             return {"recorded": False, "error": "host is required (the target IP)"}
+        if _is_loopback_host(host):
+            return {"recorded": False, "error": _LOOPBACK_HINT}
         item = self.state.annotate_service(
             host=host, port=inputs.get("port"),
             service=inputs.get("service", "") or "",
@@ -2316,6 +2329,7 @@ class Orchestrator:
             os=inputs.get("os", "") or "",
             hostname=inputs.get("hostname", "") or "",
             vhost=inputs.get("vhost", "") or "",
+            bind=inputs.get("bind", "") or "",
             source_agent=source_agent,
         )
         fp = (f"{item['app']} {item['version']}".strip()) if item.get("app") else ""
@@ -2327,7 +2341,7 @@ class Orchestrator:
                    service=item.get("service", ""), app=item.get("app", ""),
                    version=item.get("version", ""), tech=item.get("tech", ""),
                    os=item.get("os", ""), hostname=inputs.get("hostname", "") or "",
-                   vhost=vh)
+                   vhost=vh, bind=item.get("bind", ""))
         return {"recorded": True, "host": host, "port": item.get("port")}
 
     def _handle_record_flag(self, inputs: dict, source_agent: str) -> dict:

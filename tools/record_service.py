@@ -54,6 +54,10 @@ TOOL_DEFINITION = {
                 "type": "string",
                 "description": "A WEBSITE (HTTP Host header) served on this IP:port, e.g. 'store.target.htb' found via vhost fuzzing, a redirect, a TLS cert SAN, or page content. Each vhost is tracked as its own service row (it may be a different app), and is added to scope. Set service='http'/'https' and the port when you record one.",
             },
+            "bind": {
+                "type": "string",
+                "description": "Network reachability. Omit for a normally reachable service. Use 'loopback' for a service bound to the host's 127.0.0.1 — reachable only via a pivot/port_forward. NEVER set host to 127.0.0.1/localhost: record the FOOTHOLD's real IP and mark bind='loopback' (the service runs on that host, just bound to loopback). port_forward records these automatically.",
+            },
         },
         "required": ["host"],
     },
