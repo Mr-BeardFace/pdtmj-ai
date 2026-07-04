@@ -280,7 +280,7 @@ DataTable > .datatable--cursor {
     height: 7fr;
     background: #0d1117;
     scrollbar-color: #30363d #0d1117;
-    padding: 0 1;
+    padding: 0 1 1 1;   /* permanent blank row under the last line */
 }
 
 #cmd-dialogue {
@@ -2550,7 +2550,6 @@ class PentestApp(App):
                 self._detail_only(full)
             if isinstance(out, dict) and out.get("script_file"):
                 self._activity(f"  [dim]↳ script saved: {markup_escape(str(out['script_file']))}[/dim]")
-            self._pane_gap()
 
         elif t == "leads_update":
             self._render_leads(event.get("leads", []))
