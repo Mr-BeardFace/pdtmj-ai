@@ -3,7 +3,8 @@ enrichment + write_report), not scraped from one fragile final ```json``` blob. 
 lock in that capture path and the merge preferring the report writer's cohesive
 narrative over the stitched per-agent fallback."""
 from core.engagement_state import EngagementState
-from core.orchestrator import Orchestrator, _INTERCEPTED, _first_json_object, _coerce_cvss
+from core.orchestrator import (Orchestrator, _INTERCEPTED, _first_json_object,
+                               _coerce_cvss, _as_evidence_dict)
 from core.models import EngagementRun, Finding
 from core.tool_registry import ToolRegistry
 from reporting.formatter import merge_runs
@@ -81,6 +82,28 @@ def test_annotate_enrichment_survives_bad_cvss(tmp_path):
     f = run.findings[0]
     assert f.impact == "some"
     assert f.cvss and f.cvss.base_score == 0.0        # coerced, not crashed
+
+
+def test_as_evidence_dict_normalizes_nondict():
+    assert _as_evidence_dict({"cmd": "x"}) == {"cmd": "x"}
+    assert _as_evidence_dict("nxc smb (Pwn3d!)") == {"detail": "nxc smb (Pwn3d!)"}
+    assert _as_evidence_dict(["l1", "l2"]) == {"detail": "l1\nl2"}
+    assert _as_evidence_dict([{"cmd": "x"}, {"out": "y"}]) == {"cmd": "x", "out": "y"}
+    assert _as_evidence_dict(None) == {} and _as_evidence_dict("") == {}
+
+
+def test_annotate_accepts_string_and_list_evidence(tmp_path):
+    # The report agent sometimes passes evidence as a string/list — must not crash the
+    # run with "dictionary update sequence element #0 has length 1".
+    o = _orch(tmp_path)
+    run = EngagementRun(agent="pentest/report", target="t")
+    fid = o._handle_annotation({"title": "X", "type": "vuln", "severity": "high",
+                                "description": "d", "evidence": "nxc smb (Pwn3d!)"},
+                               run, "t")["finding_id"]
+    f = next(f for f in run.findings if f.id == fid)
+    assert f.evidence.get("detail") == "nxc smb (Pwn3d!)"
+    o._handle_annotation({"finding_id": fid, "evidence": ["line1", "line2"]}, run, "t")
+    assert "line1" in f.evidence.get("detail", "")
 
 
 def test_annotate_by_finding_id_applies_enrichment(tmp_path):

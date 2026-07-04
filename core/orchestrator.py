@@ -146,6 +146,23 @@ def _first_json_object(text):
     return None
 
 
+def _as_evidence_dict(val):
+    """Normalize model-supplied evidence to a dict. The schema asks for an object, but
+    agents sometimes pass a string or list — wrap those so .update() can't blow up."""
+    if isinstance(val, dict):
+        return val
+    if isinstance(val, list):
+        if val and all(isinstance(x, dict) for x in val):
+            out: dict = {}
+            for x in val:
+                out.update(x)
+            return out
+        return {"detail": "\n".join(str(x) for x in val)} if val else {}
+    if val in (None, ""):
+        return {}
+    return {"detail": str(val)}
+
+
 def _coerce_cvss(c):
     """A CvssScores from a model-supplied cvss dict, or None. Tolerant of nulls /
     non-numeric scores (a JSON null makes float(None) raise), so a sloppy score can't
@@ -1846,7 +1863,7 @@ class Orchestrator:
             if inputs.get("description"):
                 existing.description = self._redact_secrets(inputs["description"])
             if inputs.get("evidence"):
-                existing.evidence.update(self._redact_obj(inputs["evidence"]))
+                existing.evidence.update(self._redact_obj(_as_evidence_dict(inputs["evidence"])))
             self._apply_enrichment(existing, inputs)
             status = "confirmed" if existing.verified else "updated"
             color  = SEV_COLOR.get(existing.severity, "white")
@@ -1875,7 +1892,7 @@ class Orchestrator:
             if inputs.get("verified") and not duplicate.verified:
                 duplicate.verified = True
             if inputs.get("evidence"):
-                duplicate.evidence.update(self._redact_obj(inputs["evidence"]))
+                duplicate.evidence.update(self._redact_obj(_as_evidence_dict(inputs["evidence"])))
             self._apply_enrichment(duplicate, inputs)
             self._print(f"  [dim][dedup][/dim] [{duplicate.severity.upper()}] {duplicate.title}")
             self._emit_annotation(duplicate)
@@ -1889,7 +1906,7 @@ class Orchestrator:
             title=title,
             description=self._redact_secrets(inputs.get("description", "")),
             target=ann_target,
-            evidence=self._redact_obj(inputs.get("evidence", {})),
+            evidence=self._redact_obj(_as_evidence_dict(inputs.get("evidence", {}))),
             verified=inputs.get("verified", False),
         )
         self._apply_enrichment(finding, inputs)
@@ -2359,7 +2376,7 @@ class Orchestrator:
             f["description"] = self._redact_secrets(f.get("description", ""))
             f["impact"]      = self._redact_secrets(f.get("impact", ""))
             if f.get("evidence"):
-                f["evidence"] = self._redact_obj(f["evidence"])
+                f["evidence"] = self._redact_obj(_as_evidence_dict(f["evidence"]))
 
             cvss = _coerce_cvss(f.get("cvss"))
 
