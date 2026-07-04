@@ -28,3 +28,21 @@ def test_allows_normal_inspection():
     r = local_exec("echo responder-mentioned-in-text")
     assert r.get("exit_code") == 0
     assert "responder-mentioned-in-text" in r["stdout"]
+
+
+# ── slow-runner (kerbrute et al.) shelled through a generic runner → auto-background ──
+from core.orchestrator import _shelled_long_runner
+
+
+def test_kerbrute_via_local_exec_promotes_to_background():
+    assert _shelled_long_runner("local_exec", {"command": "kerbrute userenum -d lab.local users.txt"})
+    assert _shelled_long_runner("run_script", {"script": "sudo /opt/kerbrute passwordspray ..."})
+
+
+def test_normal_local_exec_not_backgrounded():
+    assert not _shelled_long_runner("local_exec", {"command": "strings x.bin | grep -i pass"})
+
+
+def test_only_shell_runners_checked():
+    # a dedicated tool named after a binary isn't string-matched here
+    assert not _shelled_long_runner("nmap_scan", {"command": "kerbrute ..."})

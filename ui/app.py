@@ -656,6 +656,8 @@ class PentestApp(App):
 
         # Activity log text for Ctrl+L modal / Ctrl+Y copy
         self._activity_lines: list[str] = []
+        # True when the pane's last line is already blank — guards _pane_gap doubling.
+        self._pane_at_blank = True
         # Recent (tool, command, full_output_text), newest last — so when a credential
         # or finding is recorded we can surface the exact source line + context. Bounded.
         self._recent_outputs: list[tuple[str, str, str]] = []
@@ -1661,11 +1663,19 @@ class PentestApp(App):
         ts = datetime.now().strftime("%H:%M:%S")
         self._activity_lines.append(f"{ts}  {_strip_markup(msg)}")
         self.query_one("#activity-log", RichLog).write(f"[dim]{ts}[/dim]  {msg}")
+        self._pane_at_blank = False
 
     def _pane_only(self, msg: str) -> None:
         """Pane only — for the at-a-glance distilled view. Not added to the Ctrl+L log
         (the FULL output goes there via _detail_only, so the log isn't a duplicate)."""
         self.query_one("#activity-log", RichLog).write(f"  {msg}")
+        self._pane_at_blank = False
+
+    def _pane_gap(self) -> None:
+        # One trailing blank line for breathing room; never two in a row.
+        if not self._pane_at_blank:
+            self.query_one("#activity-log", RichLog).write("")
+            self._pane_at_blank = True
 
     def _detail_only(self, text: str) -> None:
         """Full-log only (Ctrl+L) — the complete tool output, never rendered to the
@@ -2123,6 +2133,7 @@ class PentestApp(App):
         if clear_log or full:
             self.query_one("#activity-log", RichLog).clear()
             self._activity_lines.clear()
+            self._pane_at_blank = True
         else:
             self._activity("[dim]── board cleared ──[/dim]")
 
@@ -2508,7 +2519,7 @@ class PentestApp(App):
         elif t == "tool_start":
             name   = event["name"]
             inputs = event.get("inputs", {})
-            self.query_one("#activity-log", RichLog).write("")
+            self._pane_gap()
             if name == "run_script":
                 # Don't dump the script blob — show its purpose so the operator
                 # can follow what an ad-hoc script is actually doing.
@@ -2539,6 +2550,7 @@ class PentestApp(App):
                 self._detail_only(full)
             if isinstance(out, dict) and out.get("script_file"):
                 self._activity(f"  [dim]↳ script saved: {markup_escape(str(out['script_file']))}[/dim]")
+            self._pane_gap()
 
         elif t == "leads_update":
             self._render_leads(event.get("leads", []))

@@ -34,6 +34,9 @@ class _Stub:
     def _pane_only(self, msg):
         self.activity.append(msg)
 
+    def _pane_gap(self):
+        pass
+
     def _detail_only(self, text):
         self.activity.extend(str(text).splitlines())
 

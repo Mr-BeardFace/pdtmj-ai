@@ -1,6 +1,7 @@
 import json
 import queue
 import re
+import shlex
 from core.timeutil import now_local
 from pathlib import Path
 from typing import Callable, Optional
@@ -203,6 +204,28 @@ _ALWAYS_BACKGROUND = {
     "bloodhound_python", # AD collection pass — long runner
     "john",              # offline cracking — long runner (like hashcat_crack)
 }
+
+# Long-runner binaries that stall a turn when shelled through local_exec/run_script;
+# auto-backgrounded like their dedicated tools. kerbrute is the common offender.
+_LONG_RUNNER_BINARIES = {
+    "kerbrute", "hashcat", "gobuster", "ffuf", "feroxbuster", "nuclei", "sqlmap",
+    "masscan", "hydra", "medusa", "john", "bloodhound-python", "crackmapexec",
+}
+_SHELL_RUNNER_TOOLS = {"local_exec", "run_script"}
+
+
+def _shelled_long_runner(name: str, inputs: dict) -> bool:
+    # local_exec/run_script invoking a long-runner binary → background it.
+    if name not in _SHELL_RUNNER_TOOLS:
+        return False
+    cmd = inputs.get("command") or inputs.get("script") or ""
+    if not isinstance(cmd, str) or not cmd:
+        return False
+    try:
+        toks = shlex.split(cmd)
+    except ValueError:
+        toks = cmd.split()
+    return any(t.rsplit("/", 1)[-1].lower() in _LONG_RUNNER_BINARIES for t in toks)
 
 # Tool output handling. A single string field longer than this is offloaded to a
 # text artifact (newlines preserved, so grep_artifact works well). If the whole
@@ -1444,7 +1467,9 @@ class Orchestrator:
                     # `background` is an orchestrator-level control flag, not a tool
                     # argument — strip it before the tool ever sees it.
                     inputs = dict(tb.input)
-                    want_bg = bool(inputs.pop("background", False)) or tb.name in _ALWAYS_BACKGROUND
+                    want_bg = (bool(inputs.pop("background", False))
+                               or tb.name in _ALWAYS_BACKGROUND
+                               or _shelled_long_runner(tb.name, inputs))
 
                     # ── scope gate (hard-block out-of-scope targets) ───────────
                     scope_reason = self._scope_block(tb.name, inputs)
