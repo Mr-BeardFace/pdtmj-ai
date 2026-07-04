@@ -1348,9 +1348,7 @@ class PentestApp(App):
 
         # /end — stop pipeline, run always_last, generate report
         if parsed and parsed[0] == "/end":
-            if not self._is_running:
-                self._show_cmd_output(["No pipeline running."], False)
-            else:
+            if self._is_running:
                 self._end_flag.set()
                 self._interrupt_queue.put("/end — wrap up your current action. The engagement is ending.")
                 self._show_cmd_output(
@@ -1358,6 +1356,11 @@ class PentestApp(App):
                      "Reporting agents will run and a report will be generated."],
                     True,
                 )
+            elif self._pipeline_resume or (self._current_assessment and self._current_assessment.runs):
+                # Halted (quota/pause/cap) — finalize from work done, no resume needed.
+                self._finalize_halted_engagement()
+            else:
+                self._show_cmd_output(["No pipeline running, and nothing to finalize."], False)
             return
 
         # /continue — release a held agent (after /abort), else resume a paused
@@ -2020,6 +2023,33 @@ class PentestApp(App):
             [f"Loaded assessment {assessment.id}  ({assessment.target}, {assessment.status})",
              f"  {n_find} finding(s) · {n_host} host(s) · {n_cred} cred(s) · {n_flag} flag(s){note}",
              "  /report to regenerate the HTML report for this assessment."], True)
+
+    def _finalize_halted_engagement(self) -> None:
+        """/end from a halted engagement (quota/pause/cap): mark it ended, run the
+        teardown a resumable halt had deferred, and render the report from the work
+        completed — no resume or LLM needed, so it works even when the quota is spent."""
+        with self._pipeline_lock:
+            resume = self._pipeline_resume
+            self._pipeline_resume = None
+        self._activity("[bold green]■ Engagement ended (/end) — finalizing the report "
+                       "from work completed.[/bold green]")
+        self._teardown_global()                       # terminal end → run the deferred teardown
+        assessment = self._current_assessment
+        if assessment:
+            assessment.status = "interrupted"
+            try:
+                assessment.end_time = now_local()
+                if self._current_assessment_path:
+                    self._current_assessment_path.write_text(
+                        assessment.model_dump_json(indent=2), encoding="utf-8")
+            except Exception:
+                pass
+        from core.config import get as _cfg_get
+        if _cfg_get("reporting", True):
+            self._cmd_report()
+        else:
+            self._show_cmd_output(
+                ["Engagement ended. Reporting is OFF — run /report to make one on demand."], True)
 
     def _cmd_report(self) -> None:
         """Handle /report — generate HTML from last assessment, or most recent runs."""
@@ -3233,6 +3263,11 @@ class PentestApp(App):
             orch._procs.kill_all()          # backstop: any lingering registered proc
         except Exception:
             pass
+        self._teardown_global()
+
+    def _teardown_global(self) -> None:
+        """Orch-independent teardown — port forwards, daemons, /etc/hosts. Safe to run
+        without a live orchestrator (e.g. finalizing a halted engagement via /end)."""
         try:
             from tools.port_forward import stop_all as _stop_tunnels
             res = _stop_tunnels()           # close any SSH pivots/port forwards still open
