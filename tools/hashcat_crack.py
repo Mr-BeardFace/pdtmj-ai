@@ -134,7 +134,10 @@ TOOL_DEFINITION = {
         "engagement intel — already-compromised passwords, usernames, hostnames, app/product "
         "names, and obvious mutations — for the highest-yield first pass. Provide the hash and "
         "either its hashcat mode number or a recognized format label (NTLM, NetNTLMv2, "
-        "Kerberos-TGS/Kerberoast, Kerberos-AS-REP, bcrypt, md5, sha256, …). Pass username/location "
+        "Kerberos-TGS/Kerberoast, Kerberos-AS-REP, bcrypt, md5, sha256, …). For a SALTED scheme "
+        "whose salt is stored separately (the app's config or DB, not the hash table), include the "
+        "salt — pass the hash in the salted mode's format (usually `hash:salt`) with the matching "
+        "salted mode; a bare hash or a saltless mode won't crack it. Pass username/location "
         "so a cracked plaintext is recorded against the right account. A recovered password is "
         "added to the credential store automatically."
     ),
