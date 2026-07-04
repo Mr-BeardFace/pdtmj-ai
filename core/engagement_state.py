@@ -492,13 +492,14 @@ class EngagementState(BaseModel):
         for ip, v in other.recon.host_names.items():
             self.recon.host_names.setdefault(ip, v)
 
-        # services (upsert by host/port)
+        # services (upsert by host/port/vhost)
         for svc in other.services:
             self.annotate_service(
                 host=svc.get("host", ""), port=svc.get("port"),
                 service=svc.get("service", ""), app=svc.get("app", ""),
                 version=svc.get("version", ""), tech=svc.get("tech", ""),
-                os=svc.get("os", ""), source_agent=svc.get("source_agent", ""))
+                os=svc.get("os", ""), vhost=svc.get("vhost", ""),
+                source_agent=svc.get("source_agent", ""))
 
         # credentials / flags (content-deduped)
         for c in other.credentials:
@@ -616,23 +617,25 @@ class EngagementState(BaseModel):
 
     def annotate_service(self, host: str, port=None, service: str = "", app: str = "",
                          version: str = "", tech: str = "", os: str = "",
-                         hostname: str = "", source_agent: str = "") -> dict:
+                         hostname: str = "", vhost: str = "", source_agent: str = "") -> dict:
         """Record/refine the agent's structured understanding of a service. Upgrades
-        the existing entry for the same (host, port) — only non-empty fields
-        overwrite, so successive calls sharpen the picture without wiping it."""
+        the existing entry for the same (host, port, vhost) — only non-empty fields
+        overwrite. hostname = the machine's DNS/LDAP identity; vhost = a website (HTTP
+        Host header) served on this IP:port — each vhost is its own service entry."""
         host = (host or "").strip()
+        vhost = _extract_host(vhost or "")
         # OS is host-level — also feed os_info so it shows on every row for the host.
         if os and host and host not in self.recon.os_info:
             self.recon.os_info[host] = os
-        # A vhost the agent identified for this IP — tie it on and auto-scope it
-        # (the target's vhosts are in scope). This is the LLM's call, made from
-        # the tool output, not a Python regex guessing at redirect text.
         if hostname and host:
-            self._register_vhost(host, hostname)
+            self._register_host_identity(host, hostname)
+        if vhost and host:
+            self._register_web_vhost(host, vhost)
         existing = next((s for s in self.services
-                         if s.get("host") == host and s.get("port") == port), None)
+                         if s.get("host") == host and s.get("port") == port
+                         and (s.get("vhost", "") or "") == vhost), None)
         if existing is None:
-            existing = {"host": host, "port": port, "service": "", "app": "",
+            existing = {"host": host, "port": port, "vhost": vhost, "service": "", "app": "",
                         "version": "", "tech": "", "os": "", "source_agent": source_agent}
             self.services.append(existing)
         for k, v in (("service", service), ("app", app), ("version", version),
@@ -641,12 +644,27 @@ class EngagementState(BaseModel):
                 existing[k] = v
         return existing
 
-    def _register_vhost(self, ip: str, hostname: str) -> None:
-        """Tie a discovered hostname to an IP (PTR, resolved name, or HTTP
-        redirect target). If the IP is in scope, the hostname is the target's
-        vhost and is auto-added to scope — a vhost of your target IS your target.
-        Explicit out-of-scope entries still win (checked in in_scope)."""
-        host = _extract_host(hostname or "")
+    def _register_host_identity(self, ip: str, name: str) -> None:
+        """Tie the machine's DNS/LDAP hostname to an IP (PTR, resolved A record, LDAP
+        dNSHostName). In scope by IP → the name is in scope too. Fills the one Hostname
+        slot for the IP."""
+        host = _extract_host(name or "")
+        ip = (ip or "").strip()
+        if not host or not ip or host == ip:
+            return
+        try:
+            ipaddress.ip_address(host)
+            return                       # a bare IP is not a name
+        except ValueError:
+            pass
+        self.recon.host_names.setdefault(ip, host)
+        if self.in_scope(ip) and not self._matches_any(host, None, self.out_of_scope):
+            self.add_scope(host)
+
+    def _register_web_vhost(self, ip: str, vhost: str) -> None:
+        """A web vhost (HTTP Host header) served on this IP. Auto-scoped like the host's
+        other names, but NOT the machine identity — it never fills the Hostname slot."""
+        host = _extract_host(vhost or "")
         ip = (ip or "").strip()
         if not host or not ip or host == ip:
             return
@@ -655,7 +673,6 @@ class EngagementState(BaseModel):
             return                       # a bare IP is not a vhost
         except ValueError:
             pass
-        self.recon.host_names.setdefault(ip, host)
         if self.in_scope(ip) and not self._matches_any(host, None, self.out_of_scope):
             self.add_scope(host)
 
@@ -1229,7 +1246,7 @@ class EngagementState(BaseModel):
                 # call: it records that via record_service(hostname=...).
                 for hn in host.get("hostnames", []):
                     if hn:
-                        self._register_vhost(ip, hn)
+                        self._register_host_identity(ip, hn)
 
         elif tool_name == "masscan":
             host = result.get("target", "")

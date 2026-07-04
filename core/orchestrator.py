@@ -2298,16 +2298,19 @@ class Orchestrator:
             tech=inputs.get("tech", "") or "",
             os=inputs.get("os", "") or "",
             hostname=inputs.get("hostname", "") or "",
+            vhost=inputs.get("vhost", "") or "",
             source_agent=source_agent,
         )
         fp = (f"{item['app']} {item['version']}".strip()) if item.get("app") else ""
-        label = f"{host}{':' + str(item['port']) if item.get('port') else ''}"
+        vh = item.get("vhost", "")
+        label = f"{host}{':' + str(item['port']) if item.get('port') else ''}{' (' + vh + ')' if vh else ''}"
         detail = " ".join(x for x in (item.get("service"), fp, item.get("tech"), item.get("os")) if x)
         self._print(f"  [cyan][service][/cyan] {label}  {detail}")
         self._emit("service", host=host, port=item.get("port"),
                    service=item.get("service", ""), app=item.get("app", ""),
                    version=item.get("version", ""), tech=item.get("tech", ""),
-                   os=item.get("os", ""), hostname=inputs.get("hostname", "") or "")
+                   os=item.get("os", ""), hostname=inputs.get("hostname", "") or "",
+                   vhost=vh)
         return {"recorded": True, "host": host, "port": item.get("port")}
 
     def _handle_record_flag(self, inputs: dict, source_agent: str) -> dict:

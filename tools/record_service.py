@@ -48,7 +48,11 @@ TOOL_DEFINITION = {
             },
             "hostname": {
                 "type": "string",
-                "description": "A virtual host / domain name this IP serves, if you identify one (e.g. from a redirect to 'facts.htb', a TLS cert SAN, or page content). Recording it adds the vhost to scope so you can target it directly.",
+                "description": "The MACHINE's own DNS/LDAP identity — its resolved/PTR name or LDAP dNSHostName (e.g. 'DC01.corp.htb'). One per host; shown in the Hostname column. NOT a website name — use vhost for that.",
+            },
+            "vhost": {
+                "type": "string",
+                "description": "A WEBSITE (HTTP Host header) served on this IP:port, e.g. 'store.target.htb' found via vhost fuzzing, a redirect, a TLS cert SAN, or page content. Each vhost is tracked as its own service row (it may be a different app), and is added to scope. Set service='http'/'https' and the port when you record one.",
             },
         },
         "required": ["host"],

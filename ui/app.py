@@ -612,10 +612,11 @@ class PentestApp(App):
 
     class Service(Message):
         def __init__(self, host: str, port, service: str, app: str,
-                     version: str, tech: str, os: str, hostname: str = "") -> None:
+                     version: str, tech: str, os: str, hostname: str = "",
+                     vhost: str = "") -> None:
             self.host = host; self.port = port; self.service = service
             self.app = app; self.version = version; self.tech = tech; self.os = os
-            self.hostname = hostname
+            self.hostname = hostname; self.vhost = vhost
             super().__init__()
 
     class PipelineEvent(Message):
@@ -686,6 +687,9 @@ class PentestApp(App):
         # row_key → set of agent-owned columns; plus IPs whose OS the agent owns.
         self._agent_cols:   dict[str, set[str]] = {}
         self._agent_os_ips: set[str] = set()
+        # row_key → full (IP, Hostname, Vhost, Port, Proto, Service, Fingerprint, Tech)
+        # so click-to-copy stays complete even when grouping blanks the shared cells.
+        self._host_rowdata: dict[str, tuple] = {}
 
         # Pane sizes (adjusted with Ctrl+arrows)
         self._left_width:    int = 33   # percent, left pane horizontal share (right gets the rest)
@@ -770,7 +774,7 @@ class PentestApp(App):
         # hosts/ports/services. One row per host:port; host-level columns
         # (Hostname/OS) repeat down a host's rows so each line stands alone.
         ht = self.query_one("#hosts-table", DataTable)
-        for label in ("IP", "Hostname", "OS", "Port", "Protocol", "Service", "Fingerprint", "Tech"):
+        for label in ("IP", "Hostname", "Vhost", "OS", "Port", "Protocol", "Service", "Fingerprint", "Tech"):
             ht.add_column(label, key=label)
 
         # Flags table (CTF) — columns set up; tab shown only for the CTF persona
@@ -1169,11 +1173,15 @@ class PentestApp(App):
                 self._flash_status("Flag copied to clipboard")
 
         elif tid == "hosts-table":
-            try:
-                row = dt.get_row(event.row_key)
-            except Exception:
-                return
-            text = "  ".join(str(c) for c in row if str(c))
+            # Copy from _host_rowdata (full values) so a grouped/blanked sibling row
+            # still yields the complete IP/Hostname/vhost line.
+            data = self._host_rowdata.get(str(event.row_key.value))
+            if data is None:
+                try:
+                    data = dt.get_row(event.row_key)
+                except Exception:
+                    return
+            text = "  ".join(str(c) for c in data if str(c))
             if text and self._copy_to_clipboard(text):
                 self._flash_status("Host row copied to clipboard")
 
@@ -1987,6 +1995,7 @@ class PentestApp(App):
                         "port": s.get("port"), "protocol": "tcp",
                         "service": s.get("service", ""), "version": fp,
                         "tech": s.get("tech", ""), "hostname": self._host_name.get(host, ""),
+                        "vhost": s.get("vhost", ""),
                     }, authoritative=True)
                     n_host += 1
             for c in snap.get("credentials", []):
@@ -2104,6 +2113,7 @@ class PentestApp(App):
         self._host_rows.clear(); self._host_rowkeys.clear()
         self._host_os.clear(); self._host_name.clear()
         self._agent_cols.clear(); self._agent_os_ips.clear()
+        self._host_rowdata.clear()
 
         self.query_one("#findings-list", ListView).clear()
         self.query_one("#leads-list", ListView).clear()
@@ -2320,12 +2330,32 @@ class PentestApp(App):
         service  = port_entry.get("service", "") or ""
         fingerprint = port_entry.get("version", "") or port_entry.get("product", "") or ""
         tech     = port_entry.get("tech", "") or ""
+        vhost    = port_entry.get("vhost", "") or ""
         if port_entry.get("hostname"):
             self._host_name.setdefault(ip, port_entry["hostname"])
         hostname = self._host_name.get(ip, "")
         os_str   = self._host_os.get(ip, "")
-        row_key  = f"{ip}:{port}/{proto}"
-        owned    = self._agent_cols.setdefault(row_key, set())
+        grp_prefix = f"{ip}:{port}/{proto}:"       # the ip:port group; vhost follows
+        row_key    = f"{grp_prefix}{vhost}"
+
+        # #4: a real vhost row hides the bare baseline; a baseline is dropped once
+        # vhosts own the ip:port.
+        if vhost:
+            self._remove_host_row(grp_prefix)
+        elif any(k != grp_prefix and k.startswith(grp_prefix) for k in self._host_rows):
+            return
+
+        # _host_rowdata is the complete source of truth (for copy + regroup); merge so
+        # a partial update never blanks a prior value.
+        prev = self._host_rowdata.get(row_key)
+        if prev:
+            hostname    = hostname or prev[1]
+            service     = service or prev[5]
+            fingerprint = fingerprint or prev[6]
+            tech        = tech or prev[7]
+        self._host_rowdata[row_key] = (ip, hostname, vhost, port, proto_disp,
+                                       service, fingerprint, tech)
+        owned = self._agent_cols.setdefault(row_key, set())
 
         def _set(rk, col: str, val: str) -> None:
             if not val:
@@ -2340,16 +2370,15 @@ class PentestApp(App):
             rk = self._host_rowkeys.get(row_key)
             if rk is None:
                 return
-            _set(rk, "Service", service)
-            _set(rk, "Fingerprint", fingerprint)
-            _set(rk, "Tech", tech)
-            _set(rk, "Hostname", hostname)
-            _set(rk, "OS", os_str)
+            for col, val in (("Service", service), ("Fingerprint", fingerprint),
+                             ("Tech", tech), ("Hostname", hostname), ("OS", os_str)):
+                _set(rk, col, val)
+            self._sort_hosts(dt)
             return
 
         self._host_rows.add(row_key)
         self._host_rowkeys[row_key] = dt.add_row(
-            ip, hostname, os_str, port, proto_disp, service, fingerprint, tech, key=row_key)
+            ip, hostname, vhost, os_str, port, proto_disp, service, fingerprint, tech, key=row_key)
         if authoritative:
             for col, val in (("Service", service), ("Fingerprint", fingerprint),
                              ("Tech", tech), ("Hostname", hostname), ("OS", os_str)):
@@ -2357,25 +2386,74 @@ class PentestApp(App):
                     owned.add(col)
         self._sort_hosts(dt)
 
+    def _remove_host_row(self, row_key: str) -> None:
+        rk = self._host_rowkeys.pop(row_key, None)
+        self._host_rows.discard(row_key)
+        self._agent_cols.pop(row_key, None)
+        self._host_rowdata.pop(row_key, None)
+        if rk is not None:
+            try:
+                self.query_one("#hosts-table", DataTable).remove_row(rk)
+            except Exception:
+                pass
+
     @staticmethod
     def _host_sort_key(values: tuple) -> tuple:
-        """Order rows by IP (numeric octet order), then protocol (UDP before TCP),
-        then port (numeric). IPv4 addresses sort ahead of any non-IPv4 host label;
-        the leading group flag keeps int- and str-keyed rows from being compared."""
-        ip_val, proto_val, port_val = values
+        """Order rows by IP (numeric octet order), protocol (UDP before TCP), port,
+        then vhost. IPv4 sorts ahead of any non-IPv4 label; the leading group flag
+        keeps int- and str-keyed rows from being compared."""
+        ip_val, proto_val, port_val, vhost_val = values
         proto_key = 0 if str(proto_val).upper() == "UDP" else 1   # UDP first
         try:
             port_key = int(port_val)
         except (ValueError, TypeError):
             port_key = 0
+        vhost_key = str(vhost_val or "")
         parts = str(ip_val).split(".")
         if len(parts) == 4 and all(p.isdigit() for p in parts):
-            return (0, tuple(int(p) for p in parts), proto_key, port_key)
-        return (1, str(ip_val), proto_key, port_key)
+            return (0, tuple(int(p) for p in parts), proto_key, port_key, vhost_key)
+        return (1, str(ip_val), proto_key, port_key, vhost_key)
 
     def _sort_hosts(self, dt: "DataTable | None" = None) -> None:
         dt = dt or self.query_one("#hosts-table", DataTable)
-        dt.sort("IP", "Protocol", "Port", key=self._host_sort_key)
+        # Restore the group-shared cells before sorting — regroup blanks them on
+        # follower rows, and the sort must see the real IP/Port/Protocol values.
+        for key, data in self._host_rowdata.items():
+            rk = self._host_rowkeys.get(key)
+            if rk is None:
+                continue
+            for col, val in (("IP", data[0]), ("Port", data[3]), ("Protocol", data[4])):
+                try:
+                    dt.update_cell(rk, col, val, update_width=True)
+                except Exception:
+                    pass
+        dt.sort("IP", "Protocol", "Port", "Vhost", key=self._host_sort_key)
+        self._regroup_hosts(dt)
+
+    def _regroup_hosts(self, dt: "DataTable | None" = None) -> None:
+        """#4 grouped view: within an ip:port:proto group only the first row shows the
+        shared IP/Hostname/OS/Port/Protocol; siblings blank them so vhosts read as a
+        cluster. _host_rowdata keeps full values for copy."""
+        dt = dt or self.query_one("#hosts-table", DataTable)
+        try:
+            ordered = list(dt.ordered_rows)
+        except Exception:
+            return
+        prev_group = None
+        for row in ordered:
+            data = self._host_rowdata.get(str(row.key.value))
+            if not data:
+                continue
+            ip, hostname, _vhost, port, proto_disp = data[0], data[1], data[2], data[3], data[4]
+            group  = (ip, port, proto_disp)
+            leader = group != prev_group
+            prev_group = group
+            for col, val in (("IP", ip), ("Hostname", hostname), ("OS", self._host_os.get(ip, "")),
+                             ("Port", port), ("Protocol", proto_disp)):
+                try:
+                    dt.update_cell(row.key, col, val if leader else "", update_width=True)
+                except Exception:
+                    pass
 
     def _update_host_field(self, ip: str, column: str, value: str) -> None:
         """Backfill a host-level column (OS/Hostname) across every row for an IP."""
@@ -2383,12 +2461,11 @@ class PentestApp(App):
             return
         dt = self.query_one("#hosts-table", DataTable)
         prefix = f"{ip}:"
-        for k in list(dt.rows):
-            if str(k.value).startswith(prefix):
-                try:
-                    dt.update_cell(k, column, value, update_width=True)
-                except Exception:
-                    pass
+        if column == "Hostname":                    # keep rowdata (copy source) current
+            for k, d in self._host_rowdata.items():
+                if k.startswith(prefix):
+                    self._host_rowdata[k] = (d[0], value) + d[2:]
+        self._regroup_hosts(dt)                     # leader gets it, siblings stay blank
 
     # ── Event handler ─────────────────────────────────────────────────────────
 
@@ -2428,7 +2505,7 @@ class PentestApp(App):
             fingerprint = (f"{ev.app} {ev.version}".strip()) if ev.app else ""
             self._add_host_row(ev.host, {
                 "port": ev.port, "protocol": "tcp", "service": ev.service,
-                "version": fingerprint, "tech": ev.tech,
+                "version": fingerprint, "tech": ev.tech, "vhost": ev.vhost,
             }, authoritative=True)
 
     def on_pentest_app_cred(self, ev: Cred) -> None:
@@ -2850,6 +2927,7 @@ class PentestApp(App):
                     service=ev.get("service", ""), app=ev.get("app", ""),
                     version=ev.get("version", ""), tech=ev.get("tech", ""),
                     os=ev.get("os", ""), hostname=ev.get("hostname", ""),
+                    vhost=ev.get("vhost", ""),
                 ))
                 fp = (f"{ev.get('app','')} {ev.get('version','')}".strip()) if ev.get("app") else ""
                 bits = [x for x in (ev.get("service"), fp, ev.get("tech"), ev.get("os")) if x]
