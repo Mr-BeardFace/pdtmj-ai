@@ -61,6 +61,11 @@ netexec, etc.), but a few write straight into the engagement state:
   show a masked version.
 - `register_surface` records a `(host, service)` attack surface — the unit the
   driver cycles on.
+- `record_service` records structured service detail into the target tracker — its
+  product/version, the host's DNS/LDAP hostname, any web vhosts, and whether it's
+  loopback-bound (reachable only through a pivot).
+- `record_fact` pins a confirmed operational fact — a target property or an
+  access/exec channel — so later turns act on it instead of re-deriving it.
 - `record_persistence` logs any change made to a target, with the original value
   and the exact command to revert it.
 - `queue_followup` hands a lead to another agent.
@@ -227,8 +232,10 @@ is surprised:
 
 - **Limited LLM providers.** Anthropic, OpenRouter, NVIDIA, and any
   OpenAI-compatible local server (Ollama, LM Studio, …). More to come.
-- **Reporting is rough.** Report generation and regeneration are inconsistent and
-  still being reworked.
+- **Reporting is still settling.** Recently reworked — the writer now captures a
+  story-flow narrative and CVSS-scored findings through structured tools — but it
+  hasn't been proven across many live runs, and an engagement stopped early
+  (quota/timeout) produces a draft.
 - **Copying text is flaky.** Pulling text out of the TUI panes doesn't always
   behave.
 - **Logic and workflow are a work in progress.** Agent routing, lead handling,
