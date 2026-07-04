@@ -1605,6 +1605,10 @@ class Orchestrator:
                                 self.state.add_script(result.get("purpose", ""),
                                                       result["script_file"],
                                                       inputs.get("language", ""))
+                            # A pivot's internal service isn't in _emit_state_update — push it
+                            # as a live 'service' event so it lands on the board immediately.
+                            if tb.name == "port_forward":
+                                self._emit_forward_service(result)
                             self._emit_state_update()
 
                         # Confirmed code execution via a blind channel (no live shell
@@ -2129,6 +2133,15 @@ class Orchestrator:
                        c.secret_masked, tuple(c.used_at), c.verified)
                       for c in st.credentials)
         return (ports, surfs, os_i, hns, creds)
+
+    def _emit_forward_service(self, result: dict) -> None:
+        """Emit the internal service a port_forward exposed as a live 'service' event
+        (ingest already recorded it; state services aren't in _emit_state_update)."""
+        from core.engagement_state import internal_service_from_forward
+        svc = internal_service_from_forward(result)
+        if svc:
+            self._emit("service", host=svc["host"], port=svc["port"], service="", app="",
+                       version="", tech="", os="", hostname="", vhost="", bind=svc["bind"])
 
     def _emit_state_update(self) -> None:
         if not self.state:

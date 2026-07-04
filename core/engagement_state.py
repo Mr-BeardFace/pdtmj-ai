@@ -139,6 +139,23 @@ def _is_loopback_host(value: str) -> bool:
     return h in ("localhost", "::1") or h.startswith("127.")
 
 
+def internal_service_from_forward(result: dict):
+    """(host, port, bind) for the internal service a port_forward 'start' exposes, or
+    None (SOCKS/dynamic or incomplete). Loopback remote → host is the foothold with
+    bind='loopback'; an internal IP → that host itself, no bind."""
+    if result.get("action") != "start" or result.get("mode") == "dynamic":
+        return None
+    rhost = (result.get("remote_host") or "").strip()
+    rport = result.get("remote_port")
+    if not (rhost and rport):
+        return None
+    loop = _is_loopback_host(rhost)
+    host = (result.get("foothold") or "").strip() if loop else rhost
+    if not host:
+        return None
+    return {"host": host, "port": rport, "bind": "loopback" if loop else ""}
+
+
 # Result fields that hold the human-meaningful output of a tool call, in priority
 # order — used to keep a clean snippet (not the raw JSON envelope) so the next agent
 # sees actual command output, not "exit 0  out: 1450b".
@@ -1281,24 +1298,19 @@ class EngagementState(BaseModel):
             if result.get("action") == "start":
                 foothold = (result.get("foothold") or "").strip()
                 local    = result.get("local", "")
-                rhost    = (result.get("remote_host") or "").strip()
-                rport    = result.get("remote_port")
-                if result.get("mode") == "dynamic" or not (rhost and rport):
-                    if foothold:
-                        self.record_fact(kind="channel",
-                            statement=f"SOCKS proxy at {local} reaches the internal network via {foothold}",
-                            evidence=result.get("spec", local), scope=foothold)
-                else:
-                    loop = _is_loopback_host(rhost)
-                    svc_host = foothold if loop else rhost
-                    if svc_host:
-                        self.annotate_service(host=svc_host, port=rport,
-                                              bind="loopback" if loop else "",
-                                              source_agent=source_agent)
-                        self.record_fact(kind="channel",
-                            statement=(f"{'loopback' if loop else rhost}:{rport} on {svc_host} "
-                                       f"reachable at {local} via {foothold}"),
-                            evidence=result.get("spec", local), scope=svc_host)
+                svc = internal_service_from_forward(result)
+                if svc:
+                    self.annotate_service(host=svc["host"], port=svc["port"],
+                                          bind=svc["bind"], source_agent=source_agent)
+                    where = "loopback" if svc["bind"] else svc["host"]
+                    self.record_fact(kind="channel",
+                        statement=(f"{where}:{svc['port']} on {svc['host']} "
+                                   f"reachable at {local} via {foothold}"),
+                        evidence=result.get("spec", local), scope=svc["host"])
+                elif foothold:                       # SOCKS/dynamic — whole-subnet channel
+                    self.record_fact(kind="channel",
+                        statement=f"SOCKS proxy at {local} reaches the internal network via {foothold}",
+                        evidence=result.get("spec", local), scope=foothold)
 
         elif tool_name in ("enum4linux_ng", "rpcclient", "ldapsearch_query"):
             for u in result.get("users", []):

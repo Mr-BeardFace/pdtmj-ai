@@ -84,3 +84,43 @@ def test_port_forward_dynamic_records_only_channel_fact():
         "foothold": "10.10.0.1", "spec": "SOCKS5 ..."}, source_agent="post")
     assert s.services == []                                                 # no single service
     assert any("SOCKS proxy" in f.statement for f in s.operational_facts)
+
+
+def test_internal_service_from_forward_helper():
+    from core.engagement_state import internal_service_from_forward
+    loop = internal_service_from_forward({"action": "start", "mode": "local",
+        "remote_host": "127.0.0.1", "remote_port": 8080, "foothold": "10.0.0.9"})
+    assert loop == {"host": "10.0.0.9", "port": 8080, "bind": "loopback"}
+    inter = internal_service_from_forward({"action": "start", "mode": "local",
+        "remote_host": "10.1.1.5", "remote_port": 1433, "foothold": "10.0.0.9"})
+    assert inter == {"host": "10.1.1.5", "port": 1433, "bind": ""}
+    assert internal_service_from_forward({"action": "start", "mode": "dynamic"}) is None
+
+
+# ── display: loopback service wraps its bind into the Port cell (127.0.0.1:8080) ──
+
+def test_loopback_service_wraps_port_in_hosts_table():
+    import asyncio
+    from ui.app import PentestApp
+    from textual.widgets import DataTable
+
+    async def _run():
+        app = PentestApp()
+        async with app.run_test():
+            app._host_name["10.129.47.187"] = "dc01.htb"
+            app._add_host_row("10.129.47.187", {"port": 80, "protocol": "tcp",
+                                                "service": "http", "version": "nginx"})
+            app._add_host_row("10.129.47.187", {"port": 8080, "protocol": "tcp",
+                "service": "http", "version": "Werkzeug", "bind": "loopback"},
+                authoritative=True)
+            dt = app.query_one("#hosts-table", DataTable)
+            rows = {str(r.key.value): dt.get_row(r.key) for r in dt.ordered_rows}
+            lb = rows["10.129.47.187:8080/tcp:"]
+            # Port cell (index 4: IP,Hostname,Vhost,OS,Port,...) shows the loopback bind
+            assert lb[4] == "127.0.0.1:8080"
+            ext = rows["10.129.47.187:80/tcp:"]
+            assert ext[4] == "80"                                    # external stays bare
+            # copy source keeps the wrapped port too
+            assert app._host_rowdata["10.129.47.187:8080/tcp:"][3] == "127.0.0.1:8080"
+
+    asyncio.run(_run())

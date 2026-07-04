@@ -613,10 +613,10 @@ class PentestApp(App):
     class Service(Message):
         def __init__(self, host: str, port, service: str, app: str,
                      version: str, tech: str, os: str, hostname: str = "",
-                     vhost: str = "") -> None:
+                     vhost: str = "", bind: str = "") -> None:
             self.host = host; self.port = port; self.service = service
             self.app = app; self.version = version; self.tech = tech; self.os = os
-            self.hostname = hostname; self.vhost = vhost
+            self.hostname = hostname; self.vhost = vhost; self.bind = bind
             super().__init__()
 
     class PipelineEvent(Message):
@@ -1998,7 +1998,7 @@ class PentestApp(App):
                         "port": s.get("port"), "protocol": "tcp",
                         "service": s.get("service", ""), "version": fp,
                         "tech": s.get("tech", ""), "hostname": self._host_name.get(host, ""),
-                        "vhost": s.get("vhost", ""),
+                        "vhost": s.get("vhost", ""), "bind": s.get("bind", ""),
                     }, authoritative=True)
                     n_host += 1
             for c in snap.get("credentials", []):
@@ -2361,6 +2361,11 @@ class PentestApp(App):
         fingerprint = port_entry.get("version", "") or port_entry.get("product", "") or ""
         tech     = port_entry.get("tech", "") or ""
         vhost    = port_entry.get("vhost", "") or ""
+        bind     = port_entry.get("bind", "") or ""
+        # A loopback service shows its bind in the Port cell (127.0.0.1:8080) — reachable
+        # only via a pivot — instead of masquerading as an externally-open port.
+        bind_addr = "127.0.0.1" if bind == "loopback" else bind
+        port_disp = f"{bind_addr}:{port}" if bind_addr else port
         if port_entry.get("hostname"):
             self._host_name.setdefault(ip, port_entry["hostname"])
         hostname = self._host_name.get(ip, "")
@@ -2383,7 +2388,7 @@ class PentestApp(App):
             service     = service or prev[5]
             fingerprint = fingerprint or prev[6]
             tech        = tech or prev[7]
-        self._host_rowdata[row_key] = (ip, hostname, vhost, port, proto_disp,
+        self._host_rowdata[row_key] = (ip, hostname, vhost, port_disp, proto_disp,
                                        service, fingerprint, tech)
         owned = self._agent_cols.setdefault(row_key, set())
 
@@ -2408,7 +2413,7 @@ class PentestApp(App):
 
         self._host_rows.add(row_key)
         self._host_rowkeys[row_key] = dt.add_row(
-            ip, hostname, vhost, os_str, port, proto_disp, service, fingerprint, tech, key=row_key)
+            ip, hostname, vhost, os_str, port_disp, proto_disp, service, fingerprint, tech, key=row_key)
         if authoritative:
             for col, val in (("Service", service), ("Fingerprint", fingerprint),
                              ("Tech", tech), ("Hostname", hostname), ("OS", os_str)):
@@ -2435,7 +2440,7 @@ class PentestApp(App):
         ip_val, proto_val, port_val, vhost_val = values
         proto_key = 0 if str(proto_val).upper() == "UDP" else 1   # UDP first
         try:
-            port_key = int(port_val)
+            port_key = int(str(port_val).rpartition(":")[2])       # bare or "127.0.0.1:8080"
         except (ValueError, TypeError):
             port_key = 0
         vhost_key = str(vhost_val or "")
@@ -2536,6 +2541,7 @@ class PentestApp(App):
             self._add_host_row(ev.host, {
                 "port": ev.port, "protocol": "tcp", "service": ev.service,
                 "version": fingerprint, "tech": ev.tech, "vhost": ev.vhost,
+                "bind": ev.bind,
             }, authoritative=True)
 
     def on_pentest_app_cred(self, ev: Cred) -> None:
@@ -2957,7 +2963,7 @@ class PentestApp(App):
                     service=ev.get("service", ""), app=ev.get("app", ""),
                     version=ev.get("version", ""), tech=ev.get("tech", ""),
                     os=ev.get("os", ""), hostname=ev.get("hostname", ""),
-                    vhost=ev.get("vhost", ""),
+                    vhost=ev.get("vhost", ""), bind=ev.get("bind", ""),
                 ))
                 fp = (f"{ev.get('app','')} {ev.get('version','')}".strip()) if ev.get("app") else ""
                 bits = [x for x in (ev.get("service"), fp, ev.get("tech"), ev.get("os")) if x]
