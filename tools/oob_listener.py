@@ -150,29 +150,40 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
         pass  # suppress access log noise
 
 
-def _ensure_server(port: int, interface: str) -> Optional[dict]:
-    """Start the listener if not already running. Returns an error dict or None."""
+# Common egress-allowed ports first (a target's outbound filter usually permits
+# 80/443), high unprivileged port last so a non-root bind still succeeds.
+_DEFAULT_PORTS = (80, 443, 8888)
+
+
+def _ensure_server(port: Optional[int], interface: str) -> Optional[dict]:
+    """Start the listener if not already running. port=None cascades through
+    _DEFAULT_PORTS; an explicit port binds only that. Returns an error dict or None."""
     global _server, _server_thread, _listener_ip, _listener_port
     if _server:
         return None
     ip = _get_interface_ip(interface)
     if not ip:
         return {"error": f"Could not get an IP for interface '{interface}' (try eth0/tun0/wlan0)."}
-    try:
-        _server = http.server.HTTPServer(("0.0.0.0", port), _CallbackHandler)
-    except OSError as e:
-        return {"error": f"Could not bind to port {port}: {e}"}
-    _listener_ip = ip
-    _listener_port = port
-    _server_thread = threading.Thread(target=_server.serve_forever, daemon=True)
-    _server_thread.start()
-    return None
+    candidates = _DEFAULT_PORTS if port is None else (port,)
+    last_err = None
+    for p in candidates:
+        try:
+            _server = http.server.HTTPServer(("0.0.0.0", p), _CallbackHandler)
+        except OSError as e:
+            last_err = e
+            continue
+        _listener_ip = ip
+        _listener_port = p
+        _server_thread = threading.Thread(target=_server.serve_forever, daemon=True)
+        _server_thread.start()
+        return None
+    return {"error": f"Could not bind to any of {', '.join(map(str, candidates))}: {last_err}"}
 
 
 def oob_listener(
     action: str = "start",
     interface: str = "tun0",
-    port: int = 8888,
+    port: Optional[int] = None,
     filename: str = "",
     content: str = "",
     decode: str = "raw",
@@ -313,7 +324,7 @@ TOOL_DEFINITION = {
             },
             "port": {
                 "type": "integer",
-                "description": "Port to listen on (default: 8888). Must be reachable from the target.",
+                "description": "Port to listen on. Omit to auto-select 80→443→8888 (80/443 most likely allowed through target egress). Set explicitly only to force a specific port.",
             },
             "filename": {
                 "type": "string",

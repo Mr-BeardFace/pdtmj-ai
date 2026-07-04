@@ -34,6 +34,24 @@ def test_empty_poll_hint_after_streak():
     assert "hint" not in r and r["callback_fired"]
 
 
+def test_default_port_cascades_past_a_bind_failure(monkeypatch):
+    # Omitting port cascades through _DEFAULT_PORTS, skipping any that won't bind.
+    monkeypatch.setattr(oob, "_get_interface_ip", lambda iface: "127.0.0.1")
+    real, bad = oob.http.server.HTTPServer, 1
+    def fake(addr, handler):
+        if addr[1] == bad:
+            raise OSError("address already in use")
+        return real(addr, handler)
+    monkeypatch.setattr(oob.http.server, "HTTPServer", fake)
+    free = _free_port()
+    monkeypatch.setattr(oob, "_DEFAULT_PORTS", (bad, free))
+    try:
+        r = oob.oob_listener("start", interface="eth0")     # no port → cascade
+        assert r["status"] == "listening" and r["port"] == free
+    finally:
+        oob.oob_listener("stop")
+
+
 def test_posted_body_captured_whole(monkeypatch):
     # The fix: a key/file too big for a URL is POSTed in the body and comes back
     # WHOLE under 'bodies' — the agent's "offload it another way" path actually works.
