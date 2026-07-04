@@ -1,7 +1,8 @@
 """Activity-pane helpers: secret-shaped scrubbing (defends against a cred flashing in
 the clear before it's recorded) and evidence-slicing (surface the source line + context
 for a recorded credential/finding)."""
-from ui.app import _scrub_secretish, _evidence_slice, _result_text
+from ui.app import (_scrub_secretish, _evidence_slice, _result_text,
+                    _pane_cap, _PANE_MAX_WIDTH, _strip_markup)
 
 
 def test_scrub_secretish_masks_credential_shaped_values():
@@ -40,3 +41,16 @@ def test_result_text_prefers_stdout_then_structured():
     assert _result_text({"stdout": "hello", "exit_code": 0}) == "hello"
     assert "shares" in _result_text({"shares": ["C$", "IPC$"], "_command": "nxc"})
     assert _result_text("plain string") == "plain string"
+
+
+def test_pane_cap_leaves_short_markup_untouched():
+    msg = "[cyan]▶ nmap_scan[/cyan]  [dim]target=10.0.0.1[/dim]"
+    assert _pane_cap(msg) == msg                          # short → unchanged, markup intact
+
+
+def test_pane_cap_truncates_a_flooding_one_liner():
+    long_cmd = "  [dim]$ " + ("A" * 4000) + "[/dim]"      # one huge command line
+    out = _pane_cap(long_cmd)
+    assert len(_strip_markup(out)) <= _PANE_MAX_WIDTH + 40   # capped, not 4000
+    assert out.endswith("(Ctrl+L for full)[/dim]")
+    assert "[/dim]" not in _strip_markup(out)             # no broken/partial tags leaked as text

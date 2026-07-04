@@ -1672,14 +1672,14 @@ class PentestApp(App):
         # Goes to BOTH the pane and the full log (Ctrl+L). Headers, reasoning, tool
         # summaries, findings, the surfaced evidence cluster.
         ts = datetime.now().strftime("%H:%M:%S")
-        self._activity_lines.append(f"{ts}  {_strip_markup(msg)}")
-        self.query_one("#activity-log", RichLog).write(f"[dim]{ts}[/dim]  {msg}")
+        self._activity_lines.append(f"{ts}  {_strip_markup(msg)}")   # full → Ctrl+L
+        self.query_one("#activity-log", RichLog).write(f"[dim]{ts}[/dim]  {_pane_cap(msg)}")
         self._pane_at_blank = False
 
     def _pane_only(self, msg: str) -> None:
         """Pane only — for the at-a-glance distilled view. Not added to the Ctrl+L log
         (the FULL output goes there via _detail_only, so the log isn't a duplicate)."""
-        self.query_one("#activity-log", RichLog).write(f"  {msg}")
+        self.query_one("#activity-log", RichLog).write(f"  {_pane_cap(msg)}")
         self._pane_at_blank = False
 
     def _pane_gap(self) -> None:
@@ -3485,6 +3485,18 @@ class PentestApp(App):
 
 def _strip_markup(text: str) -> str:
     return _MARKUP_RE.sub("", text)
+
+
+_PANE_MAX_WIDTH = 240   # one long line (a huge command/one-liner output) floods the pane
+
+
+def _pane_cap(msg: str) -> str:
+    """Pane display string: keep the original markup when short; for a flooding one-liner
+    return a width-capped, escaped head + ellipsis (Ctrl+L still holds the full line)."""
+    plain = _strip_markup(msg)
+    if len(plain) <= _PANE_MAX_WIDTH:
+        return msg
+    return markup_escape(plain[:_PANE_MAX_WIDTH].rstrip()) + " [dim]… (Ctrl+L for full)[/dim]"
 
 
 def _compact_inputs(inputs) -> str:
