@@ -26,6 +26,7 @@ from tools.register_surface import TOOL_DEFINITION as REGISTER_SURFACE_DEF
 from tools.record_credential import TOOL_DEFINITION as RECORD_CRED_DEF
 from tools.record_service import TOOL_DEFINITION as RECORD_SERVICE_DEF
 from tools.record_fact import TOOL_DEFINITION as RECORD_FACT_DEF
+from tools.write_report import TOOL_DEFINITION as WRITE_REPORT_DEF
 from tools.grep_artifact import TOOL_DEFINITION as GREP_ARTIFACT_DEF
 from tools.read_artifact import TOOL_DEFINITION as READ_ARTIFACT_DEF
 from tools.check_jobs import TOOL_DEFINITION as CHECK_JOBS_DEF
@@ -55,7 +56,7 @@ _INTERCEPTED = {"annotate_finding", "queue_followup", "record_plan", "register_s
                 "record_credential", "record_service", "record_fact", "record_flag", "conclude_engagement",
                 "grep_artifact", "read_artifact", "check_jobs", "list_scripts",
                 "start_listener", "shell_exec", "list_shells", "record_persistence", "wait",
-                "load_playbook"}
+                "load_playbook", "write_report"}
 
 # Tools whose call represents a credential auth attempt (for the auth ledger).
 _AUTH_TOOLS = {"ssh_exec", "netexec", "ftp", "smbclient"}
@@ -108,6 +109,60 @@ _EXEC_SIG_RE = re.compile(
 # exec signature. Enum/auth tools are excluded so their output can't false-trip it.
 _EXEC_CHANNEL_TOOLS = {"web_exec", "oob_listener", "http_request", "ssh_exec",
                        "nc", "telnet", "run_script"}
+
+
+def _first_json_object(text):
+    """Parse the first balanced {...} JSON object in `text`, or None. String-aware brace
+    matching (ignores braces inside JSON strings), so an inner ``` fence or a stray brace
+    in a value can't cut the object short the way a fence-terminated regex would."""
+    if not text or "{" not in text:
+        return None
+    start = text.index("{")
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[start:i + 1])
+                except json.JSONDecodeError:
+                    return None
+    return None
+
+
+def _coerce_cvss(c):
+    """A CvssScores from a model-supplied cvss dict, or None. Tolerant of nulls /
+    non-numeric scores (a JSON null makes float(None) raise), so a sloppy score can't
+    drop the whole finding enrichment."""
+    if not isinstance(c, dict) or not c:
+        return None
+
+    def _num(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return 0.0
+    return CvssScores(
+        vector=c.get("vector") or "",
+        base_score=_num(c.get("base_score")),
+        temporal_score=_num(c.get("temporal_score")),
+        environmental_score=_num(c.get("environmental_score")),
+    )
 
 
 def _collect_strings(obj, out: list, budget: list) -> None:
@@ -177,44 +232,19 @@ The agent instructions above define what to annotate and when.
 - NEVER put a credential, password, hash, token, or other secret in the title or anywhere in the finding. Record secrets with `record_credential`. In the finding, describe only *what was exposed* ("cleartext FTP credentials recovered from a captured PCAP"), never the value or `user:pass` pair.
 - A good title reads as a finding-class heading: "Cleartext Credentials Exposed in Network Capture", "Anonymous FTP Access", "Unauthenticated Database Access".
 
-## Final response
+## Enriching a finding
 
-End your final response with this JSON block. Its purpose is to:
-1. Write the `technical_overview` attacker narrative for this run
-2. Enrich already-annotated findings with CVSS scores, impact, and remediation
-3. Add any findings not yet annotated mid-run
+When you CONFIRM a finding, enrich it in place with another `annotate_finding` call (pass its `finding_id`) — do not save it for the end:
+- **`description`:** paragraph prose — overview first, then root cause, exploitability, technical detail. Passive voice, never first person.
+- **`impact`:** paragraph prose — what breaks, what an attacker achieves, likelihood of success.
+- **`cvss`:** score every finding except pure `type: recon` — full CVSS 3.1 vector + base/temporal/environmental scores. Temporal defaults E:P, RL:O, RC:C; use X for undefined environmental metrics.
+- **`remediation`:** condensed bullets, max 5.
 
-**Voice:** Never first person. Passive voice throughout.
-**`description`:** Paragraph form — overview first, then root cause, exploitability, technical detail.
-**`impact`:** Paragraph form — what breaks, what an attacker achieves, likelihood.
-**`remediation`:** Bullet list, max 5 items.
-**`technical_overview`:** Attacker narrative, flowing paragraphs, no bullets. Mark each evidence point with `[IMAGE: <the specific command run and a distinctive line of its output>]` — the engine fills these in with the ACTUAL tool command and captured output (its own "screenshot"), so name the concrete result (e.g. `[IMAGE: dir.html RCE output showing uid=1000(wingftp)]`, not `[IMAGE: proof of access]`). Put one wherever a command's output proves a step.
+Capture the enrichment on the finding itself — the report writer reads these off the findings, so a finding carries its own severity, impact, and fix.
 
-**CVSS 3.1:** Score every finding except pure `type: recon` entries. Use X for undefined environmental metrics.
-Temporal defaults: E:P, RL:O, RC:C — adjust based on evidence in this run.
+## Closing out
 
-```json
-{
-  "technical_overview": "Attacker narrative. Flowing paragraphs. [IMAGE: command + distinctive output line] markers at each evidence point — the engine fills them with the real captured command/output.",
-  "findings": [
-    {
-      "title": "Exactly match an annotated finding title to enrich it, or a new title to add a new finding",
-      "type": "recon|vuln|config|exposure",
-      "severity": "info|low|medium|high|critical",
-      "description": "Paragraph 1 — overview. Paragraph 2+ — root cause, exploitability.",
-      "impact": "What breaks and how likely is exploitation.",
-      "cvss": {
-        "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:P/RL:O/RC:C/CR:X/IR:X/AR:X/MAV:X/MAC:X/MPR:X/MUI:X/MS:X/MC:X/MI:X/MA:X",
-        "base_score": 9.8,
-        "temporal_score": 8.6,
-        "environmental_score": 9.8
-      },
-      "evidence": {},
-      "remediation": ["Bullet 1", "Bullet 2"]
-    }
-  ]
-}
-```
+Do NOT write the report narrative — the report writer owns the executive summary and the technical overview and reconstructs the whole story at the end. Your final tool-free message is a short handoff: what you established, the live access channel, and the single best next lead. Keep the evidence on the findings and facts (`annotate_finding`, `record_fact`), not in prose.
 """
 
 _BASE_INSTRUCTIONS_PATH = Path(__file__).parent.parent / "agents" / "base-instructions.md"
@@ -966,6 +996,10 @@ class Orchestrator:
         # so the generalist can pull a playbook instead of routing to a specialist.
         if phase not in ("planning", "reporting"):
             meta_defs.append(LOAD_PLAYBOOK_DEF)
+        # The report writer submits the deliverable narrative through a tool (robust
+        # capture) rather than a fenced blob in its final message.
+        if phase == "reporting":
+            meta_defs.append(WRITE_REPORT_DEF)
         if "record_plan" in agent.scope or phase == "planning":
             meta_defs.append(RECORD_PLAN_DEF)
         # Any agent that actively touches a target may discover a new surface;
@@ -1286,6 +1320,16 @@ class Orchestrator:
                         result = self._handle_record_flag(tb.input, agent.name)
                         if self.state:
                             self.state.note_progress()
+                        tool_results.append({
+                            "type":        "tool_result",
+                            "tool_use_id": tb.id,
+                            "content":     json.dumps(result),
+                        })
+                        continue
+
+                    if tb.name == "write_report":
+                        result = self._handle_write_report(tb.input, run)
+                        self._save_run(run)
                         tool_results.append({
                             "type":        "tool_result",
                             "tool_use_id": tb.id,
@@ -1778,6 +1822,7 @@ class Orchestrator:
                 existing.description = self._redact_secrets(inputs["description"])
             if inputs.get("evidence"):
                 existing.evidence.update(self._redact_obj(inputs["evidence"]))
+            self._apply_enrichment(existing, inputs)
             status = "confirmed" if existing.verified else "updated"
             color  = SEV_COLOR.get(existing.severity, "white")
             tag    = "[CONFIRMED]" if existing.verified else "[updated]"
@@ -1806,6 +1851,7 @@ class Orchestrator:
                 duplicate.verified = True
             if inputs.get("evidence"):
                 duplicate.evidence.update(self._redact_obj(inputs["evidence"]))
+            self._apply_enrichment(duplicate, inputs)
             self._print(f"  [dim][dedup][/dim] [{duplicate.severity.upper()}] {duplicate.title}")
             self._emit_annotation(duplicate)
             return {"status": "deduplicated", "finding_id": duplicate.id,
@@ -1821,6 +1867,7 @@ class Orchestrator:
             evidence=self._redact_obj(inputs.get("evidence", {})),
             verified=inputs.get("verified", False),
         )
+        self._apply_enrichment(finding, inputs)
         run.findings.append(finding)
 
         color = SEV_COLOR.get(finding.severity, "white")
@@ -1830,6 +1877,38 @@ class Orchestrator:
         return {"status": "annotated", "finding_id": finding.id,
                 "current_findings": self._findings_digest(run, all_findings),
                 "note": self._DEDUP_NOTE}
+
+    def _apply_enrichment(self, finding: Finding, inputs: dict) -> None:
+        """Fold report-enrichment fields (cvss/impact/remediation) from an annotate_finding
+        call onto the finding. Structured tool args, so this can't be lost to a truncated
+        final blob the way the old ```json``` enrichment could."""
+        cvss = _coerce_cvss(inputs.get("cvss"))
+        if cvss:
+            finding.cvss = cvss
+        if inputs.get("impact"):
+            finding.impact = self._redact_secrets(inputs["impact"])
+        rem = inputs.get("remediation")
+        if isinstance(rem, str):
+            rem = [rem]
+        if rem:
+            finding.remediation = rem
+
+    def _handle_write_report(self, inputs: dict, run: EngagementRun) -> dict:
+        """Capture the report narrative from the write_report tool onto the run — the
+        robust replacement for scraping it out of a final ```json``` blob."""
+        exec_summary = (inputs.get("executive_summary") or "").strip()
+        overview     = (inputs.get("technical_overview") or "").strip()
+        if not exec_summary and not overview:
+            return {"status": "error", "message": "executive_summary and technical_overview are both empty"}
+        if exec_summary:
+            run.executive_summary = self._redact_secrets(exec_summary)
+        if overview:
+            run.technical_overview = self._redact_secrets(overview)
+        self._print("  [green][report][/green] narrative captured "
+                    f"(exec {len(exec_summary)} ch, overview {len(overview)} ch)")
+        return {"status": "recorded",
+                "executive_summary_chars": len(exec_summary),
+                "technical_overview_chars": len(overview)}
 
     def _emit_annotation(self, finding: Finding) -> None:
         """Emit a full annotation event so the UI can show live finding detail."""
@@ -2227,13 +2306,15 @@ class Orchestrator:
     # ── final-response enrichment ─────────────────────────────────────────────
 
     def _extract_and_enrich(self, text: str, run: EngagementRun, target: str):
-        match = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
-        if not match:
-            return
-        try:
-            data = json.loads(match.group(1))
-        except json.JSONDecodeError:
-            return
+        # Backstop only — the report writer submits its narrative via write_report and
+        # enriches findings via annotate_finding. This still catches a specialist that
+        # closes with a ```json``` findings block. Brace-match rather than a
+        # fence-terminated regex so an inner ``` in a value can't truncate the capture.
+        data = _first_json_object(text)
+        if not isinstance(data, dict) or not (
+            data.keys() & {"findings", "technical_overview", "executive_summary"}
+        ):
+            return  # incidental JSON in a handoff, not a report block
 
         if not run.technical_overview and data.get("technical_overview"):
             run.technical_overview = self._redact_secrets(data["technical_overview"])
@@ -2252,23 +2333,7 @@ class Orchestrator:
             if f.get("evidence"):
                 f["evidence"] = self._redact_obj(f["evidence"])
 
-            cvss = None
-            if f.get("cvss"):
-                c = f["cvss"]
-                # Robust against the model emitting nulls or non-numeric scores: a
-                # JSON `null` makes .get(key, default) return None (the key exists), so
-                # float(None) would raise "float ... NoneType". Coerce safely.
-                def _num(v):
-                    try:
-                        return float(v)
-                    except (TypeError, ValueError):
-                        return 0.0
-                cvss = CvssScores(
-                    vector=c.get("vector") or "",
-                    base_score=_num(c.get("base_score")),
-                    temporal_score=_num(c.get("temporal_score")),
-                    environmental_score=_num(c.get("environmental_score")),
-                )
+            cvss = _coerce_cvss(f.get("cvss"))
 
             title = f.get("title", "")
             ftype = f.get("type")

@@ -73,6 +73,25 @@ TOOL_DEFINITION = {
                 "type": "string",
                 "description": "If provided, updates the existing finding with this ID instead of creating a new one.",
             },
+            "impact": {
+                "type": "string",
+                "description": "Report enrichment (paragraph): what a successful attack breaks, what the attacker achieves, and how likely success is. Set it once the finding is understood — usually at confirmation, not first sighting.",
+            },
+            "remediation": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Report enrichment: condensed remediation bullets (max 5). Best-practice options, not one specific code snippet.",
+            },
+            "cvss": {
+                "type": "object",
+                "description": "Report enrichment: CVSS 3.1 severity. Emit the full vector plus the three resulting scores — do not write out the per-metric table.",
+                "properties": {
+                    "vector": {"type": "string", "description": "Complete CVSS 3.1 vector, e.g. CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:P/RL:O/RC:C"},
+                    "base_score": {"type": "number"},
+                    "temporal_score": {"type": "number"},
+                    "environmental_score": {"type": "number"},
+                },
+            },
         },
         "required": ["title", "type", "severity", "description"],
     },

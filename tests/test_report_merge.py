@@ -19,6 +19,18 @@ def test_image_marker_replaced_with_tool_command_and_output():
     assert "Unauthenticated RCE was achieved." in out # surrounding prose preserved
 
 
+def test_capture_shows_raw_output_not_json_envelope():
+    # netexec-style tools return a JSON envelope with the console text under
+    # raw_output — the capture must show that raw text like a terminal, not the JSON.
+    tc = ToolCall(id="1", tool_name="netexec", inputs={},
+                  command_str="nxc winrm 10.0.0.5 -u msa_health$ -H H",
+                  output={"target": "10.0.0.5", "authenticated": True, "pwned": True,
+                          "raw_output": "WINRM 10.0.0.5 DC01 [+] logging.htb\\msa_health$ (Pwn3d!)"})
+    out = embed_captures("Access confirmed. [IMAGE: winrm Pwn3d as msa_health$]", [tc])
+    assert "(Pwn3d!)" in out
+    assert '"target"' not in out and "authenticated" not in out   # JSON envelope stripped
+
+
 def test_capture_binds_to_output_not_script_body():
     # The real bug: a marker about the RCE result matched a "read the exploit file"
     # run_script (its script body mentioned the same words) and dumped 1000 chars of
@@ -232,6 +244,21 @@ def test_report_marked_draft_without_executive_summary(tmp_path):
     html = generate_report(run, tmp_path, "html").read_text(encoding="utf-8")
     assert '<div class="draft-banner">' in html
     assert "DRAFT" in html
+
+
+def test_executive_summary_renders_subsection_headings(tmp_path):
+    # The exec summary is written in labelled parts (## Overview / ## Key Findings /
+    # ## Conclusion); they must render as headings, not literal "## " prose.
+    from reporting.formatter import generate_report
+    run = EngagementRun(agent="pentest/report", target="10.10.10.5")
+    run.executive_summary = ("## Overview\n\nObjective was X.\n\n"
+                             "## Key Findings\n\nRCE was obtained.\n\n"
+                             "## Conclusion\n\nFull compromise.")
+    run.findings.append(Finding(type="vuln", severity="high", title="X",
+                                description="d", target="10.10.10.5"))
+    html = generate_report(run, tmp_path, "html").read_text(encoding="utf-8")
+    assert "<h3>Overview</h3>" in html and "<h3>Key Findings</h3>" in html
+    assert "## Overview" not in html          # no literal markdown leaked
 
 
 def test_report_not_draft_with_executive_summary(tmp_path):

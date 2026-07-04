@@ -321,8 +321,10 @@
   <section>
     <h2>Executive Summary</h2>
     {% if run.executive_summary %}
-      {% for para in run.executive_summary.strip().split('\n\n') %}
-        <p>{{ para }}</p>
+      {% for b in run.executive_summary | narrative_blocks %}
+        {% if b.kind == 'heading' %}<h3>{{ b.content }}</h3>
+        {% elif b.kind == 'code' %}<pre class="narrative-code"{% if b.lang %} data-lang="{{ b.lang }}"{% endif %}>{{ b.content }}</pre>
+        {% else %}<p>{{ b.content }}</p>{% endif %}
       {% endfor %}
     {% elif run.summary %}
       {% set clean = run.summary | replace("```json","") | replace("```","") | trim %}

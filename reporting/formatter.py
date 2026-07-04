@@ -111,8 +111,8 @@ _CAPTURE_STOPWORDS = {
 # Output fields to surface as the "terminal" text of a capture, in priority order.
 # NOTE: stderr is deliberately excluded — it's almost always dependency/warning noise
 # (e.g. urllib3 RequestsDependencyWarning), not evidence.
-_CAPTURE_OUT_KEYS = ("stdout", "output", "decoded", "exfil", "body", "response",
-                     "result", "note", "summary")
+_CAPTURE_OUT_KEYS = ("raw_output", "stdout", "output", "decoded", "exfil", "body",
+                     "response", "result", "note", "summary")
 
 # Lines that are tooling noise, not evidence — stripped from a capture.
 _CAPTURE_NOISE_RE = re.compile(
@@ -420,9 +420,16 @@ def merge_runs(
                 merged.findings[idx] = f
         merged.tool_calls.extend(run.tool_calls)
 
-    # Technical details = the WHOLE attack chain, start to finish — every agent's
-    # narrative stitched in chronological order and labelled by phase.
-    merged.technical_overview = _stitch_overviews(runs)
+    # Technical details = the report writer's single cohesive narrative when it ran —
+    # it sees the whole engagement and tells it as one story. Only when there is no
+    # report pass (draft: paused/stopped early) do we fall back to stitching each
+    # agent's per-run narrative in chronological order.
+    report_overview = next(
+        (r.technical_overview for r in reversed(runs)
+         if "report" in (r.agent or "") and (r.technical_overview or "").strip()),
+        None,
+    )
+    merged.technical_overview = report_overview or _stitch_overviews(runs)
 
     return merged
 
