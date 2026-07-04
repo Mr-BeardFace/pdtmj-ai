@@ -122,6 +122,11 @@ def _lead_rows(leads: list[dict]) -> list[tuple[str, object]]:
     exhausted). Returns ('lead', dict) and ('divider', None) rows."""
     from core.leads import FRONTIER_LEVELS
     def rung(l): return FRONTIER_LEVELS.get((l.get("reach_level") or "").lower(), 0)
+    # Drop the low-value breadth leads — the "enumerate this service / what is it"
+    # recon that reaches only recon/service. Exploit-class leads and anything a
+    # credential or finding spawned (vuln and above) stay.
+    min_rung = FRONTIER_LEVELS["vuln"]
+    leads = [l for l in (leads or []) if rung(l) >= min_rung]
     live_order = {"active": 0, "advancing": 1, "open": 2}
     done_order = {"confirmed": 0, "refuted": 1, "exhausted": 2}
     live = sorted((l for l in leads if l.get("status") in _LEAD_LIVE),
@@ -197,6 +202,11 @@ Screen {
 #leads-list > ListItem {
     background: #0d1117;
     padding: 0 1;
+    height: auto;          /* word-wrap long lead descriptions instead of clipping */
+}
+
+#leads-list > ListItem > Label {
+    width: 1fr;
 }
 
 #leads-list > ListItem:hover {

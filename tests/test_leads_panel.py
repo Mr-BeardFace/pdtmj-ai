@@ -37,6 +37,19 @@ def test_live_sorted_by_rung_within_status():
     assert rows[0][1]["description"] == "high"            # higher kill-chain rung first
 
 
+def test_recon_and_service_leads_are_filtered_out():
+    # the "enumerate this service / what is it" breadth leads (reach recon/service)
+    # are noise in the panel; vuln+ and credential (user) leads stay.
+    leads = [
+        _lead(status="open", reach_level="service", description="Enumerate smb on host:445"),
+        _lead(status="open", reach_level="recon", description="scan ports"),
+        _lead(status="open", reach_level="vuln", description="exploit X"),
+        _lead(status="open", reach_level="user", description="auth as admin"),
+    ]
+    kept = {l["description"] for _, l in _lead_rows(leads)}
+    assert kept == {"exploit X", "auth as admin"}         # recon/service dropped
+
+
 def test_fmt_lead_marker_and_tries():
     assert _fmt_lead(_lead(status="active")).startswith("[bold cyan]●")
     assert "✗" in _fmt_lead(_lead(status="refuted"))
