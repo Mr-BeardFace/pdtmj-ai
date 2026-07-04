@@ -38,4 +38,8 @@ privilege and data exposure, record any code-exec primitive): CouchDB ("admin pa
 Cassandra, Neo4j, and the rest.
 
 Record every credential with `record_credential`; crackable hashes → `hashcat_crack`.
+**Dumped a user/hash table? The salt and algorithm usually aren't in the table** — they
+live in the app's config (see the `web` playbook) or a sibling settings/config table in
+the same database. Grab the salt/scheme before cracking; a salted hash won't crack from
+the digest alone.
 If you obtain code execution, move to the foothold methodology.

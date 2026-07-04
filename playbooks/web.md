@@ -54,6 +54,12 @@ class-level techniques below still apply to any app.
 - **Headers/client** → CORS reflection (`Origin: https://evil.com`), missing CSP/HSTS.
 - **Blind** → `oob_listener` for blind SSRF/RCE/XXE.
 
+**Config & secrets — pull these the moment you can read files** (LFI, path traversal, a backup file, or a foothold). An app's config holds the DB credentials, the *password-hashing scheme* (algorithm, salt, iterations — you need it to crack the user/hash table you found), and session/signing secrets:
+- PHP: `config.php`, `config.inc.php`, `.env` (Laravel), `wp-config.php` (WordPress), `configuration.php` (Joomla), `settings.php` (Drupal)
+- ASP.NET: `web.config`, `appsettings.json` · Java: `application.properties`/`.yml`, `WEB-INF/web.xml`, `context.xml`
+- Node: `.env`, `config/*.json` · Python: `settings.py` (Django), `config.py`/`.env` (Flask) · Ruby: `config/database.yml`, `config/secrets.yml`
+- Anywhere: `.env`, `.git/` (config + history), `docker-compose.yml`, and backup variants (`.bak`, `.old`, `~`, `.swp`).
+
 ## 4. Confirm
 A finding is verified only with concrete proof: SQLi = extracted data; XSS = executing
 PoC; LFI = `/etc/passwd` contents; RCE = command output (`id`/`whoami`). When you land
