@@ -31,7 +31,7 @@ from core.paths import (RESULTS_DIR, AGENTS_DIR, LOGS_DIR, ASSESSMENTS_DIR,
 from core.artifacts import ArtifactStore
 from core.registry import build_registry, load_all_agents
 from core.agent_loader import load_agent
-from core.llm_client import LLMClient, APIAccountLimitError, APIAuthError
+from core.llm_client import LLMClient, APIAccountLimitError, APIAuthError, APIConnectionError
 from core.orchestrator import Orchestrator
 from core.engagement_state import EngagementState
 from core.session_log import SessionLogger
@@ -3075,6 +3075,19 @@ class PentestApp(App):
                 termination = "account_limit"
                 self.post_message(PentestApp.Activity(
                     f"[red]⛔ {e}[/red]\n  Top up and type [bold cyan]/continue[/bold cyan] to resume."
+                ))
+            except APIConnectionError as e:
+                # A dropped connection is resumable — save the engagement so /continue
+                # picks it up when the network is back, rather than tearing it all down.
+                with self._pipeline_lock:
+                    self._pipeline_resume = {
+                        "brief": brief, "state": state, "assessment": assessment,
+                        "runs": prior_runs + driver.runs,
+                    }
+                interrupted = True
+                termination = "connection_lost"
+                self.post_message(PentestApp.Activity(
+                    f"[red]⛔ {e}[/red]\n  Check connectivity, then type [bold cyan]/continue[/bold cyan] to resume."
                 ))
             except APIAuthError as e:
                 interrupted = True

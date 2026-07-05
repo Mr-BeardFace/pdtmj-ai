@@ -275,6 +275,10 @@ _TERMINATION = {
                              "write-up could not be synthesized, so sections may be incomplete."),
     "auth_failed":   (True,  "The engagement was halted by an API authentication failure. The findings "
                              "reflect only the work completed beforehand."),
+    "connection_lost": (True, "The engagement was halted when the connection to the model provider was "
+                             "lost and did not recover after retries. The findings reflect the work "
+                             "completed up to that point; the engagement can be resumed once "
+                             "connectivity is restored."),
 }
 
 

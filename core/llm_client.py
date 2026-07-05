@@ -25,6 +25,11 @@ class APIAccountLimitError(Exception):
     """Account credit or hard quota limit reached — not retryable."""
 
 
+class APIConnectionError(Exception):
+    """Network connection to the provider failed and survived all retries. Resumable —
+    the engagement is saved so /continue picks it up once connectivity is back."""
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 _QUOTA_KEYWORDS = (
@@ -472,6 +477,13 @@ class LLMClient:
                 time.sleep(wait)
                 wait = min(wait * 2, 60)
 
+            except anthropic.APIConnectionError as e:  # transient network blip / timeout
+                if attempt >= max_retries:
+                    raise APIConnectionError("Connection to the provider failed after retries") from e
+                self._notify_retry(attempt + 1, wait, "Connection error")
+                time.sleep(wait)
+                wait = min(wait * 2, 60)
+
             except anthropic.AuthenticationError as e:
                 raise APIAuthError(
                     "API key rejected — verify your key with /key set"
@@ -578,10 +590,10 @@ class LLMClient:
 
             except (APIAuthError, APIAccountLimitError, RuntimeError):
                 raise
-            except httpx.TimeoutException:
+            except httpx.RequestError as e:           # timeout / connection / transport blip
                 if attempt >= max_retries:
-                    raise RuntimeError(f"{label} request timed out")
-                self._notify_retry(attempt + 1, wait, "Timeout")
+                    raise APIConnectionError(f"{label} connection failed: {type(e).__name__}") from e
+                self._notify_retry(attempt + 1, wait, "Connection error")
                 time.sleep(wait)
                 wait = min(wait * 2, 60)
 
@@ -613,6 +625,7 @@ def _external_api():
         KEYRING_SERVICE=_KEYRING_SERVICE,
         APIAuthError=APIAuthError,
         APIAccountLimitError=APIAccountLimitError,
+        APIConnectionError=APIConnectionError,
     )
 
 
