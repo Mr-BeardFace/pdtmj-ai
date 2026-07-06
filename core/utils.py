@@ -2,7 +2,49 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
+
+
+# ── command-string secret redaction ────────────────────────────────────────────
+# Credential values in a reconstructed CLI string must be masked before they land in
+# a tool log, an event, or the report. Lives here (not the orchestrator) so the report
+# renderer applies the same masking — a saved assessment renders clean too. Covers
+# "--flag value", "--flag=value", key=value, impacket user:password, and ldapsearch -w.
+_REDACT_CRED_RE = re.compile(
+    r'(?<=\s)(-p|-H|--password|--pass|--hashes|--hash|-hashes|--auth-cred|--secret'
+    r'|--token|-computer-pass|--computer-pass)(\s+|=)(\S+)'
+)
+_REDACT_KV_RE = re.compile(
+    r'\b(password|passwd|pwd|pass|secret|token)=([^\s,;]+)', re.IGNORECASE
+)
+# impacket-style [domain/]user:password — mask the password, keep any @target. The
+# user class excludes '/' so it can't span path segments (e.g. cd /a/b), and requires
+# a domain/user before ':' so host:port and URLs are left alone.
+_REDACT_IMPACKET_RE = re.compile(r'([\w.$-]+/[^\s:@/]+):([^\s@]+)')
+# ldapsearch bind password. -w is a wordlist in ffuf/gobuster, so only redact it in an
+# ldapsearch invocation.
+_REDACT_LDAP_W_RE = re.compile(r'(?<=\s)(-w)(\s+|=)(\S+)')
+_PORTSPEC_RE = re.compile(r'^[\d,\-:]+$')
+
+
+def redact_command(cmd_str):
+    """Mask credential values in a reconstructed CLI string. Non-strings pass through."""
+    if not isinstance(cmd_str, str) or not cmd_str:
+        return cmd_str
+
+    def _flag_sub(m):
+        flag, sep, val = m.group(1), m.group(2), m.group(3)
+        if flag == "-p" and _PORTSPEC_RE.match(val):    # nmap -p is a port spec
+            return m.group(0)
+        return f"{flag}{sep}***"
+
+    cmd_str = _REDACT_CRED_RE.sub(_flag_sub, cmd_str)
+    cmd_str = _REDACT_KV_RE.sub(r"\1=***", cmd_str)
+    cmd_str = _REDACT_IMPACKET_RE.sub(r"\1:***", cmd_str)
+    if "ldapsearch" in cmd_str:
+        cmd_str = _REDACT_LDAP_W_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}***", cmd_str)
+    return cmd_str
 
 
 # ── subprocess environment hygiene ─────────────────────────────────────────────

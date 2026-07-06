@@ -510,7 +510,7 @@
             {% if tc.error %}
               <span class="err">{{ tc.error }}</span>
             {% elif tc.command_str %}
-              <span class="ok" style="font-family:var(--mono);font-size:11px">{{ tc.command_str[:120] }}</span>
+              <span class="ok" style="font-family:var(--mono);font-size:11px;word-break:break-all">{{ tc.command_str | redact_command | truncate(400, True, "…") }}</span>
             {% else %}
               <span class="ok">OK</span>
             {% endif %}

@@ -146,8 +146,8 @@ A penetration test was conducted against `{{ run.target }}`. {{ run.findings | l
 
 ## Appendix — Tool Execution Log
 
-| Tool | Timestamp | Result |
-|------|-----------|--------|
+| Tool | Timestamp | Command / Result |
+|------|-----------|------------------|
 {% for tc in run.tool_calls -%}
-| `{{ tc.tool_name }}` | {{ tc.timestamp.strftime("%H:%M:%S") }} | {{ ("ERROR: " + tc.error) if tc.error else "OK" }} |
+| `{{ tc.tool_name }}` | {{ tc.timestamp.strftime("%H:%M:%S") }} | {{ ("ERROR: " + tc.error) if tc.error else (("`" ~ (tc.command_str | redact_command | truncate(300, True, "…") | replace("|", "\\|")) ~ "`") if tc.command_str else "OK") }} |
 {% endfor %}
