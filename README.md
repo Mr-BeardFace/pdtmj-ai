@@ -221,9 +221,17 @@ Point the `local` provider at its base URL and pick a model:
 No API key is needed for a typical local server; if yours requires one, set it with
 `/key set local <api-key>`. The base URL persists to `config.yaml` (`local_base_url`).
 
-Configuration lives in `config.yaml` (copy `config.yaml.example`); API keys are
-read from the OS keyring or the env vars in `.env.example`. Neither `config.yaml`
-nor `.env` is tracked — see `.gitignore`.
+Configuration lives in `config.yaml` (copy `config.yaml.example`). A provider key
+is resolved in order: an explicit override, then the provider's env var (e.g.
+`ANTHROPIC_API_KEY`, see `.env.example`), then the OS keyring. The env var is
+checked **before** the keyring, so an exported key skips the keyring's unlock
+prompt on a headless or SSH session:
+
+```bash
+export ANTHROPIC_API_KEY='sk-ant-...'   # avoids the Secret Service prompt
+```
+
+Neither `config.yaml` nor `.env` is tracked — see `.gitignore`.
 
 ## Known limitations
 
