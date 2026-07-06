@@ -11,7 +11,7 @@ from typing import ClassVar, Optional
 
 from pydantic import BaseModel, Field, PrivateAttr
 
-from core.models import Surface, TestPlan
+from core.models import Surface, TestPlan, OperationalFact
 from core.utils import mask_secret
 
 # Tools whose results should not be cached (side effects or stateful)
@@ -131,6 +131,31 @@ def _extract_host(target: str) -> str:
     return t.strip("[]")
 
 
+def _is_loopback_host(value: str) -> bool:
+    """True for the loopback/localhost of ANY machine — an ambiguous identity (target
+    loopback vs the pivot's local forward vs the Kali box), so it must never be a
+    recorded host. A loopback service is recorded under its host's real IP with bind."""
+    h = _extract_host(value or "").split("%")[0]
+    return h in ("localhost", "::1") or h.startswith("127.")
+
+
+def internal_service_from_forward(result: dict):
+    """(host, port, bind) for the internal service a port_forward 'start' exposes, or
+    None (SOCKS/dynamic or incomplete). Loopback remote → host is the foothold with
+    bind='loopback'; an internal IP → that host itself, no bind."""
+    if result.get("action") != "start" or result.get("mode") == "dynamic":
+        return None
+    rhost = (result.get("remote_host") or "").strip()
+    rport = result.get("remote_port")
+    if not (rhost and rport):
+        return None
+    loop = _is_loopback_host(rhost)
+    host = (result.get("foothold") or "").strip() if loop else rhost
+    if not host:
+        return None
+    return {"host": host, "port": rport, "bind": "loopback" if loop else ""}
+
+
 # Result fields that hold the human-meaningful output of a tool call, in priority
 # order — used to keep a clean snippet (not the raw JSON envelope) so the next agent
 # sees actual command output, not "exit 0  out: 1450b".
@@ -232,6 +257,7 @@ class EngagementState(BaseModel):
     flags: list[Flag] = []          # CTF flags captured during the engagement
     auth_attempts: list[AuthAttempt] = []   # who/what was tried against which service
     persistence: list[PersistenceItem] = [] # footholds planted (for cleanup/report)
+    operational_facts: list[OperationalFact] = []  # confirmed act-on-this scaffolding (target/channel), NOT reported
     services: list[dict] = []        # agent-annotated service detail: {host,port,service,app,version,tech,os}
     scripts: list[dict] = []         # ad-hoc run_script library: {purpose,path,language,timestamp}
     handoffs: list[dict] = []        # per-agent close-out notes for the next agent: {agent,summary}
@@ -451,6 +477,7 @@ class EngagementState(BaseModel):
         return {
             "tool_log": len(self.tool_log),
             "persistence": len(self.persistence),
+            "operational_facts": len(self.operational_facts),
             "handoffs": len(self.handoffs),
             "_eng_script_calls": self._eng_script_calls,
             "_scripts_since_progress": self._scripts_since_progress,
@@ -490,13 +517,15 @@ class EngagementState(BaseModel):
         for ip, v in other.recon.host_names.items():
             self.recon.host_names.setdefault(ip, v)
 
-        # services (upsert by host/port)
+        # services (upsert by host/port/vhost)
         for svc in other.services:
             self.annotate_service(
                 host=svc.get("host", ""), port=svc.get("port"),
                 service=svc.get("service", ""), app=svc.get("app", ""),
                 version=svc.get("version", ""), tech=svc.get("tech", ""),
-                os=svc.get("os", ""), source_agent=svc.get("source_agent", ""))
+                os=svc.get("os", ""), vhost=svc.get("vhost", ""),
+                bind=svc.get("bind", ""),
+                source_agent=svc.get("source_agent", ""))
 
         # credentials / flags (content-deduped)
         for c in other.credentials:
@@ -553,6 +582,10 @@ class EngagementState(BaseModel):
         # append-only collections — extend past the fork-time length
         self.tool_log.extend(other.tool_log[marks.get("tool_log", 0):])
         self.persistence.extend(other.persistence[marks.get("persistence", 0):])
+        # Operational facts a worker pinned — replay through record_fact so the canonical
+        # state's dedup/supersede/cap apply (not a blind extend that could dupe or overflow).
+        for f in other.operational_facts[marks.get("operational_facts", 0):]:
+            self.record_fact(f.kind, f.statement, f.evidence, f.scope)
         self.handoffs.extend(other.handoffs[marks.get("handoffs", 0):])
         if len(self.handoffs) > self._HANDOFF_KEEP:
             self.handoffs = self.handoffs[-self._HANDOFF_KEEP:]
@@ -610,37 +643,56 @@ class EngagementState(BaseModel):
 
     def annotate_service(self, host: str, port=None, service: str = "", app: str = "",
                          version: str = "", tech: str = "", os: str = "",
-                         hostname: str = "", source_agent: str = "") -> dict:
+                         hostname: str = "", vhost: str = "", bind: str = "",
+                         source_agent: str = "") -> dict:
         """Record/refine the agent's structured understanding of a service. Upgrades
-        the existing entry for the same (host, port) — only non-empty fields
-        overwrite, so successive calls sharpen the picture without wiping it."""
+        the existing entry for the same (host, port, vhost) — only non-empty fields
+        overwrite. hostname = the machine's DNS/LDAP identity; vhost = a website (HTTP
+        Host header) served on this IP:port; bind = network reachability ('loopback' for
+        a service bound to the host's 127.0.0.1, reachable only via a pivot)."""
         host = (host or "").strip()
+        vhost = _extract_host(vhost or "")
         # OS is host-level — also feed os_info so it shows on every row for the host.
         if os and host and host not in self.recon.os_info:
             self.recon.os_info[host] = os
-        # A vhost the agent identified for this IP — tie it on and auto-scope it
-        # (the target's vhosts are in scope). This is the LLM's call, made from
-        # the tool output, not a Python regex guessing at redirect text.
         if hostname and host:
-            self._register_vhost(host, hostname)
+            self._register_host_identity(host, hostname)
+        if vhost and host:
+            self._register_web_vhost(host, vhost)
         existing = next((s for s in self.services
-                         if s.get("host") == host and s.get("port") == port), None)
+                         if s.get("host") == host and s.get("port") == port
+                         and (s.get("vhost", "") or "") == vhost), None)
         if existing is None:
-            existing = {"host": host, "port": port, "service": "", "app": "",
-                        "version": "", "tech": "", "os": "", "source_agent": source_agent}
+            existing = {"host": host, "port": port, "vhost": vhost, "bind": "", "service": "",
+                        "app": "", "version": "", "tech": "", "os": "", "source_agent": source_agent}
             self.services.append(existing)
         for k, v in (("service", service), ("app", app), ("version", version),
-                     ("tech", tech), ("os", os)):
+                     ("tech", tech), ("os", os), ("bind", bind)):
             if v:
                 existing[k] = v
         return existing
 
-    def _register_vhost(self, ip: str, hostname: str) -> None:
-        """Tie a discovered hostname to an IP (PTR, resolved name, or HTTP
-        redirect target). If the IP is in scope, the hostname is the target's
-        vhost and is auto-added to scope — a vhost of your target IS your target.
-        Explicit out-of-scope entries still win (checked in in_scope)."""
-        host = _extract_host(hostname or "")
+    def _register_host_identity(self, ip: str, name: str) -> None:
+        """Tie the machine's DNS/LDAP hostname to an IP (PTR, resolved A record, LDAP
+        dNSHostName). In scope by IP → the name is in scope too. Fills the one Hostname
+        slot for the IP."""
+        host = _extract_host(name or "")
+        ip = (ip or "").strip()
+        if not host or not ip or host == ip:
+            return
+        try:
+            ipaddress.ip_address(host)
+            return                       # a bare IP is not a name
+        except ValueError:
+            pass
+        self.recon.host_names.setdefault(ip, host)
+        if self.in_scope(ip) and not self._matches_any(host, None, self.out_of_scope):
+            self.add_scope(host)
+
+    def _register_web_vhost(self, ip: str, vhost: str) -> None:
+        """A web vhost (HTTP Host header) served on this IP. Auto-scoped like the host's
+        other names, but NOT the machine identity — it never fills the Hostname slot."""
+        host = _extract_host(vhost or "")
         ip = (ip or "").strip()
         if not host or not ip or host == ip:
             return
@@ -649,7 +701,6 @@ class EngagementState(BaseModel):
             return                       # a bare IP is not a vhost
         except ValueError:
             pass
-        self.recon.host_names.setdefault(ip, host)
         if self.in_scope(ip) and not self._matches_any(host, None, self.out_of_scope):
             self.add_scope(host)
 
@@ -838,6 +889,43 @@ class EngagementState(BaseModel):
         self.plans.append(plan)
         return plan
 
+    _FACT_CAP = 8            # confirmed facts rendered/kept (single-box CTF)
+    _FACT_INVAL_KEEP = 2     # recent corrections shown so the next run sees the flip
+
+    def record_fact(self, kind: str, statement: str, evidence: str = "",
+                    scope: str = "", supersedes: str = "") -> OperationalFact:
+        """Pin a confirmed operational fact. Same statement+scope refreshes in place
+        (no dupes); `supersedes` retires a prior fact the correction replaces. Capped so
+        the block stays a few lines — it must REPLACE re-derivation, not add to context."""
+        norm = " ".join((statement or "").lower().split())
+        if supersedes:
+            for f in self.operational_facts:
+                if f.id == supersedes:
+                    f.status = "invalidated"
+        # Dedup: refresh an existing confirmed fact rather than stack a copy.
+        for f in self.operational_facts:
+            if (f.status == "confirmed" and f.scope == scope
+                    and " ".join(f.statement.lower().split()) == norm):
+                if evidence:
+                    f.evidence = evidence
+                f.timestamp = now_local()
+                return f
+        fact = OperationalFact(kind=kind, statement=statement,
+                               evidence=evidence, scope=scope)
+        self.operational_facts.append(fact)
+        self._evict_facts()
+        return fact
+
+    def _evict_facts(self) -> None:
+        """Keep at most _FACT_CAP confirmed (oldest out first) and the most recent
+        _FACT_INVAL_KEEP invalidated — bounded by construction."""
+        confirmed = [f for f in self.operational_facts if f.status == "confirmed"]
+        inval     = [f for f in self.operational_facts if f.status == "invalidated"]
+        confirmed = confirmed[-self._FACT_CAP:]
+        inval     = inval[-self._FACT_INVAL_KEEP:]
+        keep = {id(f) for f in confirmed} | {id(f) for f in inval}
+        self.operational_facts = [f for f in self.operational_facts if id(f) in keep]
+
     def intel_signature(self, findings: list | None = None) -> tuple:
         """A coarse fingerprint of accumulated intel. If this is unchanged after a
         full cycle, the surface produced nothing new and is exhausted.
@@ -921,6 +1009,26 @@ class EngagementState(BaseModel):
                 if secret_format and not existing.secret_format:
                     existing.secret_format = secret_format
                 return existing
+        # Attribution: a NAMED credential whose secret matches an existing
+        # USERNAMELESS record of the same type fills in that blank username (a
+        # password found with no known user, later tied to one) — updating the one
+        # line instead of adding a second. It only ever fills a BLANK: a different
+        # known username (password reuse across users) never matches here, so distinct
+        # users stay distinct records, and a different secret is untouched entirely.
+        # Never downgrades a verified record.
+        if username:
+            for existing in self.credentials:
+                if (existing.secret == secret and existing.cred_type == cred_type
+                        and not existing.username):
+                    existing.username = username
+                    existing.verified = existing.verified or verified
+                    if location and not existing.location:
+                        existing.location = location
+                    if secret_format and not existing.secret_format:
+                        existing.secret_format = secret_format
+                    if source_agent and not existing.source_agent:
+                        existing.source_agent = source_agent
+                    return existing
         cred = Credential(
             cred_type=cred_type, username=username, secret=secret,
             secret_masked=mask_secret(secret), secret_format=secret_format,
@@ -1086,6 +1194,7 @@ class EngagementState(BaseModel):
             "credentials":   creds,
             "flags":         [f.model_dump(mode="json") for f in self.flags],
             "persistence":   [p.model_dump(mode="json") for p in self.persistence],
+            "operational_facts": [f.model_dump(mode="json") for f in self.operational_facts],
             "recon":         {"os_info":    dict(self.recon.os_info),
                               "host_names": dict(self.recon.host_names)},
             "scope_targets": list(self.scope_targets),
@@ -1165,7 +1274,7 @@ class EngagementState(BaseModel):
                 # call: it records that via record_service(hostname=...).
                 for hn in host.get("hostnames", []):
                     if hn:
-                        self._register_vhost(ip, hn)
+                        self._register_host_identity(ip, hn)
 
         elif tool_name == "masscan":
             host = result.get("target", "")
@@ -1180,6 +1289,28 @@ class EngagementState(BaseModel):
                         "service":  "",
                         "version":  "",
                     })
+
+        elif tool_name == "port_forward":
+            # A pivot exposes an internal service — record it on the board so it isn't
+            # invisible. Loopback service → it lives ON the foothold (bind=loopback);
+            # an internal IP → its own host, reached via the foothold. Either way the
+            # channel (where to hit it locally) is pinned as a fact.
+            if result.get("action") == "start":
+                foothold = (result.get("foothold") or "").strip()
+                local    = result.get("local", "")
+                svc = internal_service_from_forward(result)
+                if svc:
+                    self.annotate_service(host=svc["host"], port=svc["port"],
+                                          bind=svc["bind"], source_agent=source_agent)
+                    where = "loopback" if svc["bind"] else svc["host"]
+                    self.record_fact(kind="channel",
+                        statement=(f"{where}:{svc['port']} on {svc['host']} "
+                                   f"reachable at {local} via {foothold}"),
+                        evidence=result.get("spec", local), scope=svc["host"])
+                elif foothold:                       # SOCKS/dynamic — whole-subnet channel
+                    self.record_fact(kind="channel",
+                        statement=f"SOCKS proxy at {local} reaches the internal network via {foothold}",
+                        evidence=result.get("spec", local), scope=foothold)
 
         elif tool_name in ("enum4linux_ng", "rpcclient", "ldapsearch_query"):
             for u in result.get("users", []):
@@ -1283,24 +1414,49 @@ class EngagementState(BaseModel):
                         lines.append(f"  {para.strip()}")
             lines.append("")
 
+        # Confirmed operational facts — the durable "how to act on this target" the next
+        # run would otherwise re-derive from the artifacts (target arch, working channel,
+        # blind-shell status). Sits up top with the handoff: read it before the tool log.
+        # A corrected fact renders as ✗ CORRECTED for a cycle so a reversal is impossible.
+        if self.operational_facts:
+            confirmed = [f for f in self.operational_facts if f.status == "confirmed"]
+            inval     = [f for f in self.operational_facts if f.status == "invalidated"]
+            if confirmed or inval:
+                lines.append("**Confirmed operational facts** (established this engagement — "
+                             "act on these, do NOT re-derive or contradict them):")
+                for f in confirmed[-self._FACT_CAP:]:
+                    sc = f" [{f.scope}]" if f.scope else ""
+                    lines.append(f"  • ({f.kind}){sc} {f.statement}  (id={f.id})")
+                    if f.evidence:
+                        ev = " ".join(f.evidence.split())
+                        lines.append(f"      evidence: {ev[:120]}" + ("…" if len(ev) > 120 else ""))
+                for f in inval[-self._FACT_INVAL_KEEP:]:
+                    lines.append(f"  ✗ CORRECTED (was wrong): {f.statement}")
+                lines.append("")
+
         # Tool log — last 30 entries. The most recent few also carry their actual
         # output snippet (not just the one-line summary) so the next agent inherits
         # the real command results, not "exit 0 out:1450b". Older entries stay terse;
         # full raw output for any of them is in the captured artifacts (below).
         if self.tool_log:
-            lines.append("**Work already completed** (do not repeat these):")
+            lines.append("**Work already completed** (do not repeat these — full output is in the captured artifacts):")
             recent = self.tool_log[-30:]
-            detail_from = len(recent) - 6        # show output for the last 6 only
+            detail_from = len(recent) - 6        # show a short output head for the last 6 only
             for i, entry in enumerate(recent):
                 cmd = entry.command or entry.tool_name
                 lines.append(f"  [{entry.agent}] {cmd}")
+                # The summary IS the supporting line — the distilled result of the call.
                 if entry.summary:
                     lines.append(f"    → {entry.summary}")
+                # Raw output rides as a short head only; the full bytes are on disk
+                # (artifact index below) — grep_artifact pulls them on demand.
                 if i >= detail_from and entry.truncated_output:
                     out = entry.truncated_output.strip()
-                    out = out if len(out) <= 600 else out[:600] + "…"
-                    for ln in out.splitlines()[:12]:
-                        lines.append(f"      {ln}")
+                    body = out.splitlines()
+                    for ln in body[:4]:
+                        lines.append(f"      {ln[:300]}" + ("…" if len(ln) > 300 else ""))
+                    if len(body) > 4 or len(out) > 1200:
+                        lines.append("      … (full output in artifacts — grep_artifact to query)")
             lines.append("")
 
         # Credentials
@@ -1364,36 +1520,53 @@ class EngagementState(BaseModel):
         if svc_bits:
             lines.append(f"**Identified services:** {'; '.join(svc_bits)}")
 
-        # Findings summary
-        if all_findings:
+        # Findings summary. Sorted CONFIRMED-first, then by severity — a proven fact
+        # always outranks an unconfirmed lead, so an agent-labelled "critical" guess
+        # can't dominate the block over something actually reproduced. Each detailed
+        # entry renders one evidence line (claim + the single supporting datum); full
+        # context lives in the artifacts.
+        main_findings = [f for f in (all_findings or []) if f.type != "dead_end"]
+        if main_findings:
             sev_sort = sorted(
-                all_findings,
-                key=lambda f: SEV_ORDER.get(f.severity, 0),
+                main_findings,
+                key=lambda f: (f.verified, SEV_ORDER.get(f.severity, 0)),
                 reverse=True,
             )
             lines.append(
                 f"\n**Findings so far ({len(sev_sort)} total)** — [CONFIRMED] = reproduced/"
                 "exploited with evidence; [UNCONFIRMED] = a LEAD still to be proven (e.g. a CVE "
                 "inferred from a version/banner), NOT an established fact:")
-            # The most significant handful carry a one-line description + a key
-            # evidence snippet so the next agent inherits a real lead, not just a
-            # title; the long tail stays title-only to keep the block bounded.
-            DETAIL_N = 6
-            for i, f in enumerate(sev_sort[:20]):
+            DETAIL_N = 3
+            for i, f in enumerate(sev_sort[:10]):
                 status = "CONFIRMED" if f.verified else "UNCONFIRMED"
                 lines.append(f"  [{f.severity.upper()}] [{status}] {f.title}  (id={f.id})")
                 if i < DETAIL_N:
                     desc = " ".join((f.description or "").split())
                     if desc:
-                        lines.append(f"      {desc[:240]}" + ("…" if len(desc) > 240 else ""))
-                    bits = []
-                    for k, v in list((f.evidence or {}).items())[:3]:
-                        vs = " ".join(str(v).split())
-                        bits.append(f"{k}={vs[:80] + ('…' if len(vs) > 80 else '')}")
-                    if bits:
-                        lines.append(f"      evidence: {'; '.join(bits)}")
-            if len(sev_sort) > 20:
-                lines.append(f"  ... and {len(sev_sort) - 20} more")
+                        lines.append(f"      {desc[:140]}" + ("…" if len(desc) > 140 else ""))
+                    ev = next(iter((f.evidence or {}).items()), None)
+                    if ev:
+                        vs = " ".join(str(ev[1]).split())
+                        lines.append(f"      evidence: {ev[0]}={vs[:100]}" + ("…" if len(vs) > 100 else ""))
+            if len(sev_sort) > 10:
+                lines.append(f"  ... and {len(sev_sort) - 10} more")
+            lines.append("")
+
+        # Confirmed dead-ends — banked negatives (an attempt that provably failed), so
+        # they aren't re-checked. Gated: must be verified AND carry evidence (a command
+        # behind it), never an exploitability guess. Advisory, not absolute — scoped to
+        # the access noted, and a new foothold/credential can reopen them.
+        dead_ends = [f for f in (all_findings or [])
+                     if f.type == "dead_end" and f.verified and f.evidence]
+        if dead_ends:
+            lines.append("**Confirmed dead-ends** (don't re-check at the SAME access level — "
+                         "a new foothold/credential can reopen these):")
+            for f in dead_ends[:12]:
+                lines.append(f"  ✗ {f.title}")
+                ev = next(iter((f.evidence or {}).items()), None)
+                if ev:
+                    vs = " ".join(str(ev[1]).split())
+                    lines.append(f"      {ev[0]}={vs[:100]}" + ("…" if len(vs) > 100 else ""))
             lines.append("")
 
         lines += [

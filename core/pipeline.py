@@ -322,7 +322,7 @@ class EngagementDriver:
             self._surface_cap_announced = True
             self._activity(
                 f"⚠ Surface cap reached ({self.max_surfaces}) — no longer registering "
-                "newly discovered surfaces. Raise max_surfaces if the engagement is still productive."
+                "newly discovered surfaces. Raise surfaces if the engagement is still productive."
             )
         sig_after = self.state.intel_signature(self.all_findings)
 
@@ -332,7 +332,7 @@ class EngagementDriver:
             surface.status = "exhausted"
             self._activity(
                 f"⚠ {surface.label} hit cycle cap ({self.max_cycles_per_surface}) — "
-                "moving on. Raise max_cycles_per_surface to go deeper."
+                "moving on. Raise cycles_per_surface to go deeper."
             )
             return
 
@@ -342,7 +342,7 @@ class EngagementDriver:
         # intel-signature heuristic misses (minor unverified intel keeps flipping it).
         from core.config import get as _get
         progress_after = self._progress_count()
-        dry_cap = _get("max_dry_cycles_per_surface", 2)
+        dry_cap = _get("dry_cycles_per_surface", 2)
         if progress_after > progress_before:
             self._surface_dry_cycles[surface.id] = 0
         else:
@@ -378,7 +378,7 @@ class EngagementDriver:
                         self._exploit_objective(surface, plan))
 
         from core.config import get
-        if (get("validation_enabled", False) and VALIDATE_AGENT in self.agents
+        if (get("validation", False) and VALIDATE_AGENT in self.agents
                 and self._check_control() == "continue"):
             self._banner(f"Validation — {surface.label}")
             self._run_agent(VALIDATE_AGENT, surface.host,

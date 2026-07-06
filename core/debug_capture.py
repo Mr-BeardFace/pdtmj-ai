@@ -1,6 +1,6 @@
 """Full LLM/command transcript capture for debugging.
 
-When enabled (config `debug_capture`, toggled with /debug), every agent turn is
+When enabled (config `debug`, toggled with /config debug), every agent turn is
 written to `<engagement results dir>/llm_debug.log` in the order it happens:
 
     ▶ REQUEST   (full system prompt + tool list + full message history)

@@ -24,6 +24,22 @@ _FORMAT_MODES = {
 }
 
 
+# hashcat lines that mean it never ran a real crack (parse/mode/device failure),
+# so an empty outfile is not an exhausted keyspace — reported as an error, not a miss.
+_FATAL_MARKERS = (
+    "token length exception", "no hashes loaded", "separator unmatched",
+    "signature unmatched", "salt-value exception", "salt-length exception",
+    "no devices found", "no devices left", "self-test failed",
+    "already an instance",
+)
+
+
+def _tail(text: str, lines: int = 8, chars: int = 500) -> str:
+    """Last few lines of hashcat's output — enough to show why it stopped."""
+    t = "\n".join(text.splitlines()[-lines:])
+    return t[-chars:]
+
+
 def hashcat_crack(hash: str, hash_mode: int | None = None,
                   hash_format: str | None = None,
                   username: str | None = None,
@@ -73,14 +89,19 @@ def hashcat_crack(hash: str, hash_mode: int | None = None,
     if have_rules:
         passes.append(("rockyou+OneRule", wordlist, rule_args))
 
+    # Per-run session name so concurrent hashcat jobs (or a stray/manual instance)
+    # don't collide on the default session lock — "Already an instance running".
+    session = "pdtmj_" + os.path.basename(out_path)
+
     passes_run: list[str] = []
     last_cmd = ""
+    last_diag = ""
     try:
         for name, wl_path, extra in passes:
             open(out_path, "w").close()  # clear outfile between passes
             cmd = [
                 binary, "-m", str(mode), "-a", "0",
-                "--quiet", "--potfile-disable",
+                "--quiet", "--potfile-disable", "--session", session,
                 "--outfile-format", "2",          # plaintext only — trivial to parse
                 "-o", out_path,
                 hash_path, wl_path, *extra,
@@ -88,9 +109,21 @@ def hashcat_crack(hash: str, hash_mode: int | None = None,
             last_cmd = " ".join(cmd)
             passes_run.append(name)
             try:
-                runner.run(cmd, capture_output=True, text=True)  # no timeout by design
+                proc = runner.run(cmd, capture_output=True, text=True)  # no timeout by design
             except Exception as e:  # noqa: BLE001
                 return {"error": f"hashcat failed: {e}", "_command": last_cmd}
+
+            last_diag = _tail(((proc.stdout or "") + "\n" + (proc.stderr or "")).strip())
+            # hashcat never ran a real attempt — it couldn't parse the hash for this
+            # mode (wrong -m, or a malformed / salt-stripped hash) or found no device.
+            # That's NOT an exhausted keyspace; a silent "not cracked" would hide a
+            # crackable hash, so surface hashcat's own words and stop.
+            fatal = next((s for s in _FATAL_MARKERS if s in last_diag.lower()), None)
+            if fatal:
+                return {"error": "hashcat rejected the input before cracking — check "
+                                 "the hash format/mode (or that a device is available)",
+                        "hashcat_said": last_diag, "mode": mode,
+                        "passes_run": passes_run, "_command": last_cmd}
 
             with open(out_path, encoding="utf-8", errors="replace") as f:
                 plains = [ln.strip() for ln in f if ln.strip()]
@@ -111,6 +144,7 @@ def hashcat_crack(hash: str, hash_mode: int | None = None,
         return {
             "cracked": [], "cracked_count": 0, "passes_run": passes_run,
             "note": f"not cracked ({', '.join(passes_run)})",
+            "hashcat_said": last_diag, "mode": mode,
             "_command": last_cmd,
         }
     finally:
@@ -134,7 +168,10 @@ TOOL_DEFINITION = {
         "engagement intel — already-compromised passwords, usernames, hostnames, app/product "
         "names, and obvious mutations — for the highest-yield first pass. Provide the hash and "
         "either its hashcat mode number or a recognized format label (NTLM, NetNTLMv2, "
-        "Kerberos-TGS/Kerberoast, Kerberos-AS-REP, bcrypt, md5, sha256, …). Pass username/location "
+        "Kerberos-TGS/Kerberoast, Kerberos-AS-REP, bcrypt, md5, sha256, …). For a SALTED scheme "
+        "whose salt is stored separately (the app's config or DB, not the hash table), include the "
+        "salt — pass the hash in the salted mode's format (usually `hash:salt`) with the matching "
+        "salted mode; a bare hash or a saltless mode won't crack it. Pass username/location "
         "so a cracked plaintext is recorded against the right account. A recovered password is "
         "added to the credential store automatically."
     ),

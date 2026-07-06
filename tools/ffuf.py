@@ -24,8 +24,16 @@ def ffuf(
     if not shutil.which("ffuf"):
         return {"error": "ffuf not found in PATH"}
 
-    # Inject FUZZ keyword if not present
-    if "FUZZ" not in url:
+    # Inject FUZZ into the URL path only if the caller hasn't placed it anywhere in
+    # the request already — a Host header (vhost fuzzing), a POST body, or extra_args.
+    # Otherwise vhost fuzzing (FUZZ in Host:) would wrongly also fuzz the URL path.
+    fuzz_present = (
+        "FUZZ" in url
+        or any("FUZZ" in f"{k}{v}" for k, v in (headers or {}).items())
+        or (data and "FUZZ" in data)
+        or (extra_args and "FUZZ" in extra_args)
+    )
+    if not fuzz_present:
         url = url.rstrip("/") + "/FUZZ"
 
     wl = wordlist or DEFAULT_WORDLIST
@@ -51,9 +59,13 @@ def ffuf(
         if data:
             cmd += ["-d", data]
 
-        cmd += ["-mc", match_codes or "200,201,204,301,302,307,401,403,405"]
+        # Don't add the default -mc if the caller already set match codes via extra_args.
+        if match_codes:
+            cmd += ["-mc", match_codes]
+        elif not (extra_args and "-mc" in extra_args):
+            cmd += ["-mc", "200,201,204,301,302,307,401,403,405"]
 
-        if filter_size:
+        if filter_size and not (extra_args and "-fs" in extra_args):
             cmd += ["-fs", filter_size]
 
         # Free-form passthrough — any additional ffuf flag (matchers, filters,
@@ -62,7 +74,7 @@ def ffuf(
             cmd += shlex.split(extra_args)
 
         try:
-            runner.run(cmd, capture_output=True, text=True, timeout=300)
+            proc = runner.run(cmd, capture_output=True, text=True, timeout=300)
         except subprocess.TimeoutExpired:
             return {"error": "ffuf timed out", "url": url}
 
@@ -70,7 +82,8 @@ def ffuf(
             with open(out_path, encoding="utf-8") as f:
                 raw = json.load(f)
         except (json.JSONDecodeError, FileNotFoundError):
-            return {"error": "ffuf produced no parseable output", "url": url}
+            return {"error": "ffuf produced no parseable output", "url": url,
+                    "ffuf_said": runner.diagnostic(proc), "_command": " ".join(cmd)}
 
         results = []
         for r in raw.get("results", []):
@@ -85,8 +98,11 @@ def ffuf(
                 "redirect":     r.get("redirectlocation", ""),
             })
 
-        return {"url": url, "wordlist": wl, "results": results, "count": len(results),
-                "_command": " ".join(cmd)}
+        out = {"url": url, "wordlist": wl, "results": results, "count": len(results),
+               "_command": " ".join(cmd)}
+        if not results and (diag := runner.diagnostic(proc)):
+            out["tool_error"] = diag       # a failure, not a clean empty
+        return out
 
     finally:
         try:

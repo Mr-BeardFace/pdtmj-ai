@@ -1,11 +1,11 @@
-confirm_exploitation: true
-exploitation_enabled: true
+confirm_exploit: true
+exploitation: true
 global_model: null
-max_turns_default: 60
-extend_turns_on_progress: true
-max_turns_progress_factor: 5
+agent_turns: 60
+sliding_turns: true
+turn_ceiling_factor: 5
 agent_models: {}
-temperature_default: 0.4
+temp: 0.4
 agent_temperatures:
   pentest/report: 0.2
 active_provider: anthropic
@@ -14,39 +14,39 @@ active_provider: anthropic
 #   Ollama:    http://localhost:11434/v1
 #   LM Studio: http://localhost:1234/v1
 local_base_url: null
-max_cycles_per_surface: 4
-max_dry_cycles_per_surface: 2
-max_total_cycles: 40
-max_surfaces: 50
-parallel_enabled: false
-max_parallel_agents: 3
+cycles_per_surface: 4
+dry_cycles_per_surface: 2
+total_cycles: 40
+surfaces: 50
+parallel: false
+parallel_agents: 3
 surface_fanout: 3
 hypothesis_fanout: 3
-hypothesis_worker_turns: 12
-frontier_max_actions: null
-frontier_attempts_cap: 3
-validation_enabled: false
+hypothesis_turns: 12
+frontier_actions: null
+frontier_attempts: 3
+validation: false
 llm_routing: true
 router_model: null
-repeat_nudge_threshold: 3
+repeat_nudge: 3
 nudge_exempt_tools:
 - oob_listener
 - check_jobs
 - list_shells
 - wait
-pivot_nudge_after_failures: 4
-run_script_volume_nudge: 10
-grind_nudge_after_scripts: 12
+pivot_nudge: 4
+reuse_nudge: 10
+grind_nudge: 12
 kill_exempt_tools:
 - apt_install
 - pip_install
-allow_package_install: true
-allow_web_search: false
+package_install: true
+web_search: false
 
 # Debug: capture full LLM request/response/command transcripts to llm_debug.log in
 # the engagement results dir. Unredacted (real secrets in plaintext) — leave off
-# unless debugging. Toggle live with /config debug_capture on|off.
-debug_capture: false
+# unless debugging. Toggle live with /config debug on|off.
+debug: false
 
 hashcat_wordlist: /usr/share/wordlists/rockyou.txt
 hashcat_rules: /usr/share/hashcat/rules/OneRuleToRuleThemAll.rule

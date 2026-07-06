@@ -195,3 +195,15 @@ def run(cmd, *, capture_output: bool = False, text: bool = False,
     if check and popen.returncode:
         raise subprocess.CalledProcessError(popen.returncode, cmd, out, err)
     return completed
+
+
+def diagnostic(proc: subprocess.CompletedProcess, lines: int = 8, chars: int = 500) -> str:
+    """Tail of a finished process's stderr (or stdout) when it exited NONZERO — for
+    surfacing why a tool produced nothing, so a run error isn't reported as a clean
+    empty result. Empty string on a clean (exit 0) run, whose stderr is often just
+    progress/log noise. Callers that key off specific messages (crackers) match those
+    directly rather than relying on the exit code."""
+    if not proc.returncode:
+        return ""
+    text = (proc.stderr or "").strip() or (proc.stdout or "").strip()
+    return "\n".join(text.splitlines()[-lines:])[-chars:]

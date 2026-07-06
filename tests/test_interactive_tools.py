@@ -41,35 +41,35 @@ def test_tool_schemas_have_required_host():
 # ── exploitation toggle / phases ──────────────────────────────────────────────
 
 def test_resolve_phases_exploit_on(monkeypatch):
-    monkeypatch.setattr(config, "get", lambda k, d=None: True if k == "exploitation_enabled" else d)
+    monkeypatch.setattr(config, "get", lambda k, d=None: True if k == "exploitation" else d)
     from core.intake import resolve_phases
     out = resolve_phases([])
     assert "exploitation" in out and "discovery" in out and "reporting" in out
 
 
 def test_resolve_phases_exploit_off(monkeypatch):
-    monkeypatch.setattr(config, "get", lambda k, d=None: False if k == "exploitation_enabled" else d)
+    monkeypatch.setattr(config, "get", lambda k, d=None: False if k == "exploitation" else d)
     from core.intake import resolve_phases
     assert "exploitation" not in resolve_phases(["exploitation"])
 
 
 def test_brief_from_intent_respects_toggle(monkeypatch):
-    monkeypatch.setattr(config, "get", lambda k, d=None: True if k == "exploitation_enabled" else d)
+    monkeypatch.setattr(config, "get", lambda k, d=None: True if k == "exploitation" else d)
     from core.intake import brief_from_intent
     brief = brief_from_intent({"target": "10.0.0.5", "objective": "scan"}, "scan it")
     assert brief.exploitation_allowed is True       # on by default now
 
 
 def test_config_exploitation_toggles(monkeypatch):
-    # Exploitation toggle moved from /exploit to /config exploitation_enabled.
+    # Exploitation toggle moved from /exploit to /config exploitation.
     store = {}
     monkeypatch.setattr(config, "set_value", lambda k, v: store.__setitem__(k, v))
     monkeypatch.setattr(config, "get", lambda k, d=None: store.get(k, d))
     from ui.commands import dispatch
-    _, ok = dispatch("/config exploitation_enabled off")
-    assert ok and store["exploitation_enabled"] is False
-    _, ok = dispatch("/config exploitation_enabled on")
-    assert ok and store["exploitation_enabled"] is True
+    _, ok = dispatch("/config exploitation off")
+    assert ok and store["exploitation"] is False
+    _, ok = dispatch("/config exploitation on")
+    assert ok and store["exploitation"] is True
 
 
 def test_info_shows_exploitation():

@@ -17,6 +17,11 @@ never drop tables or DoS to prove a point.
 - `nmap -sV -sC` / `nuclei_scan` tech-detection → server, framework, CMS, version.
 - `http_request` `/robots.txt`, `/sitemap.xml`; mine HTML/JS for linked paths.
 
+**Identified a specific product? Load its dedicated playbook** for the worked exploit:
+Tomcat → `tomcat`, Jenkins → `jenkins`, Grafana → `grafana`, Kibana → `kibana`,
+SonarQube → `sonarqube`, Splunk → `splunkd`, Java RMI/JMX/JDWP → `java-rmi`. The
+class-level techniques below still apply to any app.
+
 ## 2. Exhaustive content discovery (the core)
 - `nuclei_scan` for CVEs, exposed panels, default creds, security headers.
 - `gobuster_dir` with stack-appropriate extensions (PHP: `php,bak,zip,sql,inc`;
@@ -48,6 +53,12 @@ never drop tables or DoS to prove a point.
 - **API** → GraphQL introspection, undocumented methods (PUT/DELETE), old API versions.
 - **Headers/client** → CORS reflection (`Origin: https://evil.com`), missing CSP/HSTS.
 - **Blind** → `oob_listener` for blind SSRF/RCE/XXE.
+
+**Config & secrets — pull these the moment you can read files** (LFI, path traversal, a backup file, or a foothold). An app's config holds the DB credentials, the *password-hashing scheme* (algorithm, salt, iterations — you need it to crack the user/hash table you found), and session/signing secrets:
+- PHP: `config.php`, `config.inc.php`, `.env` (Laravel), `wp-config.php` (WordPress), `configuration.php` (Joomla), `settings.php` (Drupal)
+- ASP.NET: `web.config`, `appsettings.json` · Java: `application.properties`/`.yml`, `WEB-INF/web.xml`, `context.xml`
+- Node: `.env`, `config/*.json` · Python: `settings.py` (Django), `config.py`/`.env` (Flask) · Ruby: `config/database.yml`, `config/secrets.yml`
+- Anywhere: `.env`, `.git/` (config + history), `docker-compose.yml`, and backup variants (`.bak`, `.old`, `~`, `.swp`).
 
 ## 4. Confirm
 A finding is verified only with concrete proof: SQLi = extracted data; XSS = executing

@@ -18,6 +18,40 @@ def _post(port: int, data: bytes, method: str = "POST"):
     urllib.request.urlopen(req, timeout=5).read()
 
 
+def test_empty_poll_hint_after_streak():
+    # oob is exempt from the engine loop-nudge, so this hint is the only thing that
+    # tells an agent it's polling a callback that never arrives (c03 polled 51x).
+    oob._received = []
+    oob._empty_checks = 0
+    oob._last_check_count = 0
+    oob._listener_ip = "10.10.14.5"
+    for _ in range(oob._EMPTY_HINT_AFTER):
+        r = oob.oob_listener("check")
+    assert "hint" in r and "never executed" in r["hint"] or "reach" in r["hint"]
+    # a callback resets the streak — no hint
+    oob._received.append({"path": "/x"})
+    r = oob.oob_listener("check")
+    assert "hint" not in r and r["callback_fired"]
+
+
+def test_default_port_cascades_past_a_bind_failure(monkeypatch):
+    # Omitting port cascades through _DEFAULT_PORTS, skipping any that won't bind.
+    monkeypatch.setattr(oob, "_get_interface_ip", lambda iface: "127.0.0.1")
+    real, bad = oob.http.server.HTTPServer, 1
+    def fake(addr, handler):
+        if addr[1] == bad:
+            raise OSError("address already in use")
+        return real(addr, handler)
+    monkeypatch.setattr(oob.http.server, "HTTPServer", fake)
+    free = _free_port()
+    monkeypatch.setattr(oob, "_DEFAULT_PORTS", (bad, free))
+    try:
+        r = oob.oob_listener("start", interface="eth0")     # no port → cascade
+        assert r["status"] == "listening" and r["port"] == free
+    finally:
+        oob.oob_listener("stop")
+
+
 def test_posted_body_captured_whole(monkeypatch):
     # The fix: a key/file too big for a URL is POSTed in the body and comes back
     # WHOLE under 'bodies' — the agent's "offload it another way" path actually works.

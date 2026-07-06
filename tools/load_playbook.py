@@ -13,10 +13,20 @@ import re
 from core.paths import PLAYBOOKS_DIR
 
 
+def _index() -> dict:
+    """stem (lowercased) → path for every playbook, searched recursively so
+    category subdirs (playbooks/database/redis.md) load by bare name. First match
+    wins on a stem collision."""
+    out: dict = {}
+    if PLAYBOOKS_DIR.exists():
+        for p in sorted(PLAYBOOKS_DIR.rglob("*.md")):
+            out.setdefault(p.stem.lower(), p)
+    return out
+
+
 def _available() -> list[str]:
-    if not PLAYBOOKS_DIR.exists():
-        return []
-    return sorted(p.stem for p in PLAYBOOKS_DIR.glob("*.md"))
+    # `_`-prefixed files (shared includes) are loadable but kept off the agent list.
+    return sorted(s for s in _index() if not s.startswith("_"))
 
 
 def _strip_frontmatter(text: str) -> str:
@@ -32,13 +42,14 @@ def load_playbook(names) -> dict:
         return {"error": "No playbook name given.", "available": _available()}
 
     base = PLAYBOOKS_DIR.resolve()
+    index = _index()
     blocks: list[str] = []
     loaded:  list[str] = []
     missing: list[str] = []
     for n in names:
-        path = (PLAYBOOKS_DIR / f"{n}.md").resolve()
-        # Path guard — never escape the playbooks directory.
-        if not str(path).startswith(str(base)) or not path.exists():
+        path = index.get(n)
+        # Path guard — never load anything outside the playbooks directory.
+        if path is None or not str(path.resolve()).startswith(str(base)):
             missing.append(n)
             continue
         blocks.append(_strip_frontmatter(path.read_text(encoding="utf-8")))

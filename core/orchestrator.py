@@ -1,6 +1,7 @@
 import json
 import queue
 import re
+import shlex
 from core.timeutil import now_local
 from pathlib import Path
 from typing import Callable, Optional
@@ -13,7 +14,7 @@ from core.agent_loader import AgentDefinition
 from core.tool_registry import ToolRegistry
 from core.llm_client import LLMClient, APIAuthError, APIAccountLimitError
 from core.pricing import estimate_cost
-from core.engagement_state import EngagementState
+from core.engagement_state import EngagementState, _is_loopback_host
 from core.artifacts import ArtifactStore
 from core.jobs import JobManager, Job
 from core.proc import ProcessRegistry, bind as proc_bind
@@ -25,6 +26,8 @@ from tools.record_plan import TOOL_DEFINITION as RECORD_PLAN_DEF
 from tools.register_surface import TOOL_DEFINITION as REGISTER_SURFACE_DEF
 from tools.record_credential import TOOL_DEFINITION as RECORD_CRED_DEF
 from tools.record_service import TOOL_DEFINITION as RECORD_SERVICE_DEF
+from tools.record_fact import TOOL_DEFINITION as RECORD_FACT_DEF
+from tools.write_report import TOOL_DEFINITION as WRITE_REPORT_DEF
 from tools.grep_artifact import TOOL_DEFINITION as GREP_ARTIFACT_DEF
 from tools.read_artifact import TOOL_DEFINITION as READ_ARTIFACT_DEF
 from tools.check_jobs import TOOL_DEFINITION as CHECK_JOBS_DEF
@@ -51,10 +54,10 @@ SEV_COLOR = {
 
 # These tools are intercepted before reaching the registry
 _INTERCEPTED = {"annotate_finding", "queue_followup", "record_plan", "register_surface",
-                "record_credential", "record_service", "record_flag", "conclude_engagement",
+                "record_credential", "record_service", "record_fact", "record_flag", "conclude_engagement",
                 "grep_artifact", "read_artifact", "check_jobs", "list_scripts",
                 "start_listener", "shell_exec", "list_shells", "record_persistence", "wait",
-                "load_playbook"}
+                "load_playbook", "write_report"}
 
 # Tools whose call represents a credential auth attempt (for the auth ledger).
 _AUTH_TOOLS = {"ssh_exec", "netexec", "ftp", "smbclient"}
@@ -109,6 +112,84 @@ _EXEC_CHANNEL_TOOLS = {"web_exec", "oob_listener", "http_request", "ssh_exec",
                        "nc", "telnet", "run_script"}
 
 
+def _first_json_object(text):
+    """Parse the first balanced {...} JSON object in `text`, or None. String-aware brace
+    matching (ignores braces inside JSON strings), so an inner ``` fence or a stray brace
+    in a value can't cut the object short the way a fence-terminated regex would."""
+    if not text or "{" not in text:
+        return None
+    start = text.index("{")
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[start:i + 1])
+                except json.JSONDecodeError:
+                    return None
+    return None
+
+
+_LOOPBACK_HINT = (
+    "127.0.0.1/localhost is ambiguous — it could be the target's loopback, the pivot's "
+    "local forward, or the Kali box. Record this under the FOOTHOLD's real IP and set "
+    "bind='loopback' (the service runs on that host, just bound to loopback)."
+)
+
+
+def _as_evidence_dict(val):
+    """Normalize model-supplied evidence to a dict. The schema asks for an object, but
+    agents sometimes pass a string or list — wrap those so .update() can't blow up."""
+    if isinstance(val, dict):
+        return val
+    if isinstance(val, list):
+        if val and all(isinstance(x, dict) for x in val):
+            out: dict = {}
+            for x in val:
+                out.update(x)
+            return out
+        return {"detail": "\n".join(str(x) for x in val)} if val else {}
+    if val in (None, ""):
+        return {}
+    return {"detail": str(val)}
+
+
+def _coerce_cvss(c):
+    """A CvssScores from a model-supplied cvss dict, or None. Tolerant of nulls /
+    non-numeric scores (a JSON null makes float(None) raise), so a sloppy score can't
+    drop the whole finding enrichment."""
+    if not isinstance(c, dict) or not c:
+        return None
+
+    def _num(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return 0.0
+    return CvssScores(
+        vector=c.get("vector") or "",
+        base_score=_num(c.get("base_score")),
+        temporal_score=_num(c.get("temporal_score")),
+        environmental_score=_num(c.get("environmental_score")),
+    )
+
+
 def _collect_strings(obj, out: list, budget: list) -> None:
     """Gather raw string values from a tool result (recursively) into `out` until the
     char budget runs out. Used for exec-signature matching — scanning RAW values, not
@@ -148,6 +229,28 @@ _ALWAYS_BACKGROUND = {
     "john",              # offline cracking — long runner (like hashcat_crack)
 }
 
+# Long-runner binaries that stall a turn when shelled through local_exec/run_script;
+# auto-backgrounded like their dedicated tools. kerbrute is the common offender.
+_LONG_RUNNER_BINARIES = {
+    "kerbrute", "hashcat", "gobuster", "ffuf", "feroxbuster", "nuclei", "sqlmap",
+    "masscan", "hydra", "medusa", "john", "bloodhound-python", "crackmapexec",
+}
+_SHELL_RUNNER_TOOLS = {"local_exec", "run_script"}
+
+
+def _shelled_long_runner(name: str, inputs: dict) -> bool:
+    # local_exec/run_script invoking a long-runner binary → background it.
+    if name not in _SHELL_RUNNER_TOOLS:
+        return False
+    cmd = inputs.get("command") or inputs.get("script") or ""
+    if not isinstance(cmd, str) or not cmd:
+        return False
+    try:
+        toks = shlex.split(cmd)
+    except ValueError:
+        toks = cmd.split()
+    return any(t.rsplit("/", 1)[-1].lower() in _LONG_RUNNER_BINARIES for t in toks)
+
 # Tool output handling. A single string field longer than this is offloaded to a
 # text artifact (newlines preserved, so grep_artifact works well). If the whole
 # serialized result still exceeds the result threshold, the result itself is
@@ -176,44 +279,19 @@ The agent instructions above define what to annotate and when.
 - NEVER put a credential, password, hash, token, or other secret in the title or anywhere in the finding. Record secrets with `record_credential`. In the finding, describe only *what was exposed* ("cleartext FTP credentials recovered from a captured PCAP"), never the value or `user:pass` pair.
 - A good title reads as a finding-class heading: "Cleartext Credentials Exposed in Network Capture", "Anonymous FTP Access", "Unauthenticated Database Access".
 
-## Final response
+## Enriching a finding
 
-End your final response with this JSON block. Its purpose is to:
-1. Write the `technical_overview` attacker narrative for this run
-2. Enrich already-annotated findings with CVSS scores, impact, and remediation
-3. Add any findings not yet annotated mid-run
+When you CONFIRM a finding, enrich it in place with another `annotate_finding` call (pass its `finding_id`) — do not save it for the end:
+- **`description`:** paragraph prose — overview first, then root cause, exploitability, technical detail. Passive voice, never first person.
+- **`impact`:** paragraph prose — what breaks, what an attacker achieves, likelihood of success.
+- **`cvss`:** score every finding except pure `type: recon` — full CVSS 3.1 vector + base/temporal/environmental scores. Temporal defaults E:P, RL:O, RC:C; use X for undefined environmental metrics.
+- **`remediation`:** condensed bullets, max 5.
 
-**Voice:** Never first person. Passive voice throughout.
-**`description`:** Paragraph form — overview first, then root cause, exploitability, technical detail.
-**`impact`:** Paragraph form — what breaks, what an attacker achieves, likelihood.
-**`remediation`:** Bullet list, max 5 items.
-**`technical_overview`:** Attacker narrative, flowing paragraphs, no bullets. Mark each evidence point with `[IMAGE: <the specific command run and a distinctive line of its output>]` — the engine fills these in with the ACTUAL tool command and captured output (its own "screenshot"), so name the concrete result (e.g. `[IMAGE: dir.html RCE output showing uid=1000(wingftp)]`, not `[IMAGE: proof of access]`). Put one wherever a command's output proves a step.
+Capture the enrichment on the finding itself — the report writer reads these off the findings, so a finding carries its own severity, impact, and fix.
 
-**CVSS 3.1:** Score every finding except pure `type: recon` entries. Use X for undefined environmental metrics.
-Temporal defaults: E:P, RL:O, RC:C — adjust based on evidence in this run.
+## Closing out
 
-```json
-{
-  "technical_overview": "Attacker narrative. Flowing paragraphs. [IMAGE: command + distinctive output line] markers at each evidence point — the engine fills them with the real captured command/output.",
-  "findings": [
-    {
-      "title": "Exactly match an annotated finding title to enrich it, or a new title to add a new finding",
-      "type": "recon|vuln|config|exposure",
-      "severity": "info|low|medium|high|critical",
-      "description": "Paragraph 1 — overview. Paragraph 2+ — root cause, exploitability.",
-      "impact": "What breaks and how likely is exploitation.",
-      "cvss": {
-        "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:P/RL:O/RC:C/CR:X/IR:X/AR:X/MAV:X/MAC:X/MPR:X/MUI:X/MS:X/MC:X/MI:X/MA:X",
-        "base_score": 9.8,
-        "temporal_score": 8.6,
-        "environmental_score": 9.8
-      },
-      "evidence": {},
-      "remediation": ["Bullet 1", "Bullet 2"]
-    }
-  ]
-}
-```
+Do NOT write the report narrative — the report writer owns the executive summary and the technical overview and reconstructs the whole story at the end. Your final tool-free message is a short handoff: what you established, the live access channel, and the single best next lead. Keep the evidence on the findings and facts (`annotate_finding`, `record_fact`), not in prose.
 """
 
 _BASE_INSTRUCTIONS_PATH = Path(__file__).parent.parent / "agents" / "base-instructions.md"
@@ -259,6 +337,9 @@ def _auth_fields(tool_name: str, inputs: dict):
     if tool_name == "smbclient":
         return ("smb", inputs.get("target", ""), inputs.get("port"),
                 inputs.get("username"), inputs.get("password") or "")
+    if tool_name == "impacket_mssql":
+        return ("mssql", inputs.get("target", ""), inputs.get("port", 1433),
+                inputs.get("username"), inputs.get("password") or inputs.get("hash") or "")
     return None
 
 
@@ -273,7 +354,7 @@ def _auth_result(tool_name: str, result: dict) -> str | None:
         if "exit_code" in result:
             return "success"
         return None                     # connection error etc. — not an auth verdict
-    if tool_name == "netexec":
+    if tool_name in ("netexec", "impacket_mssql"):
         if result.get("authenticated") is True:
             return "success"
         if result.get("authenticated") is False:
@@ -626,6 +707,20 @@ class Orchestrator:
             parts.append("Most recent actions (in flight at stop):\n- "
                          + "\n- ".join(reversed(actions)))
 
+        # The active test plan's open items ARE the forward thread — surface them so a
+        # cap-stopped run hands off "continue these next steps", not just a command
+        # list. Without this the next agent re-plans from findings and drops the chain.
+        plans = getattr(self.state, "plans", None) or []
+        if plans:
+            open_items = [it for it in (plans[-1].items or [])
+                          if getattr(it, "status", "pending") not in ("succeeded", "failed")]
+            steps = [(getattr(it, "action", "") or "").strip()[:160]
+                     for it in open_items[:5] if (getattr(it, "action", "") or "").strip()]
+            if steps:
+                label = getattr(plans[-1], "surface_label", "") or ""
+                parts.append(f"Planned next steps{(' for ' + label) if label else ''} "
+                             "(continue these before re-planning):\n- " + "\n- ".join(steps))
+
         return "\n\n".join(parts).strip()
 
     def _live_shells_block(self) -> str:
@@ -697,7 +792,7 @@ class Orchestrator:
         aware OPSEC guard — it knows the actual scope hosts and discovered credentials,
         which the standalone tool cannot."""
         from core.config import get as _get
-        if not _get("allow_web_search", True):
+        if not _get("web_search", True):
             return "web research is disabled (allow_web_search=false)"
         if not isinstance(inputs, dict):
             return None
@@ -935,7 +1030,7 @@ class Orchestrator:
         # mid-engagement toggle takes effect on the next agent; appended to one file.
         from core import debug_capture
         debug_capture.configure(self.results_dir / "llm_debug.log",
-                                bool(_config_get("debug_capture", False)))
+                                bool(_config_get("debug", False)))
         effective_model = get_model_for_agent(agent.name) or get_global_model() or agent.model
         # Per-agent sampling temperature (None → provider default). Resolved once per run.
         effective_temperature = get_temperature_for_agent(agent.name)
@@ -948,6 +1043,10 @@ class Orchestrator:
         # so the generalist can pull a playbook instead of routing to a specialist.
         if phase not in ("planning", "reporting"):
             meta_defs.append(LOAD_PLAYBOOK_DEF)
+        # The report writer submits the deliverable narrative through a tool (robust
+        # capture) rather than a fenced blob in its final message.
+        if phase == "reporting":
+            meta_defs.append(WRITE_REPORT_DEF)
         if "record_plan" in agent.scope or phase == "planning":
             meta_defs.append(RECORD_PLAN_DEF)
         # Any agent that actively touches a target may discover a new surface;
@@ -958,6 +1057,7 @@ class Orchestrator:
         if phase not in ("planning", "reporting"):
             meta_defs.append(RECORD_CRED_DEF)
             meta_defs.append(RECORD_SERVICE_DEF)
+            meta_defs.append(RECORD_FACT_DEF)
             meta_defs.append(CHECK_JOBS_DEF)
             meta_defs.append(WAIT_DEF)      # let the agent actually wait for a reset/reboot
             meta_defs.append(CONCLUDE_DEF)
@@ -1005,8 +1105,8 @@ class Orchestrator:
         import itertools
         from core.config import get as _cfg_get
         unlimited = max_turns <= 0
-        extend_on_progress = bool(_cfg_get("extend_turns_on_progress", True)) and not unlimited
-        progress_factor = max(1, int(_cfg_get("max_turns_progress_factor", 5) or 5))
+        extend_on_progress = bool(_cfg_get("sliding_turns", True)) and not unlimited
+        progress_factor = max(1, int(_cfg_get("turn_ceiling_factor", 5) or 5))
         hard_ceiling = 0 if unlimited else max_turns * progress_factor
         no_progress_turns = 0
         last_progress_fp = self._progress_fingerprint(run)
@@ -1014,7 +1114,7 @@ class Orchestrator:
 
         # Loop-nudge state: count identical tool calls and nudge (redirect) the
         # agent off a rut instead of letting it spin until the hard turn cap.
-        nudge_threshold = int(_cfg_get("repeat_nudge_threshold", 3) or 0)
+        nudge_threshold = int(_cfg_get("repeat_nudge", 3) or 0)
         # Tools that are legitimately called repeatedly with identical args
         # (polling an OOB listener, background jobs, or for a reverse shell) — a
         # repeat is normal operation for these, so they are excluded from nudging.
@@ -1022,12 +1122,12 @@ class Orchestrator:
         call_counts: dict[str, int] = {}
         nudged: set[str] = set()
         # Pivot nudge (per-run): consecutive hard failures within this agent run.
-        pivot_after = int(_cfg_get("pivot_nudge_after_failures", 4) or 0)
+        pivot_after = int(_cfg_get("pivot_nudge", 4) or 0)
         fail_streak = 0          # consecutive unproductive tool results
         # Reuse + grind nudges are ENGAGEMENT-level (counters live on self.state) so
         # they survive the agent cycling — thrash spread over many runs still trips.
-        reuse_threshold = int(_cfg_get("run_script_volume_nudge", 10) or 0)
-        grind_threshold = int(_cfg_get("grind_nudge_after_scripts", 12) or 0)
+        reuse_threshold = int(_cfg_get("reuse_nudge", 10) or 0)
+        grind_threshold = int(_cfg_get("grind_nudge", 12) or 0)
         # Foothold-banking: turns after exec is confirmed to allow before nudging to
         # annotate it. Small — confirm exec, then bank within a turn or two.
         foothold_bank_after = int(_cfg_get("foothold_bank_nudge_after_turns", 2) or 0)
@@ -1254,10 +1354,29 @@ class Orchestrator:
                         })
                         continue
 
+                    if tb.name == "record_fact":
+                        result = self._handle_record_fact(tb.input)
+                        tool_results.append({
+                            "type":        "tool_result",
+                            "tool_use_id": tb.id,
+                            "content":     json.dumps(result),
+                        })
+                        continue
+
                     if tb.name == "record_flag":
                         result = self._handle_record_flag(tb.input, agent.name)
                         if self.state:
                             self.state.note_progress()
+                        tool_results.append({
+                            "type":        "tool_result",
+                            "tool_use_id": tb.id,
+                            "content":     json.dumps(result),
+                        })
+                        continue
+
+                    if tb.name == "write_report":
+                        result = self._handle_write_report(tb.input, run)
+                        self._save_run(run)
                         tool_results.append({
                             "type":        "tool_result",
                             "tool_use_id": tb.id,
@@ -1372,7 +1491,9 @@ class Orchestrator:
                     # `background` is an orchestrator-level control flag, not a tool
                     # argument — strip it before the tool ever sees it.
                     inputs = dict(tb.input)
-                    want_bg = bool(inputs.pop("background", False)) or tb.name in _ALWAYS_BACKGROUND
+                    want_bg = (bool(inputs.pop("background", False))
+                               or tb.name in _ALWAYS_BACKGROUND
+                               or _shelled_long_runner(tb.name, inputs))
 
                     # ── scope gate (hard-block out-of-scope targets) ───────────
                     scope_reason = self._scope_block(tb.name, inputs)
@@ -1484,6 +1605,10 @@ class Orchestrator:
                                 self.state.add_script(result.get("purpose", ""),
                                                       result["script_file"],
                                                       inputs.get("language", ""))
+                            # A pivot's internal service isn't in _emit_state_update — push it
+                            # as a live 'service' event so it lands on the board immediately.
+                            if tb.name == "port_forward":
+                                self._emit_forward_service(result)
                             self._emit_state_update()
 
                         # Confirmed code execution via a blind channel (no live shell
@@ -1749,7 +1874,8 @@ class Orchestrator:
             if inputs.get("description"):
                 existing.description = self._redact_secrets(inputs["description"])
             if inputs.get("evidence"):
-                existing.evidence.update(self._redact_obj(inputs["evidence"]))
+                existing.evidence.update(self._redact_obj(_as_evidence_dict(inputs["evidence"])))
+            self._apply_enrichment(existing, inputs)
             status = "confirmed" if existing.verified else "updated"
             color  = SEV_COLOR.get(existing.severity, "white")
             tag    = "[CONFIRMED]" if existing.verified else "[updated]"
@@ -1765,6 +1891,8 @@ class Orchestrator:
             all_existing += [f for f in all_findings if f.id not in seen_ids]
         title = self._redact_secrets(inputs.get("title", "Untitled"))
         ann_target = inputs.get("target", target)
+        if _is_loopback_host(ann_target):
+            return {"status": "error", "message": _LOOPBACK_HINT}
 
         if self.state:
             duplicate = self.state.find_duplicate(
@@ -1777,7 +1905,8 @@ class Orchestrator:
             if inputs.get("verified") and not duplicate.verified:
                 duplicate.verified = True
             if inputs.get("evidence"):
-                duplicate.evidence.update(self._redact_obj(inputs["evidence"]))
+                duplicate.evidence.update(self._redact_obj(_as_evidence_dict(inputs["evidence"])))
+            self._apply_enrichment(duplicate, inputs)
             self._print(f"  [dim][dedup][/dim] [{duplicate.severity.upper()}] {duplicate.title}")
             self._emit_annotation(duplicate)
             return {"status": "deduplicated", "finding_id": duplicate.id,
@@ -1790,9 +1919,10 @@ class Orchestrator:
             title=title,
             description=self._redact_secrets(inputs.get("description", "")),
             target=ann_target,
-            evidence=self._redact_obj(inputs.get("evidence", {})),
+            evidence=self._redact_obj(_as_evidence_dict(inputs.get("evidence", {}))),
             verified=inputs.get("verified", False),
         )
+        self._apply_enrichment(finding, inputs)
         run.findings.append(finding)
 
         color = SEV_COLOR.get(finding.severity, "white")
@@ -1802,6 +1932,38 @@ class Orchestrator:
         return {"status": "annotated", "finding_id": finding.id,
                 "current_findings": self._findings_digest(run, all_findings),
                 "note": self._DEDUP_NOTE}
+
+    def _apply_enrichment(self, finding: Finding, inputs: dict) -> None:
+        """Fold report-enrichment fields (cvss/impact/remediation) from an annotate_finding
+        call onto the finding. Structured tool args, so this can't be lost to a truncated
+        final blob the way the old ```json``` enrichment could."""
+        cvss = _coerce_cvss(inputs.get("cvss"))
+        if cvss:
+            finding.cvss = cvss
+        if inputs.get("impact"):
+            finding.impact = self._redact_secrets(inputs["impact"])
+        rem = inputs.get("remediation")
+        if isinstance(rem, str):
+            rem = [rem]
+        if rem:
+            finding.remediation = rem
+
+    def _handle_write_report(self, inputs: dict, run: EngagementRun) -> dict:
+        """Capture the report narrative from the write_report tool onto the run — the
+        robust replacement for scraping it out of a final ```json``` blob."""
+        exec_summary = (inputs.get("executive_summary") or "").strip()
+        overview     = (inputs.get("technical_overview") or "").strip()
+        if not exec_summary and not overview:
+            return {"status": "error", "message": "executive_summary and technical_overview are both empty"}
+        if exec_summary:
+            run.executive_summary = self._redact_secrets(exec_summary)
+        if overview:
+            run.technical_overview = self._redact_secrets(overview)
+        self._print("  [green][report][/green] narrative captured "
+                    f"(exec {len(exec_summary)} ch, overview {len(overview)} ch)")
+        return {"status": "recorded",
+                "executive_summary_chars": len(exec_summary),
+                "technical_overview_chars": len(overview)}
 
     def _emit_annotation(self, finding: Finding) -> None:
         """Emit a full annotation event so the UI can show live finding detail."""
@@ -1861,6 +2023,8 @@ class Orchestrator:
         host = inputs.get("host", "")
         if not host:
             return {"registered": False, "error": "host is required"}
+        if _is_loopback_host(host):
+            return {"registered": False, "error": _LOOPBACK_HINT}
         surface = self.state.add_surface(
             host=host, service=inputs.get("service", ""), port=inputs.get("port"),
             component=inputs.get("component", ""), origin=inputs.get("origin", "deeper"),
@@ -1969,6 +2133,15 @@ class Orchestrator:
                        c.secret_masked, tuple(c.used_at), c.verified)
                       for c in st.credentials)
         return (ports, surfs, os_i, hns, creds)
+
+    def _emit_forward_service(self, result: dict) -> None:
+        """Emit the internal service a port_forward exposed as a live 'service' event
+        (ingest already recorded it; state services aren't in _emit_state_update)."""
+        from core.engagement_state import internal_service_from_forward
+        svc = internal_service_from_forward(result)
+        if svc:
+            self._emit("service", host=svc["host"], port=svc["port"], service="", app="",
+                       version="", tech="", os="", hostname="", vhost="", bind=svc["bind"])
 
     def _emit_state_update(self) -> None:
         if not self.state:
@@ -2100,6 +2273,27 @@ class Orchestrator:
                 stub[k] = v
         return stub
 
+    def _handle_record_fact(self, inputs: dict) -> dict:
+        if not self.state:
+            return {"recorded": False, "error": "No engagement state attached"}
+        statement = (inputs.get("statement") or "").strip()
+        evidence  = (inputs.get("evidence") or "").strip()
+        if not statement:
+            return {"recorded": False, "error": "statement is required"}
+        if not evidence:
+            return {"recorded": False,
+                    "error": "evidence is required — a fact with no command+output proof is not confirmed"}
+        fact = self.state.record_fact(
+            kind=inputs.get("kind", "target") or "target",
+            statement=statement,
+            evidence=evidence,
+            scope=inputs.get("scope", "") or "",
+            supersedes=inputs.get("supersedes", "") or "",
+        )
+        sc = f" [{fact.scope}]" if fact.scope else ""
+        self._print(f"  [cyan][fact][/cyan] ({fact.kind}){sc} {fact.statement}")
+        return {"recorded": True, "id": fact.id, "kind": fact.kind}
+
     def _handle_record_credential(self, inputs: dict, source_agent: str) -> dict:
         if not self.state:
             return {"recorded": False, "error": "No engagement state attached"}
@@ -2137,6 +2331,8 @@ class Orchestrator:
         host = (inputs.get("host") or "").strip()
         if not host:
             return {"recorded": False, "error": "host is required (the target IP)"}
+        if _is_loopback_host(host):
+            return {"recorded": False, "error": _LOOPBACK_HINT}
         item = self.state.annotate_service(
             host=host, port=inputs.get("port"),
             service=inputs.get("service", "") or "",
@@ -2145,16 +2341,20 @@ class Orchestrator:
             tech=inputs.get("tech", "") or "",
             os=inputs.get("os", "") or "",
             hostname=inputs.get("hostname", "") or "",
+            vhost=inputs.get("vhost", "") or "",
+            bind=inputs.get("bind", "") or "",
             source_agent=source_agent,
         )
         fp = (f"{item['app']} {item['version']}".strip()) if item.get("app") else ""
-        label = f"{host}{':' + str(item['port']) if item.get('port') else ''}"
+        vh = item.get("vhost", "")
+        label = f"{host}{':' + str(item['port']) if item.get('port') else ''}{' (' + vh + ')' if vh else ''}"
         detail = " ".join(x for x in (item.get("service"), fp, item.get("tech"), item.get("os")) if x)
         self._print(f"  [cyan][service][/cyan] {label}  {detail}")
         self._emit("service", host=host, port=item.get("port"),
                    service=item.get("service", ""), app=item.get("app", ""),
                    version=item.get("version", ""), tech=item.get("tech", ""),
-                   os=item.get("os", ""), hostname=inputs.get("hostname", "") or "")
+                   os=item.get("os", ""), hostname=inputs.get("hostname", "") or "",
+                   vhost=vh, bind=item.get("bind", ""))
         return {"recorded": True, "host": host, "port": item.get("port")}
 
     def _handle_record_flag(self, inputs: dict, source_agent: str) -> dict:
@@ -2178,13 +2378,15 @@ class Orchestrator:
     # ── final-response enrichment ─────────────────────────────────────────────
 
     def _extract_and_enrich(self, text: str, run: EngagementRun, target: str):
-        match = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
-        if not match:
-            return
-        try:
-            data = json.loads(match.group(1))
-        except json.JSONDecodeError:
-            return
+        # Backstop only — the report writer submits its narrative via write_report and
+        # enriches findings via annotate_finding. This still catches a specialist that
+        # closes with a ```json``` findings block. Brace-match rather than a
+        # fence-terminated regex so an inner ``` in a value can't truncate the capture.
+        data = _first_json_object(text)
+        if not isinstance(data, dict) or not (
+            data.keys() & {"findings", "technical_overview", "executive_summary"}
+        ):
+            return  # incidental JSON in a handoff, not a report block
 
         if not run.technical_overview and data.get("technical_overview"):
             run.technical_overview = self._redact_secrets(data["technical_overview"])
@@ -2201,25 +2403,9 @@ class Orchestrator:
             f["description"] = self._redact_secrets(f.get("description", ""))
             f["impact"]      = self._redact_secrets(f.get("impact", ""))
             if f.get("evidence"):
-                f["evidence"] = self._redact_obj(f["evidence"])
+                f["evidence"] = self._redact_obj(_as_evidence_dict(f["evidence"]))
 
-            cvss = None
-            if f.get("cvss"):
-                c = f["cvss"]
-                # Robust against the model emitting nulls or non-numeric scores: a
-                # JSON `null` makes .get(key, default) return None (the key exists), so
-                # float(None) would raise "float ... NoneType". Coerce safely.
-                def _num(v):
-                    try:
-                        return float(v)
-                    except (TypeError, ValueError):
-                        return 0.0
-                cvss = CvssScores(
-                    vector=c.get("vector") or "",
-                    base_score=_num(c.get("base_score")),
-                    temporal_score=_num(c.get("temporal_score")),
-                    environmental_score=_num(c.get("environmental_score")),
-                )
+            cvss = _coerce_cvss(f.get("cvss"))
 
             title = f.get("title", "")
             ftype = f.get("type")

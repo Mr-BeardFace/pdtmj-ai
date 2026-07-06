@@ -37,6 +37,14 @@ from core.strategist import Strategist
 from core.models import Surface
 
 
+def _enum_stage_n() -> int:
+    """Operator-tunable turn budget for a staged enumeration pass (/config
+    enum_turns). Enumeration gathers intel without banking findings, so the
+    progress-extension window never fires — this cap is what actually bounds it."""
+    from core.config import get as _cfg_get
+    return int(_cfg_get("enum_turns", 20) or 20)
+
+
 def _open_ports(res: dict, proto: str) -> set[int]:
     out: set[int] = set()
     for h in (res or {}).get("hosts", []):
@@ -165,7 +173,7 @@ class FrontierDriver(ParallelDriver):
             self._refresh_ui()   # staged sweep ingests state directly — push it to the panels now
             self._banner("Service identification — fingerprinting discovered ports")
             self._run_agent(ENUM_AGENT, target, self._service_id_objective(target),
-                            max_turns=self._stage_turns(12))
+                            max_turns=self._stage_turns(_enum_stage_n()))
             self.state.derive_surfaces_from_recon(origin="initial")
             if not self.state.surfaces:
                 self.state.add_surface(target, origin="initial")
@@ -199,7 +207,7 @@ class FrontierDriver(ParallelDriver):
         # report here when paused (it would also reset the resume point's "no report
         # yet" state). /end (ended_early), a cap, or completion all still report.
         from core.config import get as _cfg_get
-        if self.all_findings and not self._stopped and _cfg_get("reporting_enabled", True):
+        if self.all_findings and not self._stopped and _cfg_get("reporting", True):
             self._banner("Reporting — synthesizing the engagement")
             self._run_agent(REPORT_AGENT, target, None)
         return self.runs
@@ -348,16 +356,19 @@ class FrontierDriver(ParallelDriver):
         surface = self._surface_for(lead)
 
         # Credential reuse → exploitation agent, spray-the-known-secret objective.
-        # Checked first: a cred lead's reach ('user') is high enough to otherwise
-        # fall into the foothold branch, but it's an auth attempt, not a kill chain.
+        # Budget is the full kill-chain one, not a spray-sized cap: a dead cred
+        # concludes in a few turns anyway (the objective says stop when nothing
+        # authenticates), but a cred that LANDS a shell (e.g. WinRM Pwn3d!) turns into
+        # a kill chain — the objective already tells it to pursue that, so it needs the
+        # room. A tight cap cut active exploitation off mid-chain and re-worked the lead.
         if lead.kind == "cred":
             return (self._exploit_agent_for(surface),
-                    self._cred_objective(lead), max(self._hyp_turns, 10))
+                    self._cred_objective(lead), self._foothold_budget())
 
         # Surface / service / recon → deep enumeration by the right specialist.
         if lead.kind in ("surface", "service") or reach <= level_of("service"):
             return (self._enum_agent_for(surface),
-                    self._enum_objective(surface, self.target), self._stage_turns(16))
+                    self._enum_objective(surface, self.target), self._stage_turns(_enum_stage_n()))
 
         # Escalation / foothold / code-exec → the foothold specialist, full budget:
         # this is a kill chain (channel → session → privesc → flag), not a one-shot.
@@ -502,7 +513,7 @@ class FrontierDriver(ParallelDriver):
             self._banner("Breadth sweep — no hot lead; broad enumeration for new threads")
             self._run_agent(ENUM_AGENT, self.target,
                             self._enum_objective(None, self.target),
-                            max_turns=self._stage_turns(12))
+                            max_turns=self._stage_turns(_enum_stage_n()))
             self.state.derive_surfaces_from_recon(origin="lateral")
             return self.strategist.refresh(self.store, self.state, self.all_findings) > 0
         return False

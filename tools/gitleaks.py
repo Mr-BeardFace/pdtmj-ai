@@ -23,12 +23,14 @@ def gitleaks(path: str, source_type: str = "detect",
         cmd += shlex.split(flags)
 
     try:
-        runner.run(cmd, capture_output=True, text=True, timeout=300)
+        proc = runner.run(cmd, capture_output=True, text=True, timeout=300)
     except subprocess.TimeoutExpired:
         return {"error": "gitleaks timed out"}
 
     result = _parse_report(report_file, path)
     result["_command"] = " ".join(cmd)
+    if not result["count"] and (diag := runner.diagnostic(proc)):
+        result["tool_error"] = diag        # a run failure, not a clean empty
 
     import os
     try:

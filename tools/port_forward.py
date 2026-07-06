@@ -164,6 +164,9 @@ def port_forward(action: str = "start", pivot: str = "", local_port: int = 0,
             else f"Reach the internal service at 127.0.0.1:{local_port} with http_request or the "
                  "protocol client.")
     return {"action": "start", "id": tid, "mode": mode, "local": f"127.0.0.1:{local_port}",
+            "local_port": int(local_port),
+            "remote_host": remote_host, "remote_port": int(remote_port) if remote_port else None,
+            "foothold": pivot.split("@")[-1] if pivot else "",
             "socks": mode == "dynamic", "spec": spec,
             "note": "Tunnel is up and running in the background. " + note,
             "_command": rendered}

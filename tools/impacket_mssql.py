@@ -37,18 +37,18 @@ def impacket_mssql(target: str, username: str, password: Optional[str] = None,
         f.write("exit\n")
         sql_file = f.name
 
-    # Build target string
-    if domain:
-        target_str = f"{domain}/{username}@{target}"
-    else:
-        target_str = f"{username}@{target}"
+    # impacket's mssqlclient has NO password flag — the password goes INSIDE the
+    # target string (user:pass@host). A lone -p is silently abbreviated to -port by
+    # argparse, overwriting the real port with the password, then int(port) explodes.
+    auth = f"{username}:{password}" if password else username
+    target_str = f"{domain}/{auth}@{target}" if domain else f"{auth}@{target}"
 
     cmd = [binary, target_str, "-port", str(port)]
-
-    if password:
-        cmd += ["-p", password]  # Note: mssqlclient uses -p for windows auth
     if hash:
         cmd += ["-hashes", hash]
+    # A domain account authenticates to MSSQL over Windows/NTLM, not SQL auth.
+    if domain and "-windows-auth" not in (flags or ""):
+        cmd += ["-windows-auth"]
     if flags:
         cmd += shlex.split(flags)
 
@@ -69,11 +69,23 @@ def impacket_mssql(target: str, username: str, password: Optional[str] = None,
     output = proc.stdout + proc.stderr
     cmd_str = " ".join(cmd) + f" < {sql_file}"
 
+    # impacket exits 0 even when the login is REJECTED, so returncode is not an auth
+    # verdict — read it from the output: a real SQL session prints a "SQL (...)" prompt
+    # / ENVCHANGE, a rejected login prints "Login failed".
+    low = output.lower()
+    if "login failed" in low or "cannot open" in low:
+        authenticated = False
+    elif "sql (" in low or "envchange" in low or "ack: result" in low:
+        authenticated = True
+    else:
+        authenticated = None       # couldn't tell (connection error, timeout, …)
+
     return {
         "target":      f"{target}:{port}",
         "username":    username,
+        "authenticated": authenticated,
         "output":      output[:16000],
-        "success":     proc.returncode == 0,
+        "success":     (proc.returncode == 0) if authenticated is None else authenticated,
         "_command":    cmd_str,
     }
 

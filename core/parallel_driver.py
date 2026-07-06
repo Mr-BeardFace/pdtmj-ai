@@ -91,7 +91,7 @@ class ParallelDriver(EngagementDriver):
         super().__init__(*args, **kwargs)
         if gate is None:
             from core.config import get
-            gate = AgentGate(int(get("max_parallel_agents", 3) or 3))
+            gate = AgentGate(int(get("parallel_agents", 3) or 3))
         self._gate = gate
         self._surface_fanout = max(1, int(surface_fanout))
         self._hyp_fanout = max(1, int(hypothesis_fanout))

@@ -12,7 +12,14 @@ TOOL_DEFINITION = {
         "a parameter that might be injectable, anything that warrants follow-up. "
         "Set verified=false for potential findings you haven't confirmed yet. "
         "Set verified=true when you've confirmed exploitability with evidence. "
-        "To enrich or update a finding you already annotated, pass its finding_id."
+        "To enrich or update a finding you already annotated, pass its finding_id. "
+        "Use type='dead_end' to BANK A CONFIRMED NEGATIVE — an attempt you actually ran "
+        "that provably failed — so it isn't re-tried. Gate: only with verified=true AND the "
+        "exact command+output in evidence (a fact you can point at), never an exploitability "
+        "guess. Record the FAILED ATTEMPT, not a dead path: 'xp_dirtree to my SMB share "
+        "captured nothing as sqlsvc' — NOT 'NTLM capture is impossible'. Always note the "
+        "access level/principal it was tested under, because a new foothold can change the "
+        "result. A flawed attempt on a valid path is a dead_end for that attempt, not the path."
     ),
     "input_schema": {
         "type": "object",
@@ -30,8 +37,8 @@ TOOL_DEFINITION = {
             },
             "type": {
                 "type": "string",
-                "enum": ["recon", "vuln", "config", "exposure"],
-                "description": "recon=intelligence, vuln=exploitable weakness, config=misconfiguration, exposure=data/interface exposed",
+                "enum": ["recon", "vuln", "config", "exposure", "dead_end"],
+                "description": "recon=intelligence, vuln=exploitable weakness, config=misconfiguration, exposure=data/interface exposed, dead_end=a confirmed negative (an attempt that provably failed) — see the gate in the tool description",
             },
             "severity": {
                 "type": "string",
@@ -65,6 +72,25 @@ TOOL_DEFINITION = {
             "finding_id": {
                 "type": "string",
                 "description": "If provided, updates the existing finding with this ID instead of creating a new one.",
+            },
+            "impact": {
+                "type": "string",
+                "description": "Report enrichment (paragraph): what a successful attack breaks, what the attacker achieves, and how likely success is. Set it once the finding is understood — usually at confirmation, not first sighting.",
+            },
+            "remediation": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Report enrichment: condensed remediation bullets (max 5). Best-practice options, not one specific code snippet.",
+            },
+            "cvss": {
+                "type": "object",
+                "description": "Report enrichment: CVSS 3.1 severity. Emit the full vector plus the three resulting scores — do not write out the per-metric table.",
+                "properties": {
+                    "vector": {"type": "string", "description": "Complete CVSS 3.1 vector, e.g. CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:P/RL:O/RC:C"},
+                    "base_score": {"type": "number"},
+                    "temporal_score": {"type": "number"},
+                    "environmental_score": {"type": "number"},
+                },
             },
         },
         "required": ["title", "type", "severity", "description"],

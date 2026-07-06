@@ -70,7 +70,7 @@ def _force_web_on(monkeypatch):
     import core.config as _cfg
     _real = _cfg.get
     monkeypatch.setattr(_cfg, "get",
-                        lambda k, d=None: True if k == "allow_web_search" else _real(k, d))
+                        lambda k, d=None: True if k == "web_search" else _real(k, d))
 
 
 def test_scrub_allows_clean_tech_query(tmp_path, monkeypatch):
@@ -92,7 +92,7 @@ def test_scrub_blocks_target_and_creds(tmp_path, monkeypatch):
 
 def test_scrub_blocks_when_disabled(tmp_path, monkeypatch):
     import core.config as cfg
-    monkeypatch.setattr(cfg, "get", lambda k, d=None: False if k == "allow_web_search" else d)
+    monkeypatch.setattr(cfg, "get", lambda k, d=None: False if k == "web_search" else d)
     o = _orch(tmp_path, _state())
     assert o._web_research_block({"query": "anything generic"})             # disabled → blocked
 

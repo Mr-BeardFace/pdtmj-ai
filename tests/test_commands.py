@@ -43,15 +43,15 @@ def test_info_overview():
 def test_config_exploit_toggles():
     # Exploitation + confirm gate are now set through /config (the single config cmd).
     from core.config import get
-    dispatch("/config confirm_exploitation off")
-    assert get("confirm_exploitation", True) is False
-    dispatch("/config confirm_exploitation on")
-    assert get("confirm_exploitation", True) is True
-    dispatch("/config exploitation_enabled off")
-    assert get("exploitation_enabled", True) is False
-    assert get("confirm_exploitation", True) is True   # independent of the phase toggle
-    dispatch("/config exploitation_enabled on")
-    assert get("exploitation_enabled", True) is True
+    dispatch("/config confirm_exploit off")
+    assert get("confirm_exploit", True) is False
+    dispatch("/config confirm_exploit on")
+    assert get("confirm_exploit", True) is True
+    dispatch("/config exploitation off")
+    assert get("exploitation", True) is False
+    assert get("confirm_exploit", True) is True   # independent of the phase toggle
+    dispatch("/config exploitation on")
+    assert get("exploitation", True) is True
 
 
 def test_old_toggle_commands_removed():
@@ -77,4 +77,29 @@ def test_cred_add_always_three_tuple():
 
     lines, ok, cred = handle_cred_add(["admin", "P@ss", "smb"])
     assert ok is True
-    assert cred == {"username": "admin", "secret": "P@ss", "service": "smb"}
+    assert cred == {"username": "admin", "secret": "P@ss", "service": "smb", "cred_type": "password"}
+
+
+def test_cred_add_type_first_and_default():
+    # no leading type keyword → default password, positional user+secret
+    assert handle_cred_add(["u", "p"])[2] == {"username": "u", "secret": "p",
+                                              "service": "", "cred_type": "password"}
+    # leading type keyword is consumed; rest is user+secret
+    assert handle_cred_add(["hash", "svc_sql", "aabbcc"])[2] == {
+        "username": "svc_sql", "secret": "aabbcc", "service": "", "cred_type": "hash"}
+    # aliases normalize (ntlm -> hash, api -> api_key)
+    assert handle_cred_add(["ntlm", "svc", "h"])[2]["cred_type"] == "hash"
+    assert handle_cred_add(["api", "u", "sk-abc"])[2]["cred_type"] == "api_key"
+
+
+def test_cred_add_usernameless():
+    # a lone secret is usernameless (found password w/ unknown user, or an API key)
+    c = handle_cred_add(["MyPass123"])[2]
+    assert c == {"username": None, "secret": "MyPass123", "service": "", "cred_type": "password"}
+    assert handle_cred_add(["api", "sk-abcd1234"])[2] == {
+        "username": None, "secret": "sk-abcd1234", "service": "", "cred_type": "api_key"}
+    # '-' placeholder gives no username but keeps a service
+    assert handle_cred_add(["-", "P@ss", "smb"])[2] == {
+        "username": None, "secret": "P@ss", "service": "smb", "cred_type": "password"}
+    # empty / no secret is a usage error
+    assert handle_cred_add([])[1] is False

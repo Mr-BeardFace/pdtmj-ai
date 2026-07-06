@@ -14,6 +14,15 @@ from core import proc as runner
 from core.config import get
 
 
+# John lines that mean it never ran a real attempt (wrong/undetected format), so an
+# empty pot is not an exhausted keyspace — reported as an error, not a silent miss.
+_FATAL_MARKERS = (
+    "no password hashes loaded", "unknown ciphertext format",
+    "no such file or directory", "unknown option",
+    "crash recovery file is locked",
+)
+
+
 def _parse_show(stdout: str) -> str | None:
     """Pull the plaintext from `john --show` output (login:password:...)."""
     for line in stdout.splitlines():
@@ -63,17 +72,33 @@ def john(hash: str, hash_format: str | None = None,
         passes.append(("custom", custom_path))
     passes.append(("rockyou", wordlist))
 
+    # Per-run session so concurrent John jobs don't collide on the default .rec
+    # lock — "Crash recovery file is locked".
+    session = "pdtmj_" + os.path.basename(pot_path)
+
     passes_run: list[str] = []
     last_cmd = ""
+    last_diag = ""
     try:
         for name, wl in passes:
-            cmd = [binary, f"--wordlist={wl}", f"--pot={pot_path}", *fmt_args, hash_path]
+            cmd = [binary, f"--wordlist={wl}", f"--pot={pot_path}",
+                   f"--session={session}", *fmt_args, hash_path]
             last_cmd = " ".join(cmd)
             passes_run.append(name)
             try:
-                runner.run(cmd, capture_output=True, text=True)   # no timeout — background
+                proc = runner.run(cmd, capture_output=True, text=True)   # no timeout — background
             except Exception as e:  # noqa: BLE001
                 return {"error": f"john failed: {e}", "_command": last_cmd}
+
+            # John couldn't load the hash for the format — not an exhausted keyspace.
+            # Surface its words instead of a silent "not cracked".
+            combined = ((proc.stdout or "") + "\n" + (proc.stderr or "")).lower()
+            last_diag = runner.diagnostic(proc) or "\n".join(
+                (proc.stdout or "").strip().splitlines()[-8:])
+            if any(s in combined for s in _FATAL_MARKERS):
+                return {"error": "john rejected the input before cracking — check the "
+                                 "hash / --format", "john_said": last_diag,
+                        "passes_run": passes_run, "_command": last_cmd}
 
             show = runner.run([binary, "--show", f"--pot={pot_path}", *fmt_args, hash_path],
                               capture_output=True, text=True)
@@ -94,6 +119,7 @@ def john(hash: str, hash_format: str | None = None,
         return {
             "cracked": [], "cracked_count": 0, "passes_run": passes_run,
             "note": f"not cracked ({', '.join(passes_run)})",
+            "john_said": last_diag,
             "_command": last_cmd,
         }
     finally:

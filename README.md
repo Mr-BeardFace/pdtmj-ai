@@ -61,6 +61,11 @@ netexec, etc.), but a few write straight into the engagement state:
   show a masked version.
 - `register_surface` records a `(host, service)` attack surface — the unit the
   driver cycles on.
+- `record_service` records structured service detail into the target tracker — its
+  product/version, the host's DNS/LDAP hostname, any web vhosts, and whether it's
+  loopback-bound (reachable only through a pivot).
+- `record_fact` pins a confirmed operational fact — a target property or an
+  access/exec channel — so later turns act on it instead of re-deriving it.
 - `record_persistence` logs any change made to a target, with the original value
   and the exact command to revert it.
 - `queue_followup` hands a lead to another agent.
@@ -216,9 +221,17 @@ Point the `local` provider at its base URL and pick a model:
 No API key is needed for a typical local server; if yours requires one, set it with
 `/key set local <api-key>`. The base URL persists to `config.yaml` (`local_base_url`).
 
-Configuration lives in `config.yaml` (copy `config.yaml.example`); API keys are
-read from the OS keyring or the env vars in `.env.example`. Neither `config.yaml`
-nor `.env` is tracked — see `.gitignore`.
+Configuration lives in `config.yaml` (copy `config.yaml.example`). A provider key
+is resolved in order: an explicit override, then the provider's env var (e.g.
+`ANTHROPIC_API_KEY`, see `.env.example`), then the OS keyring. The env var is
+checked **before** the keyring, so an exported key skips the keyring's unlock
+prompt on a headless or SSH session:
+
+```bash
+export ANTHROPIC_API_KEY='sk-ant-...'   # avoids the Secret Service prompt
+```
+
+Neither `config.yaml` nor `.env` is tracked — see `.gitignore`.
 
 ## Known limitations
 
@@ -227,8 +240,10 @@ is surprised:
 
 - **Limited LLM providers.** Anthropic, OpenRouter, NVIDIA, and any
   OpenAI-compatible local server (Ollama, LM Studio, …). More to come.
-- **Reporting is rough.** Report generation and regeneration are inconsistent and
-  still being reworked.
+- **Reporting is still settling.** Recently reworked — the writer now captures a
+  story-flow narrative and CVSS-scored findings through structured tools — but it
+  hasn't been proven across many live runs, and an engagement stopped early
+  (quota/timeout) produces a draft.
 - **Copying text is flaky.** Pulling text out of the TUI panes doesn't always
   behave.
 - **Logic and workflow are a work in progress.** Agent routing, lead handling,
@@ -242,6 +257,25 @@ is surprised:
 
 If something is broken in a way that isn't listed here, that's expected too — it's
 that kind of project.
+
+## Resources & inspiration
+
+This is a learning project, and it stands on a lot of other people's work — both the
+open AI-security projects that shaped how I think about agentic offensive tooling, and
+the methodology references the playbooks are built from. Credit where it's due:
+
+**AI offensive-security projects** (design inspiration)
+- [PentAGI](https://github.com/vxcontrol/pentagi) — autonomous AI penetration-testing agents.
+- [CAI](https://github.com/aliasrobotics/cai) — Cybersecurity AI, an open framework for AI security agents (Alias Robotics).
+- [CyberStrike](https://github.com/CyberStrikeus/CyberStrike) — AI-powered offensive-security agent: multi-agent, methodology-driven autonomous pentesting.
+- …and other agentic red-team projects I keep an eye on.
+
+**Methodology & technique references** (what the playbooks are built from)
+- [ired.team](https://www.ired.team/) — Active Directory & offensive-security technique reference.
+- [Hackviser — Pentesting Tactics](https://hackviser.com/tactics/pentesting) — service-by-service enumeration and exploitation.
+- [MSSQL Pentesting Cheatsheet (thewhiteh4t)](https://thewhiteh4t.github.io/blog/mssql-pentesting-cheatsheet/) — source for the MSSQL playbook.
+
+This list grows as the playbook library does.
 
 ## Authorized use only
 

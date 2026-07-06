@@ -36,7 +36,7 @@ def _installed_dists(py: str) -> set:
 
 
 def pip_install(packages, upgrade: bool = False, timeout: int = 300) -> dict:
-    if not get("allow_package_install", True):
+    if not get("package_install", True):
         return {"error": "package installation is disabled (allow_package_install=false in config)"}
     # Install into THIS interpreter's environment (pentest-ai's venv) so the same
     # interpreter run_script uses can import the package. sys.executable is an

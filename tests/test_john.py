@@ -28,6 +28,7 @@ def test_john_cracks_and_returns_credential(tmp_path, monkeypatch):
         def __init__(self, out=""):
             self.stdout = out
             self.stderr = ""
+            self.returncode = 0
 
     def fake_run(cmd, **k):
         calls.append(cmd)

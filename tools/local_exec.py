@@ -27,7 +27,7 @@ def _daemon_in(command: str) -> str | None:
     return None
 
 
-def local_exec(command: str, timeout: int = 60) -> dict:
+def local_exec(command: str, timeout: int = 120) -> dict:
     if not command or not command.strip():
         return {"error": "command is required"}
     daemon = _daemon_in(command)
@@ -46,7 +46,9 @@ def local_exec(command: str, timeout: int = 60) -> dict:
     try:
         proc = runner.run([bash, "-c", command], capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        return {"error": f"command timed out after {timeout}s — use background=true for slow ops",
+        return {"error": f"command timed out after {timeout}s (it may have run partially) — "
+                "re-run with background=true for a genuinely slow op, or raise timeout; do not "
+                "just retry the same synchronous call",
                 "_command": command}
     except Exception as e:  # noqa: BLE001
         return {"error": str(e), "_command": command}
@@ -75,7 +77,7 @@ TOOL_DEFINITION = {
         "type": "object",
         "properties": {
             "command": {"type": "string", "description": "Shell command to run locally on the Kali box."},
-            "timeout": {"type": "integer", "description": "Timeout seconds (default 60). Use background=true for slow ops."},
+            "timeout": {"type": "integer", "description": "Timeout seconds (default 120). Use background=true for slow ops."},
         },
         "required": ["command"],
     },

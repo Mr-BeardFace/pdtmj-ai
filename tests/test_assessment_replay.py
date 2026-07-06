@@ -28,8 +28,17 @@ class _Stub:
     def _handle_event(self, ev):
         return PentestApp._handle_event(self, ev)
 
-    def _activity(self, msg):
+    def _activity(self, msg, cap=True):
         self.activity.append(msg)
+
+    def _pane_only(self, msg):
+        self.activity.append(msg)
+
+    def _pane_gap(self):
+        pass
+
+    def _detail_only(self, text):
+        self.activity.extend(str(text).splitlines())
 
     def _add_finding(self, f):
         self.findings.append(f)

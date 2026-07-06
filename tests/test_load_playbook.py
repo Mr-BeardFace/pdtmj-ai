@@ -44,6 +44,16 @@ def test_unknown_playbook_lists_available():
     assert "error" in res
 
 
+def test_subdir_playbook_loads_by_bare_name():
+    # Category subdirs (playbooks/database/mssql.md) load by stem, no path prefix —
+    # this is what lets each tech be its own focused playbook.
+    assert "mssql" in _available()
+    res = load_playbook(["mssql"])
+    assert res["loaded"] == ["mssql"]
+    assert "MSSQL playbook" in res["playbooks"]
+    assert "services:" not in res["playbooks"]
+
+
 def test_path_traversal_blocked():
     res = load_playbook(["../core/orchestrator"])
     assert res["loaded"] == [] and res.get("not_found")

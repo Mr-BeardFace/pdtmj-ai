@@ -31,7 +31,7 @@ from core.paths import (RESULTS_DIR, AGENTS_DIR, LOGS_DIR, ASSESSMENTS_DIR,
 from core.artifacts import ArtifactStore
 from core.registry import build_registry, load_all_agents
 from core.agent_loader import load_agent
-from core.llm_client import LLMClient, APIAccountLimitError, APIAuthError
+from core.llm_client import LLMClient, APIAccountLimitError, APIAuthError, APIConnectionError
 from core.orchestrator import Orchestrator
 from core.engagement_state import EngagementState
 from core.session_log import SessionLogger
@@ -65,6 +65,56 @@ _SEV_COLOR = {
     "info":     "dim",
 }
 _SEV_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
+
+# key:value / key=value pairs whose key looks credential-y. Best-effort defense so a
+# secret sitting in tool output shown in the pane is masked BEFORE the agent records
+# it (record_credential is what makes it a KNOWN secret, and that fires a call later —
+# until then the exact-secret redactor can't see it). e.g. BindPass: "Em3rg…".
+_SECRETISH = re.compile(
+    r'(?i)\b(pass(?:word)?|pwd|passwd|secret|token|api[_-]?key|bindpass|auth(?:orization)?)'
+    r'\b\s*[:=]\s*"?([^\s"\',;}]{4,})"?'
+)
+
+
+def _mask_val(v: str) -> str:
+    return (v[:2] + "…") if len(v) > 3 else "…"
+
+
+def _scrub_secretish(text: str) -> str:
+    """Mask the value in credential-shaped key:value pairs. Catches the common leak
+    (a password/bindpass/token printed verbatim in a log or command output) before
+    it's ever recorded, without needing to know the secret in advance."""
+    return _SECRETISH.sub(lambda m: m.group(0).replace(m.group(2), _mask_val(m.group(2))), text)
+
+
+def _result_text(output) -> str:
+    """The main human-readable text of a tool result dict (stdout/body/raw/…), else
+    a compact JSON of the non-empty structured fields."""
+    keys = ("stdout", "output", "text", "body", "raw", "result", "response", "content", "data")
+    if isinstance(output, dict):
+        for k in keys:
+            v = output.get(k)
+            if isinstance(v, str) and v.strip():
+                return v
+        slim = {k: v for k, v in output.items()
+                if k != "_command" and v not in (None, "", [], {})
+                and not (isinstance(v, str) and not v.strip())}
+        return json.dumps(slim, default=str) if slim else ""
+    return str(output or "")
+
+
+def _evidence_slice(text: str, needle: str, context: int = 3) -> list[str]:
+    """The line containing `needle` plus `context` lines either side, the found line
+    marked with '►'. Empty list if the needle isn't present. Used to surface the
+    exact line that triggered a recorded credential/finding, with its context."""
+    if not needle:
+        return []
+    lines = text.splitlines()
+    for i, ln in enumerate(lines):
+        if needle in ln:
+            lo, hi = max(0, i - context), min(len(lines), i + context + 1)
+            return [("► " if j == i else "  ") + lines[j].rstrip() for j in range(lo, hi)]
+    return []
 
 _CSS = """
 Screen {
@@ -160,7 +210,7 @@ DataTable > .datatable--cursor {
     height: 7fr;
     background: #0d1117;
     scrollbar-color: #30363d #0d1117;
-    padding: 0 1;
+    padding: 0 1 1 1;   /* permanent blank row under the last line */
 }
 
 #cmd-dialogue {
@@ -492,10 +542,11 @@ class PentestApp(App):
 
     class Service(Message):
         def __init__(self, host: str, port, service: str, app: str,
-                     version: str, tech: str, os: str, hostname: str = "") -> None:
+                     version: str, tech: str, os: str, hostname: str = "",
+                     vhost: str = "", bind: str = "") -> None:
             self.host = host; self.port = port; self.service = service
             self.app = app; self.version = version; self.tech = tech; self.os = os
-            self.hostname = hostname
+            self.hostname = hostname; self.vhost = vhost; self.bind = bind
             super().__init__()
 
     class PipelineEvent(Message):
@@ -536,6 +587,11 @@ class PentestApp(App):
 
         # Activity log text for Ctrl+L modal / Ctrl+Y copy
         self._activity_lines: list[str] = []
+        # True when the pane's last line is already blank — guards _pane_gap doubling.
+        self._pane_at_blank = True
+        # Recent (tool, command, full_output_text), newest last — so when a credential
+        # or finding is recorded we can surface the exact source line + context. Bounded.
+        self._recent_outputs: list[tuple[str, str, str]] = []
         # True while re-rendering a loaded assessment's saved event stream — suppresses
         # state-mutating side effects in _handle_event (render-only).
         self._replaying: bool = False
@@ -561,10 +617,16 @@ class PentestApp(App):
         # row_key → set of agent-owned columns; plus IPs whose OS the agent owns.
         self._agent_cols:   dict[str, set[str]] = {}
         self._agent_os_ips: set[str] = set()
+        # row_key → full (IP, Hostname, Vhost, Port, Proto, Service, Fingerprint, Tech)
+        # so click-to-copy stays complete even when grouping blanks the shared cells.
+        self._host_rowdata: dict[str, tuple] = {}
 
         # Pane sizes (adjusted with Ctrl+arrows)
         self._left_width:    int = 33   # percent, left pane horizontal share (right gets the rest)
         self._right_act_fr:  int = 7    # activity-log fraction (out of 10 shared with cmd-dialogue)
+        # Left-column vertical shares (relative fr) — findings / tabs. Ctrl+Up/Down
+        # grows whichever the focused widget lives in; fr is relative so the other shrinks.
+        self._left_fr: dict[str, int] = {"findings": 1, "tabs": 1}
 
         # O(1) finding dedup: normalized_title → finding dict (same ref as in _findings)
         self._findings_title_map: dict[str, dict] = {}
@@ -640,7 +702,7 @@ class PentestApp(App):
         # hosts/ports/services. One row per host:port; host-level columns
         # (Hostname/OS) repeat down a host's rows so each line stands alone.
         ht = self.query_one("#hosts-table", DataTable)
-        for label in ("IP", "Hostname", "OS", "Port", "Protocol", "Service", "Fingerprint", "Tech"):
+        for label in ("IP", "Hostname", "Vhost", "OS", "Port", "Protocol", "Service", "Fingerprint", "Tech"):
             ht.add_column(label, key=label)
 
         # Flags table (CTF) — columns set up; tab shown only for the CTF persona
@@ -832,11 +894,24 @@ class PentestApp(App):
         except Exception:
             pass
 
+    def _mask_known_secrets(self, text: str) -> str:
+        """Mask any RECORDED credential secret in text — for the full Ctrl+L log and
+        clipboard copy. By the time this is opened the secret has been recorded, so the
+        full output (which held it in the clear) renders masked."""
+        st = self._current_state
+        if not st:
+            return text
+        for c in getattr(st, "credentials", []):
+            s = getattr(c, "secret", "")
+            if s and len(s) >= 4 and s in text:
+                text = text.replace(s, getattr(c, "secret_masked", "") or _mask_val(s))
+        return text
+
     def action_show_activity_log(self) -> None:
-        self.push_screen(ActivityLogModal("\n".join(self._activity_lines)))
+        self.push_screen(ActivityLogModal(self._mask_known_secrets("\n".join(self._activity_lines))))
 
     def action_copy_activity_log(self) -> None:
-        text = "\n".join(self._activity_lines)
+        text = self._mask_known_secrets("\n".join(self._activity_lines))
         if self._copy_to_clipboard(text):
             n = len(self._activity_lines)
             self.query_one("#status-bar", Static).update(
@@ -934,25 +1009,64 @@ class PentestApp(App):
         self.query_one("#left-pane").styles.width = f"{self._left_width}%"
 
     def action_pane_grow_right(self) -> None:
-        """Ctrl+Up — grow activity log, shrink cmd-dialogue."""
-        self._right_act_fr = min(9, self._right_act_fr + 1)
+        """Ctrl+Up — grow the focused column's active section (defaults to the right)."""
+        self._resize_vertical(+1)
+
+    def action_pane_shrink_right(self) -> None:
+        """Ctrl+Down — shrink the focused column's active section (defaults to the right)."""
+        self._resize_vertical(-1)
+
+    def _focused_column(self) -> str:
+        """'left' or 'right' — which column the focused widget lives in. Focus usually
+        sits on the command input (neither column) → default to 'right' (prior behavior)."""
+        w = self.focused
+        while w is not None:
+            wid = getattr(w, "id", None)
+            if wid == "left-pane":
+                return "left"
+            if wid == "right-pane":
+                return "right"
+            w = getattr(w, "parent", None)
+        return "right"
+
+    def _focused_left_section(self) -> str:
+        """Which left-column section (findings / tabs) holds focus — for grow."""
+        w = self.focused
+        while w is not None:
+            wid = getattr(w, "id", None)
+            if wid == "findings-list":
+                return "findings"
+            if wid == "info-tabs":
+                return "tabs"
+            w = getattr(w, "parent", None)
+        return "findings"
+
+    def _resize_vertical(self, delta: int) -> None:
+        if self._focused_column() == "left":
+            self._resize_left_split(delta)
+        else:
+            self._resize_right_split(delta)
+
+    def _resize_right_split(self, delta: int) -> None:
+        self._right_act_fr = max(2, min(9, self._right_act_fr + delta))
         self.query_one("#activity-log").styles.height = f"{self._right_act_fr}fr"
         dlg = self.query_one("#cmd-dialogue")
+        if delta < 0 and not dlg.display:
+            dlg.display = True
         if dlg.display:
             dlg.styles.height = f"{10 - self._right_act_fr}fr"
 
-    def action_pane_shrink_right(self) -> None:
-        """Ctrl+Down — shrink activity log, grow cmd-dialogue (shows it if hidden)."""
-        self._right_act_fr = max(2, self._right_act_fr - 1)
-        self.query_one("#activity-log").styles.height = f"{self._right_act_fr}fr"
-        dlg = self.query_one("#cmd-dialogue")
-        if not dlg.display:
-            dlg.display = True
-        dlg.styles.height = f"{10 - self._right_act_fr}fr"
+    def _resize_left_split(self, delta: int) -> None:
+        section = self._focused_left_section()
+        self._left_fr[section] = max(1, min(9, self._left_fr[section] + delta))
+        self.query_one("#findings-list").styles.height = f"{self._left_fr['findings']}fr"
+        self.query_one("#info-tabs").styles.height     = f"{self._left_fr['tabs']}fr"
 
     # ── Findings list click ───────────────────────────────────────────────────
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
+        if event.list_view.id != "findings-list":
+            return
         idx = event.list_view.index
         if idx is not None and 0 <= idx < len(self._findings):
             self.push_screen(FindingDetailModal(self._findings[idx]))
@@ -984,11 +1098,15 @@ class PentestApp(App):
                 self._flash_status("Flag copied to clipboard")
 
         elif tid == "hosts-table":
-            try:
-                row = dt.get_row(event.row_key)
-            except Exception:
-                return
-            text = "  ".join(str(c) for c in row if str(c))
+            # Copy from _host_rowdata (full values) so a grouped/blanked sibling row
+            # still yields the complete IP/Hostname/vhost line.
+            data = self._host_rowdata.get(str(event.row_key.value))
+            if data is None:
+                try:
+                    data = dt.get_row(event.row_key)
+                except Exception:
+                    return
+            text = "  ".join(str(c) for c in data if str(c))
             if text and self._copy_to_clipboard(text):
                 self._flash_status("Host row copied to clipboard")
 
@@ -1008,6 +1126,17 @@ class PentestApp(App):
             if success and cred:
                 self._manual_creds.append(cred)
                 self._show_cred_in_table(cred, source="manual")
+                # Manual creds are seeded into state only at engagement creation. Added
+                # mid-run, they'd never reach the running agent — inject them live so a
+                # cred handed to an in-flight engagement becomes an actionable lead now.
+                if self._current_state is not None:
+                    self._current_state.add_credential(
+                        cred_type=cred.get("cred_type", "password"),
+                        username=cred.get("username"),
+                        secret=cred["secret"], service=cred.get("service", ""),
+                        location=cred.get("location", "") or cred.get("service", ""),
+                        source_agent="operator", verified=False,
+                    )
             self._show_cmd_output(lines, success)
             return
 
@@ -1144,9 +1273,7 @@ class PentestApp(App):
 
         # /end — stop pipeline, run always_last, generate report
         if parsed and parsed[0] == "/end":
-            if not self._is_running:
-                self._show_cmd_output(["No pipeline running."], False)
-            else:
+            if self._is_running:
                 self._end_flag.set()
                 self._interrupt_queue.put("/end — wrap up your current action. The engagement is ending.")
                 self._show_cmd_output(
@@ -1154,6 +1281,11 @@ class PentestApp(App):
                      "Reporting agents will run and a report will be generated."],
                     True,
                 )
+            elif self._pipeline_resume or (self._current_assessment and self._current_assessment.runs):
+                # Halted (quota/pause/cap) — finalize from work done, no resume needed.
+                self._finalize_halted_engagement()
+            else:
+                self._show_cmd_output(["No pipeline running, and nothing to finalize."], False)
             return
 
         # /continue — release a held agent (after /abort), else resume a paused
@@ -1179,13 +1311,13 @@ class PentestApp(App):
             return
 
         # /report — bare: generate HTML now; regen: re-synthesize a loaded assessment.
-        # (Auto-reporting toggle moved to /config reporting_enabled.)
+        # (Auto-reporting toggle moved to /config reporting.)
         if parsed and parsed[0] == "/report":
             arg = (parsed[1][0].lower() if parsed[1] else "")
             if arg in ("on", "off", "true", "false", "enable", "disable",
                        "enabled", "disabled", "yes", "no", "0", "1"):
                 self._show_cmd_output(
-                    ["Auto-reporting is now set via /config reporting_enabled "
+                    ["Auto-reporting is now set via /config reporting "
                      f"{'on' if arg in ('on','true','enable','enabled','yes','1') else 'off'}.",
                      "  /report (no arg) still renders a report now; /report regen re-synthesizes."],
                     False)
@@ -1461,10 +1593,33 @@ class PentestApp(App):
 
     # ── UI helpers ────────────────────────────────────────────────────────────
 
-    def _activity(self, msg: str) -> None:
+    def _activity(self, msg: str, cap: bool = True) -> None:
+        # Goes to BOTH the pane and the full log (Ctrl+L). Headers, reasoning, tool
+        # summaries, findings, the surfaced evidence cluster. cap=False keeps the pane
+        # line uncapped (LLM reasoning — the operator wants the whole thought).
         ts = datetime.now().strftime("%H:%M:%S")
-        self._activity_lines.append(f"{ts}  {_strip_markup(msg)}")
-        self.query_one("#activity-log", RichLog).write(f"[dim]{ts}[/dim]  {msg}")
+        self._activity_lines.append(f"{ts}  {_strip_markup(msg)}")   # full → Ctrl+L
+        shown = _pane_cap(msg) if cap else msg
+        self.query_one("#activity-log", RichLog).write(f"[dim]{ts}[/dim]  {shown}")
+        self._pane_at_blank = False
+
+    def _pane_only(self, msg: str) -> None:
+        """Pane only — for the at-a-glance distilled view. Not added to the Ctrl+L log
+        (the FULL output goes there via _detail_only, so the log isn't a duplicate)."""
+        self.query_one("#activity-log", RichLog).write(f"  {_pane_cap(msg)}")
+        self._pane_at_blank = False
+
+    def _pane_gap(self) -> None:
+        # One trailing blank line for breathing room; never two in a row.
+        if not self._pane_at_blank:
+            self.query_one("#activity-log", RichLog).write("")
+            self._pane_at_blank = True
+
+    def _detail_only(self, text: str) -> None:
+        """Full-log only (Ctrl+L) — the complete tool output, never rendered to the
+        pane. This is the 'full output for the log, not the pane' split."""
+        for ln in str(text).splitlines():
+            self._activity_lines.append(f"        {ln}")
 
     def _update_status(self) -> None:
         persona_str = f"  [dim]persona: {self._active_persona}[/dim]" if self._active_persona else ""
@@ -1770,6 +1925,7 @@ class PentestApp(App):
                         "port": s.get("port"), "protocol": "tcp",
                         "service": s.get("service", ""), "version": fp,
                         "tech": s.get("tech", ""), "hostname": self._host_name.get(host, ""),
+                        "vhost": s.get("vhost", ""), "bind": s.get("bind", ""),
                     }, authoritative=True)
                     n_host += 1
             for c in snap.get("credentials", []):
@@ -1794,6 +1950,33 @@ class PentestApp(App):
             [f"Loaded assessment {assessment.id}  ({assessment.target}, {assessment.status})",
              f"  {n_find} finding(s) · {n_host} host(s) · {n_cred} cred(s) · {n_flag} flag(s){note}",
              "  /report to regenerate the HTML report for this assessment."], True)
+
+    def _finalize_halted_engagement(self) -> None:
+        """/end from a halted engagement (quota/pause/cap): mark it ended, run the
+        teardown a resumable halt had deferred, and render the report from the work
+        completed — no resume or LLM needed, so it works even when the quota is spent."""
+        with self._pipeline_lock:
+            resume = self._pipeline_resume
+            self._pipeline_resume = None
+        self._activity("[bold green]■ Engagement ended (/end) — finalizing the report "
+                       "from work completed.[/bold green]")
+        self._teardown_global()                       # terminal end → run the deferred teardown
+        assessment = self._current_assessment
+        if assessment:
+            assessment.status = "interrupted"
+            try:
+                assessment.end_time = now_local()
+                if self._current_assessment_path:
+                    self._current_assessment_path.write_text(
+                        assessment.model_dump_json(indent=2), encoding="utf-8")
+            except Exception:
+                pass
+        from core.config import get as _cfg_get
+        if _cfg_get("reporting", True):
+            self._cmd_report()
+        else:
+            self._show_cmd_output(
+                ["Engagement ended. Reporting is OFF — run /report to make one on demand."], True)
 
     def _cmd_report(self) -> None:
         """Handle /report — generate HTML from last assessment, or most recent runs."""
@@ -1887,6 +2070,7 @@ class PentestApp(App):
         self._host_rows.clear(); self._host_rowkeys.clear()
         self._host_os.clear(); self._host_name.clear()
         self._agent_cols.clear(); self._agent_os_ips.clear()
+        self._host_rowdata.clear()
 
         self.query_one("#findings-list", ListView).clear()
         self._findings.clear(); self._findings_title_map.clear()
@@ -1915,6 +2099,7 @@ class PentestApp(App):
         if clear_log or full:
             self.query_one("#activity-log", RichLog).clear()
             self._activity_lines.clear()
+            self._pane_at_blank = True
         else:
             self._activity("[dim]── board cleared ──[/dim]")
 
@@ -2011,9 +2196,10 @@ class PentestApp(App):
             return lines
         if not self._manual_creds:
             return ["No credentials.  /cred add <user> <pass> [service], or run an engagement."]
-        lines = [f"  {'#':<3}{'Username':<18}{'Secret':<18}Service", ""]
+        lines = [f"  {'#':<3}{'Type':<9}{'Username':<18}{'Secret':<18}Service", ""]
         for i, c in enumerate(self._manual_creds, 1):
-            lines.append(f"  {i:<3}{c.get('username', ''):<18}"
+            lines.append(f"  {i:<3}{(c.get('cred_type') or 'password'):<9}"
+                         f"{(c.get('username') or ''):<18}"
                          f"{mask_secret(c.get('secret', '')):<18}{c.get('service', '')}")
         lines += ["", "Remove one with: /cred remove <#>"]
         return lines
@@ -2100,12 +2286,37 @@ class PentestApp(App):
         service  = port_entry.get("service", "") or ""
         fingerprint = port_entry.get("version", "") or port_entry.get("product", "") or ""
         tech     = port_entry.get("tech", "") or ""
+        vhost    = port_entry.get("vhost", "") or ""
+        bind     = port_entry.get("bind", "") or ""
+        # A loopback service shows its bind in the Port cell (127.0.0.1:8080) — reachable
+        # only via a pivot — instead of masquerading as an externally-open port.
+        bind_addr = "127.0.0.1" if bind == "loopback" else bind
+        port_disp = f"{bind_addr}:{port}" if bind_addr else port
         if port_entry.get("hostname"):
             self._host_name.setdefault(ip, port_entry["hostname"])
         hostname = self._host_name.get(ip, "")
         os_str   = self._host_os.get(ip, "")
-        row_key  = f"{ip}:{port}/{proto}"
-        owned    = self._agent_cols.setdefault(row_key, set())
+        grp_prefix = f"{ip}:{port}/{proto}:"       # the ip:port group; vhost follows
+        row_key    = f"{grp_prefix}{vhost}"
+
+        # #4: a real vhost row hides the bare baseline; a baseline is dropped once
+        # vhosts own the ip:port.
+        if vhost:
+            self._remove_host_row(grp_prefix)
+        elif any(k != grp_prefix and k.startswith(grp_prefix) for k in self._host_rows):
+            return
+
+        # _host_rowdata is the complete source of truth (for copy + regroup); merge so
+        # a partial update never blanks a prior value.
+        prev = self._host_rowdata.get(row_key)
+        if prev:
+            hostname    = hostname or prev[1]
+            service     = service or prev[5]
+            fingerprint = fingerprint or prev[6]
+            tech        = tech or prev[7]
+        self._host_rowdata[row_key] = (ip, hostname, vhost, port_disp, proto_disp,
+                                       service, fingerprint, tech)
+        owned = self._agent_cols.setdefault(row_key, set())
 
         def _set(rk, col: str, val: str) -> None:
             if not val:
@@ -2120,16 +2331,15 @@ class PentestApp(App):
             rk = self._host_rowkeys.get(row_key)
             if rk is None:
                 return
-            _set(rk, "Service", service)
-            _set(rk, "Fingerprint", fingerprint)
-            _set(rk, "Tech", tech)
-            _set(rk, "Hostname", hostname)
-            _set(rk, "OS", os_str)
+            for col, val in (("Service", service), ("Fingerprint", fingerprint),
+                             ("Tech", tech), ("Hostname", hostname), ("OS", os_str)):
+                _set(rk, col, val)
+            self._sort_hosts(dt)
             return
 
         self._host_rows.add(row_key)
         self._host_rowkeys[row_key] = dt.add_row(
-            ip, hostname, os_str, port, proto_disp, service, fingerprint, tech, key=row_key)
+            ip, hostname, vhost, os_str, port_disp, proto_disp, service, fingerprint, tech, key=row_key)
         if authoritative:
             for col, val in (("Service", service), ("Fingerprint", fingerprint),
                              ("Tech", tech), ("Hostname", hostname), ("OS", os_str)):
@@ -2137,25 +2347,74 @@ class PentestApp(App):
                     owned.add(col)
         self._sort_hosts(dt)
 
+    def _remove_host_row(self, row_key: str) -> None:
+        rk = self._host_rowkeys.pop(row_key, None)
+        self._host_rows.discard(row_key)
+        self._agent_cols.pop(row_key, None)
+        self._host_rowdata.pop(row_key, None)
+        if rk is not None:
+            try:
+                self.query_one("#hosts-table", DataTable).remove_row(rk)
+            except Exception:
+                pass
+
     @staticmethod
     def _host_sort_key(values: tuple) -> tuple:
-        """Order rows by IP (numeric octet order), then protocol (UDP before TCP),
-        then port (numeric). IPv4 addresses sort ahead of any non-IPv4 host label;
-        the leading group flag keeps int- and str-keyed rows from being compared."""
-        ip_val, proto_val, port_val = values
+        """Order rows by IP (numeric octet order), protocol (UDP before TCP), port,
+        then vhost. IPv4 sorts ahead of any non-IPv4 label; the leading group flag
+        keeps int- and str-keyed rows from being compared."""
+        ip_val, proto_val, port_val, vhost_val = values
         proto_key = 0 if str(proto_val).upper() == "UDP" else 1   # UDP first
         try:
-            port_key = int(port_val)
+            port_key = int(str(port_val).rpartition(":")[2])       # bare or "127.0.0.1:8080"
         except (ValueError, TypeError):
             port_key = 0
+        vhost_key = str(vhost_val or "")
         parts = str(ip_val).split(".")
         if len(parts) == 4 and all(p.isdigit() for p in parts):
-            return (0, tuple(int(p) for p in parts), proto_key, port_key)
-        return (1, str(ip_val), proto_key, port_key)
+            return (0, tuple(int(p) for p in parts), proto_key, port_key, vhost_key)
+        return (1, str(ip_val), proto_key, port_key, vhost_key)
 
     def _sort_hosts(self, dt: "DataTable | None" = None) -> None:
         dt = dt or self.query_one("#hosts-table", DataTable)
-        dt.sort("IP", "Protocol", "Port", key=self._host_sort_key)
+        # Restore the group-shared cells before sorting — regroup blanks them on
+        # follower rows, and the sort must see the real IP/Port/Protocol values.
+        for key, data in self._host_rowdata.items():
+            rk = self._host_rowkeys.get(key)
+            if rk is None:
+                continue
+            for col, val in (("IP", data[0]), ("Port", data[3]), ("Protocol", data[4])):
+                try:
+                    dt.update_cell(rk, col, val, update_width=True)
+                except Exception:
+                    pass
+        dt.sort("IP", "Protocol", "Port", "Vhost", key=self._host_sort_key)
+        self._regroup_hosts(dt)
+
+    def _regroup_hosts(self, dt: "DataTable | None" = None) -> None:
+        """#4 grouped view: within an ip:port:proto group only the first row shows the
+        shared IP/Hostname/OS/Port/Protocol; siblings blank them so vhosts read as a
+        cluster. _host_rowdata keeps full values for copy."""
+        dt = dt or self.query_one("#hosts-table", DataTable)
+        try:
+            ordered = list(dt.ordered_rows)
+        except Exception:
+            return
+        prev_group = None
+        for row in ordered:
+            data = self._host_rowdata.get(str(row.key.value))
+            if not data:
+                continue
+            ip, hostname, _vhost, port, proto_disp = data[0], data[1], data[2], data[3], data[4]
+            group  = (ip, port, proto_disp)
+            leader = group != prev_group
+            prev_group = group
+            for col, val in (("IP", ip), ("Hostname", hostname), ("OS", self._host_os.get(ip, "")),
+                             ("Port", port), ("Protocol", proto_disp)):
+                try:
+                    dt.update_cell(row.key, col, val if leader else "", update_width=True)
+                except Exception:
+                    pass
 
     def _update_host_field(self, ip: str, column: str, value: str) -> None:
         """Backfill a host-level column (OS/Hostname) across every row for an IP."""
@@ -2163,12 +2422,11 @@ class PentestApp(App):
             return
         dt = self.query_one("#hosts-table", DataTable)
         prefix = f"{ip}:"
-        for k in list(dt.rows):
-            if str(k.value).startswith(prefix):
-                try:
-                    dt.update_cell(k, column, value, update_width=True)
-                except Exception:
-                    pass
+        if column == "Hostname":                    # keep rowdata (copy source) current
+            for k, d in self._host_rowdata.items():
+                if k.startswith(prefix):
+                    self._host_rowdata[k] = (d[0], value) + d[2:]
+        self._regroup_hosts(dt)                     # leader gets it, siblings stay blank
 
     # ── Event handler ─────────────────────────────────────────────────────────
 
@@ -2208,7 +2466,8 @@ class PentestApp(App):
             fingerprint = (f"{ev.app} {ev.version}".strip()) if ev.app else ""
             self._add_host_row(ev.host, {
                 "port": ev.port, "protocol": "tcp", "service": ev.service,
-                "version": fingerprint, "tech": ev.tech,
+                "version": fingerprint, "tech": ev.tech, "vhost": ev.vhost,
+                "bind": ev.bind,
             }, authoritative=True)
 
     def on_pentest_app_cred(self, ev: Cred) -> None:
@@ -2280,12 +2539,12 @@ class PentestApp(App):
             if text:
                 for line in text.splitlines():
                     if line.strip():
-                        self._activity(f"  [dim]│[/dim] [italic]{markup_escape(line)}[/italic]")
+                        self._activity(f"  [dim]│[/dim] [italic]{markup_escape(line)}[/italic]", cap=False)
 
         elif t == "tool_start":
             name   = event["name"]
             inputs = event.get("inputs", {})
-            self.query_one("#activity-log", RichLog).write("")
+            self._pane_gap()
             if name == "run_script":
                 # Don't dump the script blob — show its purpose so the operator
                 # can follow what an ad-hoc script is actually doing.
@@ -2300,13 +2559,20 @@ class PentestApp(App):
                 self._activity(f"[cyan]▶ {name}[/cyan]  [dim]{brief}[/dim]")
 
         elif t == "tool_done":
+            out = event.get("output")
+            # Command + summary go to BOTH pane and full log.
             if event.get("command_str"):
                 self._activity(f"  [dim]$ {markup_escape(event['command_str'])}[/dim]")
             if event.get("summary"):
                 self._activity(f"  [green]✓[/green] {markup_escape(event['summary'])}")
-            for ln in self._output_snippet(event.get("output")):
-                self._activity(f"  [dim]┃ {markup_escape(ln)}[/dim]")
-            out = event.get("output")
+            # Pane preview: a few lines, secret-shaped values scrubbed so a not-yet-
+            # recorded credential can't flash in the clear here.
+            for ln in self._output_snippet(out):
+                self._pane_only(f"[dim]┃ {markup_escape(_scrub_secretish(ln))}[/dim]")
+            # Full output goes to the Ctrl+L log only (never truncated in the pane).
+            full = _result_text(out)
+            if full.strip():
+                self._detail_only(full)
             if isinstance(out, dict) and out.get("script_file"):
                 self._activity(f"  [dim]↳ script saved: {markup_escape(str(out['script_file']))}[/dim]")
 
@@ -2578,6 +2844,21 @@ class PentestApp(App):
                     used_at=ev.get("used_at", []),
                     verified=ev.get("verified", False),
                 ))
+                # Surface the source line + context that this secret came from — MASKED
+                # (we now know the secret, so the evidence renders masked, not clear).
+                secret = ev.get("secret", "")
+                masked = ev.get("secret_masked", "") or "***"
+                if secret:
+                    for _name, _cmd, _text in reversed(self._recent_outputs):
+                        sl = _evidence_slice(_text, secret, 3)
+                        if sl:
+                            self.post_message(PentestApp.Activity(
+                                f"  [dim]evidence · {markup_escape((_cmd or _name)[:70])}[/dim]"))
+                            for ln in sl:
+                                safe  = markup_escape(ln.replace(secret, masked))
+                                style = "yellow" if ln.startswith("► ") else "dim"
+                                self.post_message(PentestApp.Activity(f"    [{style}]{safe}[/{style}]"))
+                            break
                 _u = ev.get("username", "")
                 _tag = "✓" if ev.get("verified") else "?"
                 self.post_message(PentestApp.Activity(
@@ -2591,6 +2872,7 @@ class PentestApp(App):
                     service=ev.get("service", ""), app=ev.get("app", ""),
                     version=ev.get("version", ""), tech=ev.get("tech", ""),
                     os=ev.get("os", ""), hostname=ev.get("hostname", ""),
+                    vhost=ev.get("vhost", ""), bind=ev.get("bind", ""),
                 ))
                 fp = (f"{ev.get('app','')} {ev.get('version','')}".strip()) if ev.get("app") else ""
                 bits = [x for x in (ev.get("service"), fp, ev.get("tech"), ev.get("os")) if x]
@@ -2608,6 +2890,16 @@ class PentestApp(App):
                     f"  [bold green]🚩 FLAG[/bold green] {ev.get('value', '')}"
                     + (f"  [dim]@ {ev.get('location')}[/dim]" if ev.get("location") else "")
                 ))
+            elif t == "tool_done":
+                # Buffer the output so a credential/finding recorded right after can
+                # surface its source line. Done here (sequential worker thread) so the
+                # buffer is ready before the following credential event is processed.
+                _text = _result_text(ev.get("output"))
+                if _text.strip():
+                    self._recent_outputs.append(
+                        (ev.get("name", ""), ev.get("command_str", ""), _text))
+                    del self._recent_outputs[:-6]
+                self.post_message(PentestApp.PipelineEvent(ev))
             else:
                 self.post_message(PentestApp.PipelineEvent(ev))
 
@@ -2628,8 +2920,8 @@ class PentestApp(App):
 
         target = brief.primary_target or ""
         try:
-            max_turns            = int(cfg_get("max_turns_default", 20))
-            confirm_exploitation = bool(cfg_get("confirm_exploitation", True))
+            max_turns            = int(cfg_get("agent_turns", 20))
+            confirm_exploitation = bool(cfg_get("confirm_exploit", True))
 
             # ── state: fresh or resumed ──────────────────────────────────────
             if _resume_from:
@@ -2734,9 +3026,9 @@ class PentestApp(App):
             driver_kwargs = dict(
                 max_turns=max_turns,
                 confirm_exploitation=confirm_exploitation,
-                max_cycles_per_surface=cfg_get("max_cycles_per_surface", 4),
-                max_total_cycles=cfg_get("max_total_cycles", 40),
-                max_surfaces=cfg_get("max_surfaces", 50),
+                max_cycles_per_surface=cfg_get("cycles_per_surface", 4),
+                max_total_cycles=cfg_get("total_cycles", 40),
+                max_surfaces=cfg_get("surfaces", 50),
                 emit_activity=emit_activity,
                 confirm_cb=self._confirm_exploitation_from_worker,
                 control=control,
@@ -2747,11 +3039,11 @@ class PentestApp(App):
             # or carry into breadth (pentest). parallel_enabled only sets the
             # fan-out WIDTH (off → serial focus, one lead at a time).
             from core.frontier_driver import FrontierDriver
-            parallel = cfg_get("parallel_enabled", False)
+            parallel = cfg_get("parallel", False)
             if parallel:
                 emit_activity(
                     f"◎ Frontier engagement — hottest lead to the objective; fan-out "
-                    f"×{cfg_get('surface_fanout', 3)}, ≤{cfg_get('max_parallel_agents', 3)} "
+                    f"×{cfg_get('surface_fanout', 3)}, ≤{cfg_get('parallel_agents', 3)} "
                     "agents at once.")
             else:
                 emit_activity(
@@ -2759,11 +3051,11 @@ class PentestApp(App):
                     "(serial focus). Confirm→advance, dead end→release, objective→halt.")
             driver = FrontierDriver(
                 orchestrator, all_agents, state, brief,
-                frontier_max_actions=cfg_get("frontier_max_actions", None),
-                attempts_cap=cfg_get("frontier_attempts_cap", 3),
+                frontier_max_actions=cfg_get("frontier_actions", None),
+                attempts_cap=cfg_get("frontier_attempts", 3),
                 surface_fanout=cfg_get("surface_fanout", 3) if parallel else 1,
                 hypothesis_fanout=cfg_get("hypothesis_fanout", 3) if parallel else 1,
-                hypothesis_worker_turns=cfg_get("hypothesis_worker_turns", 12),
+                hypothesis_worker_turns=cfg_get("hypothesis_turns", 12),
                 **driver_kwargs,
             )
             # On resume, seed the driver with findings already gathered so cross-run
@@ -2785,6 +3077,19 @@ class PentestApp(App):
                 termination = "account_limit"
                 self.post_message(PentestApp.Activity(
                     f"[red]⛔ {e}[/red]\n  Top up and type [bold cyan]/continue[/bold cyan] to resume."
+                ))
+            except APIConnectionError as e:
+                # A dropped connection is resumable — save the engagement so /continue
+                # picks it up when the network is back, rather than tearing it all down.
+                with self._pipeline_lock:
+                    self._pipeline_resume = {
+                        "brief": brief, "state": state, "assessment": assessment,
+                        "runs": prior_runs + driver.runs,
+                    }
+                interrupted = True
+                termination = "connection_lost"
+                self.post_message(PentestApp.Activity(
+                    f"[red]⛔ {e}[/red]\n  Check connectivity, then type [bold cyan]/continue[/bold cyan] to resume."
                 ))
             except APIAuthError as e:
                 interrupted = True
@@ -2839,7 +3144,7 @@ class PentestApp(App):
             # pipeline report agent is skipped on pause too, so this stays consistent.
             paused = driver.stopped and not interrupted
             from core.config import get as _cfg_get
-            if all_findings and not paused and _cfg_get("reporting_enabled", True):
+            if all_findings and not paused and _cfg_get("reporting", True):
                 self._generate_pipeline_report(
                     target, completed_runs,
                     persistence=[p.model_dump() for p in state.persistence],
@@ -2886,6 +3191,11 @@ class PentestApp(App):
             orch._procs.kill_all()          # backstop: any lingering registered proc
         except Exception:
             pass
+        self._teardown_global()
+
+    def _teardown_global(self) -> None:
+        """Orch-independent teardown — port forwards, daemons, /etc/hosts. Safe to run
+        without a live orchestrator (e.g. finalizing a halted engagement via /end)."""
         try:
             from tools.port_forward import stop_all as _stop_tunnels
             res = _stop_tunnels()           # close any SSH pivots/port forwards still open
@@ -3037,7 +3347,7 @@ class PentestApp(App):
         try:
             from core.config import get as cfg_get
             from core.orchestrator import _safe_filename_part
-            max_turns = int(cfg_get("max_turns_default", 20))
+            max_turns = int(cfg_get("agent_turns", 20))
             state = EngagementState(target=target)
             self._current_state = state
 
@@ -3097,6 +3407,18 @@ class PentestApp(App):
 
 def _strip_markup(text: str) -> str:
     return _MARKUP_RE.sub("", text)
+
+
+_PANE_MAX_WIDTH = 240   # one long line (a huge command/one-liner output) floods the pane
+
+
+def _pane_cap(msg: str) -> str:
+    """Pane display string: keep the original markup when short; for a flooding one-liner
+    return a width-capped, escaped head + ellipsis (Ctrl+L still holds the full line)."""
+    plain = _strip_markup(msg)
+    if len(plain) <= _PANE_MAX_WIDTH:
+        return msg
+    return markup_escape(plain[:_PANE_MAX_WIDTH].rstrip()) + " [dim]… (Ctrl+L for full)[/dim]"
 
 
 def _compact_inputs(inputs) -> str:

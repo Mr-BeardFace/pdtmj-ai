@@ -21,6 +21,24 @@ _PROVIDER_NAMES = tuple(PROVIDERS)
 from core.settings import all_keys as _setting_keys, GROUPS as _setting_groups
 _CONFIG_COMPLETIONS = _setting_keys() + tuple(g.lower() for g in _setting_groups)
 
+
+def _persona_names() -> tuple[str, ...]:
+    """Persona namespaces from agents/<ns>/persona.md — for /persona set completion."""
+    try:
+        from pathlib import Path
+        agents_dir = Path(__file__).parent.parent / "agents"
+        return tuple(sorted(p.parent.name for p in agents_dir.rglob("persona.md")))
+    except Exception:
+        return ()
+
+
+_PERSONA_COMPLETIONS = _persona_names()
+# Credential kinds for /cred add (matches record_credential's enum), with a few aliases.
+_CRED_TYPES = ("password", "hash", "api_key", "token", "key")
+_CRED_TYPE_ALIASES = {"api": "api_key", "apikey": "api_key", "ntlm": "hash",
+                      "pass": "password", "pw": "password", "privkey": "key",
+                      "ssh_key": "key", "jwt": "token"}
+
 # ── Command registry ──────────────────────────────────────────────────────────
 # Single source of truth. Parsing, tab-completion, the grouped /help overview,
 # and per-command help (/help <cmd>) are all derived from this — so adding or
@@ -77,13 +95,13 @@ COMMANDS: list[Command] = [
         Sub("list", "List all agents with their current model and temperature"),
     )),
     Command("/cred", "Pre-load or manage engagement credentials", (
-        Sub("add",    "Pre-load a credential", "<user> <secret> [service]"),
+        Sub("add",    "Pre-load a credential", "[type] <user> <secret> [service]", _CRED_TYPES),
         Sub("list",   "List credentials (operator + agent-discovered), numbered"),
         Sub("remove", "Remove a credential by its number from /cred list", "<n>"),
         Sub("clear",  "Remove all manually added credentials"),
     )),
     Command("/persona", "Switch the engagement persona", (
-        Sub("set",  "Set the engagement persona", "<persona-name>"),
+        Sub("set",  "Set the engagement persona", "<persona-name>", _PERSONA_COMPLETIONS),
         Sub("list", "List available personas"),
     )),
     Command("/provider", "Switch the active LLM provider", (
@@ -119,7 +137,7 @@ COMMANDS: list[Command] = [
     )),
     Command("/report", "Generate a report now, or regen to re-synthesize a loaded assessment",
             (Sub("", "No arg re-renders the report now; regen re-runs the report agent on a "
-                 "loaded assessment. (Toggle auto-reporting with /config reporting_enabled.)",
+                 "loaded assessment. (Toggle auto-reporting with /config reporting.)",
                  "[regen]", ("regen",)),)),
     Command("/clear", "Reset to a blank window — panels, agent log, and token meter (saved files on disk are kept)",
             (Sub("", "Reset to a blank window — panels, agent log, and token meter (saved files on disk are kept)"),)),
@@ -471,11 +489,11 @@ def handle_agent_list() -> tuple[list[str], bool]:
             except Exception:
                 pass
 
-        td = cfg.get("temperature_default")
+        td = cfg.get("temp")
         lines += [
             "",
             f"  global model override:  {global_model}",
-            f"  temperature_default:    {'provider default' if td is None else td}"
+            f"  temp:    {'provider default' if td is None else td}"
             "   (/agent set temp <name|global> <0.0-1.0>)",
         ]
         return lines, True
@@ -528,7 +546,7 @@ def handle_agent_set_temp(args: list[str]) -> tuple[list[str], bool]:
     """
     Args: [<agent_name|global>, <0.0-1.0 | default>]
 
-    Per-agent override, or 'global' to set the baseline (temperature_default).
+    Per-agent override, or 'global' to set the baseline (temp).
     'default' clears: a per-agent override falls back to the baseline; 'global default'
     falls back to the provider default (no temperature sent).
     """
@@ -565,7 +583,7 @@ def handle_agent_set_temp(args: list[str]) -> tuple[list[str], bool]:
         temps: dict = cfg.setdefault("agent_temperatures", {})
 
         if agent_name == "global":
-            cfg["temperature_default"] = None if clearing else t
+            cfg["temp"] = None if clearing else t
             save_config(cfg)
             if clearing:
                 return ["Baseline temperature cleared — agents now use the provider default "
@@ -575,7 +593,7 @@ def handle_agent_set_temp(args: list[str]) -> tuple[list[str], bool]:
         if clearing:
             temps.pop(agent_name, None)
             save_config(cfg)
-            td = cfg.get("temperature_default")
+            td = cfg.get("temp")
             return [f"Temperature override for '{agent_name}' cleared — it now uses the baseline "
                     f"({'provider default' if td is None else td})."], True
 
@@ -692,9 +710,9 @@ def handle_info() -> tuple[list[str], bool]:
         _row("Persona", persona),
         _row("Provider", provider),
         _row("Global model", gmodel or "— (per-agent defaults)"),
-        _row("Exploitation", _on("exploitation_enabled", True)),
-        _row("Reporting", _on("reporting_enabled", True)),
-        _row("Confirm exploit", _on("confirm_exploitation", True)),
+        _row("Exploitation", _on("exploitation", True)),
+        _row("Reporting", _on("reporting", True)),
+        _row("Confirm exploit", _on("confirm_exploit", True)),
     ]
 
     # Anything moved off its default (excluding the always-shown anchors).
@@ -740,35 +758,73 @@ def handle_help(args: list[str] | None = None) -> tuple[list[str], bool]:
 # Session-level manual creds (list[dict]) stored in the app and injected into
 # EngagementState when a pipeline/run starts. Not persisted to disk.
 
+def _usage_cred_add() -> list[str]:
+    return [
+        "Usage: /cred add [type] <username> <secret> [service]",
+        "",
+        "type (optional, FIRST arg): " + ", ".join(_CRED_TYPES) + "  — default password",
+        "username is optional: a lone secret is a usernameless credential (a password",
+        "found with no known user, an API key). Put '-' in the username slot when you",
+        "have a service but no username.",
+        "",
+        "Examples:",
+        "  /cred add administrator Password123! smb",
+        "  /cred add hash svc_sql aad3b435...:31d6cfe0...",
+        "  /cred add api sk-abcd1234",
+        "  /cred add MyPass123                    (password, unknown user)",
+        "  /cred add - Password123! smb           (unknown user, with service)",
+    ]
+
+
 def handle_cred_add(args: list[str]) -> tuple[list[str], bool, dict | None]:
-    """Always returns a 3-tuple — cred dict is None on usage errors."""
-    if len(args) < 2:
-        return [
-            "Usage: /cred add <username> <secret> [service]",
-            "",
-            "Examples:",
-            "  /cred add administrator Password123! smb",
-            "  /cred add root toor ssh",
-            "  /cred add admin 'P@ssw0rd' http",
-        ], False, None
-    username = args[0]
-    secret   = args[1]
-    service  = args[2] if len(args) > 2 else ""
-    # Return the cred dict — caller stores it in app state
-    return [f"Credential added: {username}  service={service or 'any'}"], True, {
-        "username": username,
-        "secret":   secret,
-        "service":  service,
+    """Always returns a 3-tuple — cred dict is None on usage errors.
+
+    Form: /cred add [type] <username> <secret> [service]. An optional leading type
+    keyword (password/hash/api_key/token/key, or an alias like api/ntlm) defaults to
+    password. The remaining args are positional by count — 1=secret only (usernameless),
+    2=username+secret, 3=username+secret+service — so a password whose user is unknown,
+    or an API key, is a lone secret. '-' in the username slot means 'no username'."""
+    toks = list(args)
+    cred_type = "password"
+    if toks:
+        norm = _CRED_TYPE_ALIASES.get(toks[0].lower(), toks[0].lower())
+        if norm in _CRED_TYPES:
+            cred_type = norm
+            toks = toks[1:]
+
+    username: str | None = None
+    secret = ""
+    service = ""
+    if len(toks) == 1:
+        secret = toks[0]
+    elif len(toks) == 2:
+        username, secret = toks[0], toks[1]
+    elif len(toks) >= 3:
+        username, secret, service = toks[0], toks[1], toks[2]
+    if username in ("-", ""):
+        username = None
+
+    if not secret:
+        return _usage_cred_add(), False, None
+
+    who = f"user={username}" if username else "user=(unknown)"
+    return [f"Credential added: type={cred_type}  {who}  service={service or 'any'}"], True, {
+        "username":  username,
+        "secret":    secret,
+        "service":   service,
+        "cred_type": cred_type,
     }
 
 
 def handle_cred_list(creds: list[dict]) -> tuple[list[str], bool]:
     if not creds:
-        return ["No manual credentials loaded.  Use /cred add <user> <pass> [service]"], True
+        return ["No manual credentials loaded.  Use /cred add [type] <user> <pass> [service]"], True
     from core.utils import mask_secret
-    lines = [f"{'Username':<20} {'Secret':<20} Service", ""]
+    lines = [f"{'Type':<10} {'Username':<20} {'Secret':<20} Service", ""]
     for c in creds:
-        lines.append(f"  {c['username']:<18} {mask_secret(c['secret']):<20} {c.get('service', '')}")
+        user = c.get("username") or "-"
+        lines.append(f"  {(c.get('cred_type') or 'password'):<8} {user:<20} "
+                     f"{mask_secret(c.get('secret', '')):<20} {c.get('service', '')}")
     return lines, True
 
 

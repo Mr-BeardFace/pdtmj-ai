@@ -1,6 +1,6 @@
 ---
 name: database
-services: [mysql, ms-sql-s, mssql, postgresql, postgres, mongodb, mongod, redis, oracle, elasticsearch]
+services: [mysql, postgresql, postgres, mongodb, mongod, redis, oracle, elasticsearch]
 summary: Database services — unauth/default access, privilege, data exposure, code-exec primitives
 ---
 
@@ -22,21 +22,24 @@ never the opener.
 Use the protocol's real client (`impacket_mssql`, `mongosh_query`, `redis_query`,
 `http_request` for HTTP-API stores). Unauthenticated DB access is always `critical`.
 
-## Per-engine focus
-- **MySQL (3306):** blank/weak root, anonymous; accessible DBs/users, privilege; file
-  read / code-exec (`LOAD DATA INFILE`, UDF injection).
-- **PostgreSQL (5432):** weak creds, superuser status, `COPY … TO/FROM PROGRAM` exec (9.3+).
-- **MSSQL (1433):** blank/default SA, `sysadmin` membership, `xp_cmdshell`, linked
-  servers, NTLM-coercion. Prove exec with a benign `whoami` only.
-- **MongoDB (27017):** unauthenticated access (critical); enumerate collections, sample
-  document structure; creds/PII/secrets in documents.
-- **Redis (6379):** check whether auth is required; if open, read config + keyspace.
-  RCE primitives (`CONFIG SET dir` → cron / `authorized_keys`) recorded as a finding,
-  not performed.
-- **Elasticsearch (9200) / CouchDB (5984):** probe the HTTP API for unauth access, list
-  indices/databases, sample data; CouchDB "admin party" (no admin password).
-- **Other** (Oracle, Cassandra, Neo4j, Memcached): same shape — unauth/default first,
-  assess privilege + data exposure, record any code-exec primitive.
+## Per-engine — load the dedicated playbook where one exists
+Several engines have their own focused playbook; load it for the worked technique set:
+- **MSSQL** → `load_playbook(["mssql"])` — auth, privilege, code-exec, linked servers, NTLM coercion
+- **Redis** → `load_playbook(["redis"])` — unauth, config file-write → RCE, modules, replication
+- **PostgreSQL** → `load_playbook(["postgresql"])` — COPY…PROGRAM RCE, file read/write
+- **MySQL/MariaDB** → `load_playbook(["mysql"])` — FILE-priv file read/write → webshell, UDF RCE
+- **MongoDB** → `load_playbook(["mongodb"])` — unauth access, data/credential exposure
+- **PostgreSQL** is above; **Elasticsearch** → `load_playbook(["elasticsearch"])` — unauth API, data, RCE CVEs
+- **Memcached** → `load_playbook(["memcached"])` — unauth, cached session/credential extraction
+- **Oracle** → `load_playbook(["oracle"])` — SID discovery, default creds, ODAT file R/W + exec
+
+Engines without a dedicated playbook yet — same shape (unauth/default first, assess
+privilege and data exposure, record any code-exec primitive): CouchDB ("admin party"),
+Cassandra, Neo4j, and the rest.
 
 Record every credential with `record_credential`; crackable hashes → `hashcat_crack`.
+**Dumped a user/hash table? The salt and algorithm usually aren't in the table** — they
+live in the app's config (see the `web` playbook) or a sibling settings/config table in
+the same database. Grab the salt/scheme before cracking; a salted hash won't crack from
+the digest alone.
 If you obtain code execution, move to the foothold methodology.

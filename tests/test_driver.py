@@ -144,7 +144,7 @@ def test_validation_runs_when_enabled(monkeypatch):
     import core.config as cfg
     _orig = cfg.get
     monkeypatch.setattr(cfg, "get",
-                        lambda k, d=None: True if k == "validation_enabled" else _orig(k, d))
+                        lambda k, d=None: True if k == "validation" else _orig(k, d))
     state = EngagementState(target="10.0.0.5")
     brief = EngagementBrief(targets=["10.0.0.5"],
                             allowed_phases=["discovery", "assessment", "exploitation", "reporting"])
