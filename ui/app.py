@@ -1593,12 +1593,14 @@ class PentestApp(App):
 
     # ── UI helpers ────────────────────────────────────────────────────────────
 
-    def _activity(self, msg: str) -> None:
+    def _activity(self, msg: str, cap: bool = True) -> None:
         # Goes to BOTH the pane and the full log (Ctrl+L). Headers, reasoning, tool
-        # summaries, findings, the surfaced evidence cluster.
+        # summaries, findings, the surfaced evidence cluster. cap=False keeps the pane
+        # line uncapped (LLM reasoning — the operator wants the whole thought).
         ts = datetime.now().strftime("%H:%M:%S")
         self._activity_lines.append(f"{ts}  {_strip_markup(msg)}")   # full → Ctrl+L
-        self.query_one("#activity-log", RichLog).write(f"[dim]{ts}[/dim]  {_pane_cap(msg)}")
+        shown = _pane_cap(msg) if cap else msg
+        self.query_one("#activity-log", RichLog).write(f"[dim]{ts}[/dim]  {shown}")
         self._pane_at_blank = False
 
     def _pane_only(self, msg: str) -> None:
@@ -2537,7 +2539,7 @@ class PentestApp(App):
             if text:
                 for line in text.splitlines():
                     if line.strip():
-                        self._activity(f"  [dim]│[/dim] [italic]{markup_escape(line)}[/italic]")
+                        self._activity(f"  [dim]│[/dim] [italic]{markup_escape(line)}[/italic]", cap=False)
 
         elif t == "tool_start":
             name   = event["name"]
