@@ -338,6 +338,8 @@ def handle_key_clear(args: list[str]) -> tuple[list[str], bool]:
             if target in (spec.name, "all"):
                 try:
                     keyring.delete_password(_KEYRING_SERVICE, spec.keyring_key)
+                    from core.llm_client import invalidate_key_cache
+                    invalidate_key_cache(spec.keyring_key)
                     results.append(f"{spec.label} key removed.")
                 except Exception:
                     results.append(f"{spec.label} key not found in keychain.")
@@ -373,6 +375,8 @@ def handle_key_set(args: list[str]) -> tuple[list[str], bool]:
     try:
         import keyring
         keyring.set_password(_KEYRING_SERVICE, spec.keyring_key, new_key)
+        from core.llm_client import invalidate_key_cache
+        invalidate_key_cache(spec.keyring_key)
         masked = (new_key[:8] + "..." + new_key[-4:]) if len(new_key) > 12 else "***"
         return [f"{spec.label} API key stored in system keychain  ({masked})"], True
     except Exception as e:

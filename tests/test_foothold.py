@@ -64,6 +64,15 @@ def test_list_shells_handler(tmp_path):
     assert o._handle_foothold("list_shells", {}, "a") == {"sessions": []}
 
 
+def test_shell_exec_annotates_on_target_command(tmp_path):
+    # commands run through a caught shell must carry _command so they show in the
+    # report's tool log (they used to return only output → logged as "OK").
+    o = _orch(tmp_path, EngagementState(target="10.0.0.5"))
+    o._shells.exec = lambda sid, cmd, timeout=15: {"output": "root"}
+    res = o._handle_foothold("shell_exec", {"session_id": "s1", "command": "id"}, "pentest/rce")
+    assert res["_command"] == "[shell s1] id"
+
+
 # ── auth ledger ───────────────────────────────────────────────────────────────
 
 def test_auth_field_mapping():

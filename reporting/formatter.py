@@ -9,6 +9,7 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 
 from core.models import EngagementRun
+from core.utils import redact_command
 
 SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 
@@ -325,6 +326,7 @@ def _get_env() -> Environment:
         _ENV.filters["evidence_blocks"] = evidence_blocks
         _ENV.filters["narrative_blocks"] = narrative_blocks
         _ENV.filters["nist_cvss_url"] = nist_cvss_url
+        _ENV.filters["redact_command"] = redact_command
     return _ENV
 
 

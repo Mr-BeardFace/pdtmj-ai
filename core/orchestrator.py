@@ -19,7 +19,7 @@ from core.artifacts import ArtifactStore
 from core.jobs import JobManager, Job
 from core.proc import ProcessRegistry, bind as proc_bind
 from core.paths import ARTIFACTS_DIR, artifacts_dir
-from core.utils import mask_secret
+from core.utils import mask_secret, redact_command
 from tools.annotate_finding import TOOL_DEFINITION as ANNOTATE_DEF
 from tools.queue_followup import TOOL_DEFINITION as FOLLOWUP_DEF
 from tools.record_plan import TOOL_DEFINITION as RECORD_PLAN_DEF
@@ -297,30 +297,9 @@ Do NOT write the report narrative — the report writer owns the executive summa
 _BASE_INSTRUCTIONS_PATH = Path(__file__).parent.parent / "agents" / "base-instructions.md"
 
 
-# Credential-bearing flags in reconstructed CLI strings must be redacted before
-# being stored in tool logs, emitted as events, or written to disk.
-# Covers both "--flag value" and "--flag=value" forms.
-_REDACT_CRED_RE = re.compile(
-    r'(?<=\s)(-p|-H|--password|--hash|--pass|--auth-cred|--secret|--token)(\s+|=)(\S+)'
-)
-# key=value secret patterns — e.g. nmap --script-args 'ssh-run.password=…',
-# 'ftp.password=…', connection strings. The key may be dotted (ssh-run.password).
-_REDACT_KV_RE = re.compile(
-    r'\b(password|passwd|pwd|pass|secret|token)=([^\s,;]+)', re.IGNORECASE
-)
-_PORTSPEC_RE = re.compile(r'^[\d,\-:]+$')
-
-
-def _redact_command(cmd_str: str) -> str:
-    def _flag_sub(m: re.Match) -> str:
-        flag, sep, val = m.group(1), m.group(2), m.group(3)
-        # nmap's -p is a port spec, not a password — don't redact a port range.
-        if flag == "-p" and _PORTSPEC_RE.match(val):
-            return m.group(0)
-        return f"{flag}{sep}***"
-    cmd_str = _REDACT_CRED_RE.sub(_flag_sub, cmd_str)
-    cmd_str = _REDACT_KV_RE.sub(r"\1=***", cmd_str)
-    return cmd_str
+# Command-string secret redaction lives in core.utils (redact_command) so the report
+# renderer applies the same masking; the alias keeps the local call sites unchanged.
+_redact_command = redact_command
 
 
 def _auth_fields(tool_name: str, inputs: dict):
@@ -834,6 +813,8 @@ class Orchestrator:
             if not sid or not cmd:
                 return {"error": "session_id and command are required"}
             res = self._shells.exec(sid, cmd, timeout=inputs.get("timeout", 15))
+            if isinstance(res, dict):             # so the on-target command lands in the report log
+                res.setdefault("_command", f"[shell {sid}] {cmd}")
             if "output" in res and not res.get("error"):
                 self._shell_exec_ok += 1          # active foothold work → budget progress
                 if self.state:                    # driving a shell = confirmed + stabilized exec
@@ -1572,7 +1553,7 @@ class Orchestrator:
                         tc.output = _cap_for_persist(result)
 
                         if isinstance(result, dict) and "_command" in result:
-                            tc.command_str = _redact_command(result["_command"])
+                            tc.command_str = self._redact_secrets(_redact_command(result["_command"]))
 
                         summary = _result_summary(tb.name, result)
                         self._print(f"[green]  ✓[/green] {summary}")
@@ -2071,7 +2052,7 @@ class Orchestrator:
             return f"[Background job '{name}' (id {job.id}) FAILED: {job.error}]"
 
         summary = _result_summary(name, result)
-        cmd = _redact_command(result["_command"]) if result.get("_command") else None
+        cmd = self._redact_secrets(_redact_command(result["_command"])) if result.get("_command") else None
         self._print(f"\n[magenta]⏗ {name}[/magenta]  done ({job.runtime_s:.0f}s) — {summary}")
         self._emit("job_done", name=name, job_id=job.id, status="done",
                    summary=summary, command_str=cmd, runtime=round(job.runtime_s, 1))
