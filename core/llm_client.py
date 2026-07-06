@@ -160,25 +160,43 @@ def get_provider(name: str | None) -> ProviderSpec:
     return PROVIDERS.get((name or "").lower(), PROVIDERS["anthropic"])
 
 
+# keyring_key -> resolved secret (or None). The OS keyring is read at most ONCE per
+# provider per process: a locked Secret Service prompts on every get_password, and
+# status/model-refresh paths resolve keys repeatedly, so without this the prompt
+# recurs at "random" times. Invalidated by invalidate_key_cache() on set/delete.
+_KEY_CACHE: dict[str, str | None] = {}
+
+
+def invalidate_key_cache(keyring_key: str | None = None) -> None:
+    """Drop cached key resolutions (all, or one) after a /key set|delete changes them."""
+    if keyring_key is None:
+        _KEY_CACHE.clear()
+    else:
+        _KEY_CACHE.pop(keyring_key, None)
+
+
 def resolve_provider_key(spec: ProviderSpec, override: str | None = None) -> str | None:
     """Resolve a provider's API key: explicit override → env var → keychain.
 
     Env var is checked before the keychain because the OS keyring (Secret Service on
     Linux) can BLOCK on a pinentry prompt when the login keyring is locked (headless /
-    SSH sessions), so an exported key wins and avoids the prompt entirely."""
+    SSH sessions), so an exported key wins and avoids the prompt entirely. The keychain
+    result is cached per process so a locked keyring is never prompted more than once."""
     if override:
         return override
     env = os.environ.get(spec.env_var)
     if env:
         return env
+    if spec.keyring_key in _KEY_CACHE:
+        return _KEY_CACHE[spec.keyring_key]
+    stored = None
     try:
         import keyring
         stored = keyring.get_password(_KEYRING_SERVICE, spec.keyring_key)
-        if stored:
-            return stored
     except Exception:
-        pass
-    return None
+        stored = None
+    _KEY_CACHE[spec.keyring_key] = stored
+    return stored
 
 
 def provider_for_key(api_key: str) -> ProviderSpec | None:
