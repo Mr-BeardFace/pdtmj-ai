@@ -19,6 +19,7 @@ from core.config import get
 _FATAL_MARKERS = (
     "no password hashes loaded", "unknown ciphertext format",
     "no such file or directory", "unknown option",
+    "crash recovery file is locked",
 )
 
 
@@ -71,12 +72,17 @@ def john(hash: str, hash_format: str | None = None,
         passes.append(("custom", custom_path))
     passes.append(("rockyou", wordlist))
 
+    # Per-run session so concurrent John jobs don't collide on the default .rec
+    # lock — "Crash recovery file is locked".
+    session = "pdtmj_" + os.path.basename(pot_path)
+
     passes_run: list[str] = []
     last_cmd = ""
     last_diag = ""
     try:
         for name, wl in passes:
-            cmd = [binary, f"--wordlist={wl}", f"--pot={pot_path}", *fmt_args, hash_path]
+            cmd = [binary, f"--wordlist={wl}", f"--pot={pot_path}",
+                   f"--session={session}", *fmt_args, hash_path]
             last_cmd = " ".join(cmd)
             passes_run.append(name)
             try:

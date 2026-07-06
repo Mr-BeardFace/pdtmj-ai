@@ -30,6 +30,7 @@ _FATAL_MARKERS = (
     "token length exception", "no hashes loaded", "separator unmatched",
     "signature unmatched", "salt-value exception", "salt-length exception",
     "no devices found", "no devices left", "self-test failed",
+    "already an instance",
 )
 
 
@@ -88,6 +89,10 @@ def hashcat_crack(hash: str, hash_mode: int | None = None,
     if have_rules:
         passes.append(("rockyou+OneRule", wordlist, rule_args))
 
+    # Per-run session name so concurrent hashcat jobs (or a stray/manual instance)
+    # don't collide on the default session lock — "Already an instance running".
+    session = "pdtmj_" + os.path.basename(out_path)
+
     passes_run: list[str] = []
     last_cmd = ""
     last_diag = ""
@@ -96,7 +101,7 @@ def hashcat_crack(hash: str, hash_mode: int | None = None,
             open(out_path, "w").close()  # clear outfile between passes
             cmd = [
                 binary, "-m", str(mode), "-a", "0",
-                "--quiet", "--potfile-disable",
+                "--quiet", "--potfile-disable", "--session", session,
                 "--outfile-format", "2",          # plaintext only — trivial to parse
                 "-o", out_path,
                 hash_path, wl_path, *extra,

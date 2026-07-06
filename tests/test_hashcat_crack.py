@@ -47,3 +47,18 @@ def test_successful_crack_is_returned(monkeypatch):
     assert r["cracked_count"] == 1
     assert r["cracked"][0]["plaintext"] == "hunter2"
     assert r["cracked"][0]["username"] == "bob"
+
+
+def test_already_running_instance_is_an_error(monkeypatch):
+    # hashcat single-instances on the session lock; a collision must surface, not
+    # read as a silent "not cracked".
+    _patch(monkeypatch, stderr="Already an instance '/usr/bin/hashcat' running on pid 315332")
+    r = hc.hashcat_crack(hash="$2b$12$" + "x" * 53, hash_mode=3200)
+    assert "error" in r and "already an instance" in r["hashcat_said"].lower()
+
+
+def test_command_uses_a_private_session(monkeypatch):
+    # a per-run --session prevents that collision in the first place
+    _patch(monkeypatch, writes="pw\n")
+    r = hc.hashcat_crack(hash="$2b$12$" + "x" * 53, hash_mode=3200)
+    assert "--session pdtmj_" in r["_command"]
