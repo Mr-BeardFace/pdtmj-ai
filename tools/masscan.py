@@ -23,6 +23,8 @@ def masscan(target: str, ports: str = "1-65535", rate: int = 1000,
 
     result = _parse_json(proc.stdout, target)
     result["_command"] = " ".join(cmd)
+    if not result["count"] and (diag := runner.diagnostic(proc)):
+        result["tool_error"] = diag        # e.g. not-root / no interface, not a clean empty
     return result
 
 

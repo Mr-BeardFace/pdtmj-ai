@@ -40,6 +40,8 @@ def ldapsearch_query(target: str, base_dn: str, filter: str = "(objectClass=*)",
 
     result = _parse_ldif(proc.stdout, target, base_dn)
     result["_command"] = " ".join(cmd)
+    if not result["total"] and (diag := runner.diagnostic(proc)):
+        result["tool_error"] = diag        # e.g. invalid creds / can't contact, not a clean empty
     return result
 
 

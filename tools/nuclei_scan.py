@@ -52,13 +52,16 @@ def nuclei_scan(url: str, tags: Optional[str] = None, templates: Optional[str] =
             "curl_command":      obj.get("curl-command", ""),
         })
 
-    return {
+    out = {
         "url":       url,
         "tags_used": tags or DEFAULT_TAGS,
         "findings":  findings,
         "count":     len(findings),
         "_command":  " ".join(cmd),
     }
+    if not findings and (diag := runner.diagnostic(proc)):
+        out["tool_error"] = diag           # a failure, not a clean empty
+    return out
 
 
 TOOL_DEFINITION = {

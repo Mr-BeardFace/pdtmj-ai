@@ -22,6 +22,8 @@ def trufflehog(path: str, source_type: str = "filesystem",
 
     result = _parse_output(proc.stdout, path)
     result["_command"] = " ".join(cmd)
+    if not result["count"] and (diag := runner.diagnostic(proc)):
+        result["tool_error"] = diag        # a run failure, not a clean empty
     return result
 
 

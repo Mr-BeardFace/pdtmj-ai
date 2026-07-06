@@ -58,8 +58,11 @@ def gobuster_dir(
                 "redirect": m.group(4) or None,
             })
 
-    return {"url": url, "wordlist": wl, "results": results, "count": len(results),
-            "_command": " ".join(cmd)}
+    out = {"url": url, "wordlist": wl, "results": results, "count": len(results),
+           "_command": " ".join(cmd)}
+    if not results and (diag := runner.diagnostic(proc)):
+        out["tool_error"] = diag           # a failure, not a clean empty
+    return out
 
 
 TOOL_DEFINITION = {

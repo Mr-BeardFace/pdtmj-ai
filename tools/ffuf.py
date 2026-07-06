@@ -62,7 +62,7 @@ def ffuf(
             cmd += shlex.split(extra_args)
 
         try:
-            runner.run(cmd, capture_output=True, text=True, timeout=300)
+            proc = runner.run(cmd, capture_output=True, text=True, timeout=300)
         except subprocess.TimeoutExpired:
             return {"error": "ffuf timed out", "url": url}
 
@@ -70,7 +70,8 @@ def ffuf(
             with open(out_path, encoding="utf-8") as f:
                 raw = json.load(f)
         except (json.JSONDecodeError, FileNotFoundError):
-            return {"error": "ffuf produced no parseable output", "url": url}
+            return {"error": "ffuf produced no parseable output", "url": url,
+                    "ffuf_said": runner.diagnostic(proc), "_command": " ".join(cmd)}
 
         results = []
         for r in raw.get("results", []):
@@ -85,8 +86,11 @@ def ffuf(
                 "redirect":     r.get("redirectlocation", ""),
             })
 
-        return {"url": url, "wordlist": wl, "results": results, "count": len(results),
-                "_command": " ".join(cmd)}
+        out = {"url": url, "wordlist": wl, "results": results, "count": len(results),
+               "_command": " ".join(cmd)}
+        if not results and (diag := runner.diagnostic(proc)):
+            out["tool_error"] = diag       # a failure, not a clean empty
+        return out
 
     finally:
         try:

@@ -72,13 +72,16 @@ def dalfox(
                 "raw":         line,
             })
 
-    return {
+    out = {
         "url":        url,
         "vulnerable": len(findings) > 0,
         "findings":   findings,
         "count":      len(findings),
         "_command":   " ".join(cmd),
     }
+    if not findings and (diag := runner.diagnostic(proc)):
+        out["tool_error"] = diag           # a failure, not a clean empty
+    return out
 
 
 TOOL_DEFINITION = {
