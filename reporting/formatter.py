@@ -6,7 +6,7 @@ import uuid
 from core.timeutil import now_local
 from pathlib import Path
 
-from jinja2 import Environment, FileSystemLoader, select_autoescape
+from jinja2 import Environment, FileSystemLoader
 
 from core.models import EngagementRun
 
@@ -305,13 +305,21 @@ def nist_cvss_url(vector: str) -> str:
 _ENV: Environment | None = None
 
 
+def _autoescape(name: str | None) -> bool:
+    # Escape by the real output suffix, ignoring the .j2/.jinja template ext — else
+    # report.html.j2 ends in ".j2", select_autoescape returns False, and attacker-
+    # controlled tool output renders as raw HTML (self-XSS). Markdown stays unescaped.
+    n = (name or "").lower().removesuffix(".j2").removesuffix(".jinja")
+    return n.endswith((".html", ".htm", ".xml"))
+
+
 def _get_env() -> Environment:
     global _ENV
     if _ENV is None:
         template_dir = Path(__file__).parent / "templates"
         _ENV = Environment(
             loader=FileSystemLoader(str(template_dir)),
-            autoescape=select_autoescape(["html", "htm"]),
+            autoescape=_autoescape,
         )
         _ENV.filters["tojson"] = lambda v, indent=None: json.dumps(v, indent=indent)
         _ENV.filters["evidence_blocks"] = evidence_blocks
@@ -339,7 +347,7 @@ def _render(run: EngagementRun, fmt: str, output_dir: Path,
         for sev in ["critical", "high", "medium", "low", "info"]
     }
     generated_at = now_local().strftime("%Y-%m-%d %H:%M %Z")
-    safe_target  = run.target.replace(".", "_").replace("/", "_").replace(":", "_")
+    safe_target  = re.sub(r"[^A-Za-z0-9]+", "_", run.target).strip("_") or "target"
 
     # The report-writer agent is what synthesizes an executive_summary; its absence
     # means this report was assembled from raw run data without that synthesis pass
