@@ -161,9 +161,16 @@ def get_provider(name: str | None) -> ProviderSpec:
 
 
 def resolve_provider_key(spec: ProviderSpec, override: str | None = None) -> str | None:
-    """Resolve a provider's API key: explicit override → keychain → env var."""
+    """Resolve a provider's API key: explicit override → env var → keychain.
+
+    Env var is checked before the keychain because the OS keyring (Secret Service on
+    Linux) can BLOCK on a pinentry prompt when the login keyring is locked (headless /
+    SSH sessions), so an exported key wins and avoids the prompt entirely."""
     if override:
         return override
+    env = os.environ.get(spec.env_var)
+    if env:
+        return env
     try:
         import keyring
         stored = keyring.get_password(_KEYRING_SERVICE, spec.keyring_key)
@@ -171,7 +178,7 @@ def resolve_provider_key(spec: ProviderSpec, override: str | None = None) -> str
             return stored
     except Exception:
         pass
-    return os.environ.get(spec.env_var)
+    return None
 
 
 def provider_for_key(api_key: str) -> ProviderSpec | None:
