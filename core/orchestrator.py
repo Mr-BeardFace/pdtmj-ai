@@ -813,6 +813,8 @@ class Orchestrator:
             if not sid or not cmd:
                 return {"error": "session_id and command are required"}
             res = self._shells.exec(sid, cmd, timeout=inputs.get("timeout", 15))
+            if isinstance(res, dict):             # so the on-target command lands in the report log
+                res.setdefault("_command", f"[shell {sid}] {cmd}")
             if "output" in res and not res.get("error"):
                 self._shell_exec_ok += 1          # active foothold work → budget progress
                 if self.state:                    # driving a shell = confirmed + stabilized exec
