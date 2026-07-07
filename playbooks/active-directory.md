@@ -34,10 +34,15 @@ each step returns. The named tools are the capability to reach for.
    Catch: anonymous LDAP reads, a user list, the lockout policy, AS-REP-roastable accounts.
 3. **AS-REP roasting (no creds).** For any no-preauth account, retrieve the AS-REP
    hash with `impacket_kerberos` → `hashcat_crack`.
-4. **With credentials.** Validate + check admin (`netexec`), authenticated directory
-   enum (`ldapsearch_query`), Kerberoast SPN accounts (`impacket_kerberos` →
-   `hashcat_crack`), collect the graph (`bloodhound_python` / `netexec ldap --bloodhound`),
-   pull shares and the password policy.
+4. **With any domain credential, map before you hunt.** The moment you hold a valid
+   domain account — any user, however low-priv — collect the graph first:
+   `bloodhound_python -c All` (or `netexec ldap --bloodhound`). It surfaces every
+   privesc edge at once (DCSync, DACL abuse, delegation, AdminTo, readable LAPS), so you
+   work the real path instead of guessing. Then, guided by the graph: validate + check
+   local admin (`netexec`), authenticated directory enum (`ldapsearch_query`), Kerberoast
+   SPN accounts (`impacket_kerberos` → `hashcat_crack`), and pull shares + password policy.
+   look for: a single low-priv credential — that alone is the prerequisite; BloodHound
+   turns it into the full route to Domain Admin.
 5. **Privilege-escalation paths.** From BloodHound: DCSync rights
    (DS-Replication-Get-Changes), GenericAll/GenericWrite/WriteDACL on high-value
    objects, AdminTo edges, unconstrained/constrained delegation, readable LAPS,
