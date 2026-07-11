@@ -35,6 +35,23 @@ def test_vhosts_auto_scoped():
     assert s.in_scope("admin.corp.htb")
 
 
+def test_hosts_entry_autoscopes_vhost_on_in_scope_ip():
+    # Adding a vhost -> in-scope IP mapping to /etc/hosts is a deliberate declaration;
+    # the vhost is then in scope (was blocked before, since state never saw the mapping).
+    s = _scoped("10.129.0.5")
+    assert not s.in_scope("dev.support.htb")
+    s.ingest_tool_result("hosts_entry", {"action": "add", "ip": "10.129.0.5",
+                                         "added": ["support.htb", "dev.support.htb"]})
+    assert s.in_scope("dev.support.htb")
+    assert s.in_scope("http://support.htb/admin")     # URL collapses to host
+
+
+def test_hosts_entry_does_not_scope_out_of_scope_ip():
+    s = _scoped("10.129.0.5")
+    s.ingest_tool_result("hosts_entry", {"ip": "10.200.0.9", "added": ["evil.htb"]})
+    assert not s.in_scope("evil.htb")
+
+
 def test_same_vhost_upserts_not_duplicates():
     s = _scoped()
     s.annotate_service(host="10.0.0.1", port=80, service="http", vhost="store.corp.htb")
