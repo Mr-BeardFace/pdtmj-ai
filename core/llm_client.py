@@ -421,6 +421,21 @@ class LLMClient:
         max_tokens: int = 8192,
         temperature: float | None = None,
     ):
+        # Temperature self-heal at the top level, so it also covers a provider's custom
+        # request_handler (e.g. the subscription path) — not just the built-in backends.
+        # A model that rejects `temperature` (newer Opus/Sonnet) would otherwise 400 and
+        # fail the whole run instead of retrying without it.
+        if model in self._no_temperature_models:
+            temperature = None
+        try:
+            return self._dispatch(model, system, messages, tools, max_tokens, temperature)
+        except Exception as e:  # noqa: BLE001 — only the temperature 400 is swallowed
+            if temperature is not None and _is_temperature_rejected(str(e)):
+                self._no_temperature_models.add(model)
+                return self._dispatch(model, system, messages, tools, max_tokens, None)
+            raise
+
+    def _dispatch(self, model, system, messages, tools, max_tokens, temperature):
         if self._spec.request_handler:
             return self._spec.request_handler(
                 self, model, system, messages, tools, max_tokens, temperature)
