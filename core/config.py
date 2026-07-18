@@ -97,6 +97,12 @@ _DEFAULTS: dict[str, Any] = {
     # released. Bounds grind on an inconclusive thread.
     "frontier_attempts": 3,
 
+    # Seconds to wait for still-running background jobs (e.g. a long hashcat crack)
+    # before writing the report. Bounds the pre-report flush so a slow/never-finishing
+    # crack can't hang the whole engagement at the finish. 0 → don't wait; null → wait
+    # indefinitely (old behavior). Strays keep running and are cleaned up at teardown.
+    "job_flush_timeout": 180,
+
     # Post-exploitation validation pass. Off by default: the exploitation phase
     # already requires evidence and sets verified on its findings, so a separate
     # agent re-reproducing every finding per surface is largely a duplicate run.

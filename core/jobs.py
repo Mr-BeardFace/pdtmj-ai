@@ -11,6 +11,7 @@ Engagement-scoped: one JobManager per Orchestrator, so a job started by one agen
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 from datetime import datetime
 from core.timeutil import now_local
@@ -136,11 +137,21 @@ class JobManager:
         return bool(self.running())
 
     def wait_all(self, timeout: Optional[float] = None) -> None:
-        """Join all job threads (no timeout = wait indefinitely)."""
+        """Join all job threads. `timeout` is a TOTAL budget across all jobs (a shared
+        deadline), not per-thread — so a long crack can't multiply the wait. None waits
+        indefinitely; on expiry it returns with some threads possibly still running."""
+        deadline = None if timeout is None else time.monotonic() + timeout
         for job in self.all_jobs():
             t = job._thread
-            if t is not None:
-                t.join(timeout)
+            if t is None:
+                continue
+            if deadline is None:
+                t.join()
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            t.join(remaining)
 
     def snapshot(self) -> list[dict]:
         with self._lock:
