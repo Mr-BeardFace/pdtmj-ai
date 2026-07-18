@@ -34,8 +34,18 @@ each step returns. The named tools are the capability to reach for.
    Catch: anonymous LDAP reads, a user list, the lockout policy, AS-REP-roastable accounts.
 3. **AS-REP roasting (no creds).** For any no-preauth account, retrieve the AS-REP
    hash with `impacket_kerberos` → `hashcat_crack`.
-4. **With any domain credential, map before you hunt.** The moment you hold a valid
-   domain account — any user, however low-priv — collect the graph first:
+4. **Pre-Windows 2000 computer accounts (no creds).** A machine account created as
+   "pre-Windows 2000" — or pre-staged and never actually joined — keeps a predictable
+   password: the lowercase computer name without the trailing `$`, truncated to 14
+   characters (`WEB-SRV-01$` → `web-srv-01`). Authenticating as it yields a domain
+   foothold from nothing but a name list. look for: computer objects with `logonCount=0`
+   (frequently `pwdLastSet=0`) — enumerate them with `ldapsearch_query`, derive each
+   candidate's password, and test with `netexec` (`nxc smb -u '<COMP$>' -p '<derived>'`)
+   or an `impacket_kerberos` AS-REQ. Kerberos pre-auth failures don't touch the lockout
+   counter, but still test one at a time. A recovered machine credential feeds directly
+   into step 5 — LDAP enum, BloodHound, and RBCD/ADCS.
+5. **With any domain credential, map before you hunt.** The moment you hold a valid
+   domain account — any user or machine, however low-priv — collect the graph first:
    `bloodhound_python -c All` (or `netexec ldap --bloodhound`). It surfaces every
    privesc edge at once (DCSync, DACL abuse, delegation, AdminTo, readable LAPS), so you
    work the real path instead of guessing. Then, guided by the graph: validate + check
@@ -43,11 +53,11 @@ each step returns. The named tools are the capability to reach for.
    SPN accounts (`impacket_kerberos` → `hashcat_crack`), and pull shares + password policy.
    look for: a single low-priv credential — that alone is the prerequisite; BloodHound
    turns it into the full route to Domain Admin.
-5. **Privilege-escalation paths.** From BloodHound: DCSync rights
+6. **Privilege-escalation paths.** From BloodHound: DCSync rights
    (DS-Replication-Get-Changes), GenericAll/GenericWrite/WriteDACL on high-value
    objects, AdminTo edges, unconstrained/constrained delegation, readable LAPS,
    GPO-abuse. Document each as source → target → edge type → impact.
-6. **Password spraying — last resort.** Only after the policy is understood and within
+7. **Password spraying — last resort.** Only after the policy is understood and within
    the lockout discipline above; one password at a time.
 
 ## Deep technique playbooks — load the one the path needs
