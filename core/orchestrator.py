@@ -1562,9 +1562,13 @@ class Orchestrator:
 
                         summary = _result_summary(tb.name, result)
                         self._print(f"[green]  ✓[/green] {summary}")
+                        # Emit the capped copy, not raw `result` — a huge field (e.g. a
+                        # whole-file OOB exfil body) would otherwise ride the event to the
+                        # TUI and session log and freeze the UI. Full output is offloaded
+                        # to an artifact below (read_artifact).
                         self._emit("tool_done", name=tb.name,
                                    command_str=tc.command_str, summary=summary,
-                                   inputs=inputs, output=result)
+                                   inputs=inputs, output=tc.output)
 
                         # Auth ledger — record success/fail so the same credential
                         # is not tried again (works even when the tool "errored").

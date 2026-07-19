@@ -409,6 +409,25 @@ def test_capped_output_keeps_record_small(tmp_path):
     assert capped["small"] == "ok"
 
 
+def test_tool_done_event_output_is_capped(tmp_path):
+    # A huge tool-output field must NOT ride the tool_done event to the TUI/session log
+    # (that 90MB-event freeze). The emitted output is the capped copy; the full output
+    # is offloaded to an artifact separately.
+    events = []
+    llm = FakeLLM([
+        _msg(_ToolUseBlock(id="t0", name="fake_tool", input={})),
+        _msg(_TextBlock(text="done")),
+    ])
+    orch = Orchestrator(llm, _registry(lambda **kw: {"data": "A" * 100000, "_command": "big"}),
+                        tmp_path, quiet=True, save_individual_runs=False,
+                        log_callback=events.append)
+    orch.run(_agent(["fake_tool"]), "10.0.0.5", max_turns=3)
+    done = [e for e in events if e.get("type") == "tool_done" and e.get("name") == "fake_tool"]
+    assert done, "no tool_done event captured"
+    assert len(json.dumps(done[0]["output"], default=str)) < 20000
+    assert "A" * 100000 not in json.dumps(done[0]["output"], default=str)
+
+
 def _script_registry():
     from core.tool_registry import Tool, ToolRegistry
     r = ToolRegistry()
