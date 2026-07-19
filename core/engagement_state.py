@@ -1563,13 +1563,17 @@ class EngagementState(BaseModel):
 
         # Confirmed dead-ends — banked negatives (an attempt that provably failed), so
         # they aren't re-checked. Gated: must be verified AND carry evidence (a command
-        # behind it), never an exploitability guess. Advisory, not absolute — scoped to
-        # the access noted, and a new foothold/credential can reopen them.
+        # behind it), never an exploitability guess. Advisory, not absolute — reopen only
+        # when a capability change touches the specific blocker each one names.
         dead_ends = [f for f in (all_findings or [])
                      if f.type == "dead_end" and f.verified and f.evidence]
         if dead_ends:
-            lines.append("**Confirmed dead-ends** (don't re-check at the SAME access level — "
-                         "a new foothold/credential can reopen these):")
+            lines.append("**Confirmed dead-ends** (already tried and blocked — reopen one ONLY if a new "
+                         "capability changes the SPECIFIC blocker it names, not just because you hold a "
+                         "different identity: a new foothold/credential reopens an ACCESS-blocked one, but "
+                         "a fixed-property block (a cert's EKU, a missing feature, a patch level) stays "
+                         "closed until that property changes — permuting identity/target/switches against "
+                         "the same blocker is not a reopen):")
             for f in dead_ends[:12]:
                 lines.append(f"  ✗ {f.title}")
                 ev = next(iter((f.evidence or {}).items()), None)

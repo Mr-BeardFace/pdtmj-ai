@@ -17,9 +17,12 @@ TOOL_DEFINITION = {
         "that provably failed — so it isn't re-tried. Gate: only with verified=true AND the "
         "exact command+output in evidence (a fact you can point at), never an exploitability "
         "guess. Record the FAILED ATTEMPT, not a dead path: 'xp_dirtree to my SMB share "
-        "captured nothing as sqlsvc' — NOT 'NTLM capture is impossible'. Always note the "
-        "access level/principal it was tested under, because a new foothold can change the "
-        "result. A flawed attempt on a valid path is a dead_end for that attempt, not the path."
+        "captured nothing as sqlsvc' — NOT 'NTLM capture is impossible'. State the BLOCKER — WHY "
+        "it can't work — in the description, because that decides when it reopens: an ACCESS block "
+        "(needs creds/higher privilege) reopens on a new foothold, but a FIXED-PROPERTY block (a "
+        "cert's Server-Auth-only EKU, a missing feature, a patch level) stays closed until that "
+        "property changes — so permuting the identity/target/switches against it is not worth "
+        "retrying. A flawed attempt on a valid path is a dead_end for that attempt, not the path."
     ),
     "input_schema": {
         "type": "object",
