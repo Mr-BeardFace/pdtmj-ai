@@ -129,6 +129,10 @@ _DEFAULTS: dict[str, Any] = {
     # has and change approach. Catches the "retry near-identical thing forever"
     # spiral that the exact-match loop nudge misses. 0 disables.
     "pivot_nudge": 4,
+    # Stuck nudge: after this many turns with NO net progress (progress fingerprint
+    # flat), redirect the agent to bank the blocker as a dead_end and switch technique.
+    # Catches the varied-parameter loop against a fixed blocker that pivot/grind miss. 0 disables.
+    "stuck_nudge": 6,
     # Reuse nudge: once this many run_script scripts have been written ACROSS the
     # engagement without ever calling list_scripts, remind the agent to reuse/adapt
     # instead of rewriting near-duplicates. 0 disables.
