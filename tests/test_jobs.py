@@ -40,6 +40,18 @@ def test_jobmanager_error_result_is_failure():
     assert jm.poll_completed()[0].status == "failed"
 
 
+def test_wait_all_timeout_returns_before_job_finishes():
+    # A long background crack must not hang the pre-report flush: wait_all with a
+    # timeout is a TOTAL budget and returns promptly, leaving the job running.
+    jm = JobManager()
+    jm.start("slowcrack", {}, lambda: (time.sleep(5) or {"ok": True}))
+    t0 = time.monotonic()
+    jm.wait_all(timeout=0.2)
+    elapsed = time.monotonic() - t0
+    assert elapsed < 2                       # didn't block for the full 5s
+    assert jm.running()                      # job still in flight, not abandoned as failed
+
+
 def test_jobmanager_running_then_empty():
     jm = JobManager()
     jm.start("slow", {}, lambda: (time.sleep(0.2) or {"ok": True}))

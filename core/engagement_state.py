@@ -1290,6 +1290,15 @@ class EngagementState(BaseModel):
                         "version":  "",
                     })
 
+        elif tool_name == "hosts_entry":
+            # The agent mapped these vhosts to an IP in the local resolver — a deliberate
+            # "this name lives at this host" declaration. Auto-scope each against that IP
+            # (a no-op when the IP isn't in scope, and it still honors out-of-scope), so a
+            # vhost tied to the in-scope target is itself in scope.
+            ip = result.get("ip", "")
+            for hn in result.get("added", []):
+                self._register_web_vhost(ip, hn)
+
         elif tool_name == "port_forward":
             # A pivot exposes an internal service — record it on the board so it isn't
             # invisible. Loopback service → it lives ON the foothold (bind=loopback);

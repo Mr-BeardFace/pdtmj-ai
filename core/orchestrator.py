@@ -2084,18 +2084,25 @@ class Orchestrator:
                 + json.dumps(llm_view)[:1500])
 
     def flush_jobs(self) -> None:
-        """Wait for all outstanding background jobs and fold their results into
-        state. Called before the reporting phase so nothing is left running."""
-        if not (self._jobs.has_pending() or self._jobs.poll_completed()):
-            # nothing running and nothing uncollected
-            pass
+        """Fold outstanding background-job results into state before reporting. Waits at
+        most `job_flush_timeout` seconds (a total budget) so a long/never-finishing crack
+        can't hang the finish — stragglers keep running and are cleaned up at teardown."""
+        from core.config import get as _get
         running = self._jobs.running()
         if running:
-            self._print(f"[dim]Waiting on {len(running)} background job(s) before finishing…[/dim]")
+            timeout = _get("job_flush_timeout", 180)
+            wait_txt = "indefinitely" if timeout is None else f"up to {int(timeout)}s"
+            self._print(f"[dim]Waiting {wait_txt} on {len(running)} background job(s) before finishing…[/dim]")
             self._emit("jobs_flushing", count=len(running))
-        self._jobs.wait_all()
+            self._jobs.wait_all(None if timeout is None else float(timeout))
         for job in self._jobs.poll_completed():
             self._ingest_job(job, "background", None)
+        still = self._jobs.running()
+        if still:
+            labels = ", ".join(j.label for j in still) or "?"
+            self._print(f"[yellow]{len(still)} background job(s) still running ({labels}) — "
+                        f"not waiting further; the report reflects work up to now.[/yellow]")
+            self._emit("jobs_flush_timeout", count=len(still))
 
     def _ui_state_sig(self) -> tuple:
         """A cheap fingerprint of everything the TUI panels render from a
