@@ -55,6 +55,50 @@ _DEFAULT_MODEL_IDS = [
 ]
 
 
+# Leads panel: marker + colour per lead status. LIVE statuses sort to the top; the
+# rest (worked/ruled-out) drop below a divider so the whole reasoning trail is visible.
+_LEAD_MARK = {
+    "active":    ("●", "bold cyan"),   # working now
+    "advancing": ("◐", "cyan"),        # produced progress, more to give
+    "open":      ("○", "white"),       # known, not yet worked
+    "confirmed": ("✓", "green"),       # succeeded — moved the frontier
+    "refuted":   ("✗", "red"),         # proven a dead end
+    "exhausted": ("⊘", "yellow"),      # tried to the attempt cap, gave up
+}
+_LEAD_LIVE = ("active", "advancing", "open")
+
+
+def _lead_rows(leads: list[dict]) -> list[tuple[str, object]]:
+    """Order leads for the panel: live ones first (active→advancing→open, higher
+    kill-chain rung first), a divider, then resolved (confirmed/refuted/exhausted).
+    Returns ('lead', dict) and ('divider', None) rows."""
+    from core.leads import FRONTIER_LEVELS
+    def rung(l): return FRONTIER_LEVELS.get((l.get("reach_level") or "").lower(), 0)
+    live_order = {"active": 0, "advancing": 1, "open": 2}
+    done_order = {"confirmed": 0, "refuted": 1, "exhausted": 2}
+    live = sorted((l for l in leads if l.get("status") in _LEAD_LIVE),
+                  key=lambda l: (live_order.get(l.get("status"), 9), -rung(l)))
+    done = sorted((l for l in leads if l.get("status") not in _LEAD_LIVE),
+                  key=lambda l: (done_order.get(l.get("status"), 9), -rung(l)))
+    rows: list[tuple[str, object]] = [("lead", l) for l in live]
+    if live and done:
+        rows.append(("divider", None))
+    rows += [("lead", l) for l in done]
+    return rows
+
+
+def _fmt_lead(l: dict) -> str:
+    """One lead → a markup row: marker, rung, action, and a tries count when >1."""
+    mark, style = _LEAD_MARK.get(l.get("status"), ("·", "white"))
+    rung = markup_escape((l.get("reach_level") or "")[:9])
+    desc = markup_escape(" ".join((l.get("description") or "").split()))
+    tries = f"  [dim]·{l['attempts']}t[/dim]" if (l.get("attempts") or 0) > 1 else ""
+    body = f"{rung:<9} {desc}{tries}"
+    if l.get("status") in ("refuted", "exhausted"):
+        return f"[dim]{mark} {body}[/dim]"
+    return f"[{style}]{mark}[/{style}] {body}"
+
+
 class DynamicSuggester(Suggester):
     """Input ghost-text suggester driven by the app's live candidate pools."""
 
@@ -156,6 +200,22 @@ Screen {
     min-height: 5;
     background: #0d1117;
     scrollbar-color: #30363d #0d1117;
+}
+
+#leads-list {
+    height: 1fr;
+    min-height: 4;
+    background: #0d1117;
+    scrollbar-color: #30363d #0d1117;
+}
+
+#leads-list > ListItem {
+    background: #0d1117;
+    padding: 0 1;
+}
+
+#leads-list > ListItem:hover {
+    background: #161b22;
 }
 
 #findings-list > ListItem {
@@ -359,6 +419,47 @@ class FindingDetailModal(ModalScreen):
 
         with Vertical(id="modal-outer"):
             yield Static("  Finding Detail", id="modal-title")
+            yield TextArea("\n".join(lines), id="modal-body", read_only=True)
+            yield Static("  [dim]Esc / q — close[/dim]", id="modal-hint")
+
+
+class LeadDetailModal(ModalScreen):
+    """Double-click a lead → the full picture: what it is, where it sits on the kill
+    chain, how it scored, and how many times it's been tried."""
+    BINDINGS = [("escape", "dismiss", "Close"), ("q", "dismiss", "Close")]
+
+    def __init__(self, lead: dict) -> None:
+        super().__init__()
+        self._lead = lead
+
+    def compose(self) -> ComposeResult:
+        l = self._lead
+        mark, _ = _LEAD_MARK.get(l.get("status"), ("·", "white"))
+        lines = [
+            f"{mark}  {l.get('description', '')}",
+            f"Status: {l.get('status', '')}   Reaches: {l.get('reach_level', '')}   "
+            f"Attempts: {l.get('attempts', 0)}",
+            f"Target: {l.get('target', '')}",
+            "",
+        ]
+        if l.get("technique"):
+            lines += ["── Technique ──", str(l["technique"]), ""]
+        prior = l.get("prior")
+        prior_s = f"{prior:.0%}" if isinstance(prior, (int, float)) else str(prior or "")
+        lines += [
+            "── Scoring ──",
+            f"  Likelihood: {prior_s}   Cost: {l.get('cost', '')}   Kind: {l.get('kind', '')}",
+            "",
+        ]
+        if l.get("created_by") or l.get("origin_id"):
+            lines += ["── Origin ──",
+                      f"  Surfaced by: {l.get('created_by', '') or '—'}   "
+                      f"From: {l.get('origin_id', '') or '—'}", ""]
+        if l.get("notes"):
+            lines += ["── Notes ──", str(l["notes"]), ""]
+
+        with Vertical(id="modal-outer"):
+            yield Static("  Lead Detail", id="modal-title")
             yield TextArea("\n".join(lines), id="modal-body", read_only=True)
             yield Static("  [dim]Esc / q — close[/dim]", id="modal-hint")
 
@@ -592,6 +693,8 @@ class PentestApp(App):
 
         # Findings store (list of full finding dicts)
         self._findings: list[dict] = []
+        # Lead snapshots currently rendered (row order), so a list-click maps to one.
+        self._leads: list[dict] = []
 
         # Activity log text for Ctrl+L modal / Ctrl+Y copy. Bounded — a long/busy
         # engagement must not grow it (or the mask-over-full-history) without limit.
@@ -635,7 +738,7 @@ class PentestApp(App):
         self._right_act_fr:  int = 7    # activity-log fraction (out of 10 shared with cmd-dialogue)
         # Left-column vertical shares (relative fr) — findings / tabs. Ctrl+Up/Down
         # grows whichever the focused widget lives in; fr is relative so the other shrinks.
-        self._left_fr: dict[str, int] = {"findings": 1, "tabs": 1}
+        self._left_fr: dict[str, int] = {"leads": 1, "findings": 1, "tabs": 1}
 
         # O(1) finding dedup: normalized_title → finding dict (same ref as in _findings)
         self._findings_title_map: dict[str, dict] = {}
@@ -672,6 +775,9 @@ class PentestApp(App):
         with Horizontal(id="main-panes"):
             # ── Left ──────────────────────────────────────────────────────────
             with Vertical(id="left-pane"):
+                yield Static("◆ LEADS  [dim](frontier — working / ruled out · click for detail)[/dim]",
+                             classes="pane-header")
+                yield ListView(id="leads-list")
                 yield Static("● FINDINGS", classes="pane-header")
                 yield ListView(id="findings-list")
                 with TabbedContent(id="info-tabs"):
@@ -1041,10 +1147,12 @@ class PentestApp(App):
         return "right"
 
     def _focused_left_section(self) -> str:
-        """Which left-column section (findings / tabs) holds focus — for grow."""
+        """Which left-column section (leads / findings / tabs) holds focus — for grow."""
         w = self.focused
         while w is not None:
             wid = getattr(w, "id", None)
+            if wid == "leads-list":
+                return "leads"
             if wid == "findings-list":
                 return "findings"
             if wid == "info-tabs":
@@ -1070,12 +1178,18 @@ class PentestApp(App):
     def _resize_left_split(self, delta: int) -> None:
         section = self._focused_left_section()
         self._left_fr[section] = max(1, min(9, self._left_fr[section] + delta))
+        self.query_one("#leads-list").styles.height    = f"{self._left_fr['leads']}fr"
         self.query_one("#findings-list").styles.height = f"{self._left_fr['findings']}fr"
         self.query_one("#info-tabs").styles.height     = f"{self._left_fr['tabs']}fr"
 
     # ── Findings list click ───────────────────────────────────────────────────
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
+        if event.list_view.id == "leads-list":
+            idx = event.list_view.index
+            if idx is not None and 0 <= idx < len(self._leads) and self._leads[idx] is not None:
+                self.push_screen(LeadDetailModal(self._leads[idx]))
+            return
         if event.list_view.id != "findings-list":
             return
         idx = event.list_view.index
@@ -2086,6 +2200,9 @@ class PentestApp(App):
         self.query_one("#findings-list", ListView).clear()
         self._findings.clear(); self._findings_title_map.clear()
 
+        self.query_one("#leads-list", ListView).clear()
+        self._leads.clear()
+
         if full:
             self._manual_creds.clear()                     # blank slate → drop operator creds too
         self.query_one("#creds-table", DataTable).clear()
@@ -2144,6 +2261,24 @@ class PentestApp(App):
                 f"[{col}]{mark} {sev[:4].upper()}[/{col}] {f.get('title', '')}"
             )
             lv.append(ListItem(label))
+
+    def _render_leads(self, leads: list) -> None:
+        """Repopulate the Leads panel from a snapshot: live leads on top, a divider,
+        then the worked/ruled-out ones. Whole-panel rebuild each update — the board is
+        small, and this keeps the display an exact mirror of the store. `self._leads`
+        is kept row-aligned (None for the divider) so a click maps to a lead."""
+        lv = self.query_one("#leads-list", ListView)
+        lv.clear()
+        self._leads = []
+        for kind, lead in _lead_rows(leads or []):
+            if kind == "divider":
+                item = ListItem(Label("[dim]── worked / ruled out ──[/dim]"))
+                item.disabled = True
+                self._leads.append(None)
+            else:
+                item = ListItem(Label(_fmt_lead(lead)))
+                self._leads.append(lead)
+            lv.append(item)
 
     # ── Creds table ───────────────────────────────────────────────────────────
 
@@ -2665,6 +2800,9 @@ class PentestApp(App):
 
         elif t == "operator_interrupt":
             self._activity(f"[magenta]⚡ Operator:[/magenta] {event.get('message', '')}")
+
+        elif t == "leads_update":
+            self._render_leads(event.get("leads", []))
 
         elif t == "followup_queued":
             self._activity(

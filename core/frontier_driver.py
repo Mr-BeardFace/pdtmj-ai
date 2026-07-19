@@ -273,6 +273,26 @@ class FrontierDriver(ParallelDriver):
                 fn()
             except Exception:
                 pass
+        self._push_leads()   # leads seeded by the initial ingest show before the first pick
+
+    def _push_leads(self) -> None:
+        """Emit the current lead board so the UI's Leads panel mirrors what the frontier
+        is working and what it has ruled out. Live snapshot, cheap; carries the detail
+        fields the panel's double-click view reads."""
+        emit = getattr(self.orch, "_emit", None)
+        if not callable(emit):
+            return
+        try:
+            snap = [{
+                "id": l.id, "kind": l.kind, "status": l.status,
+                "reach_level": l.reach_level, "description": l.description,
+                "target": l.target, "attempts": l.attempts,
+                "technique": l.technique, "prior": l.prior, "cost": l.cost,
+                "origin_id": l.origin_id, "created_by": l.created_by, "notes": l.notes,
+            } for l in self.store.leads]
+            emit("leads_update", leads=snap)
+        except Exception:
+            pass
 
     # ── work a single lead (the controller's callback) ──────────────────────────
 
@@ -547,6 +567,7 @@ class FrontierDriver(ParallelDriver):
     # ── events / reporting ───────────────────────────────────────────────────────
 
     def _on_frontier_event(self, kind: str, payload) -> None:
+        self._push_leads()   # every lifecycle change (pick/advance/refute/exhaust) refreshes the panel
         fn = _EVENT_LABELS.get(kind)
         if fn is None:
             return
