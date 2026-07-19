@@ -34,6 +34,22 @@ def test_empty_poll_hint_after_streak():
     assert "hint" not in r and r["callback_fired"]
 
 
+def test_large_body_not_carried_twice_in_check(monkeypatch):
+    # A big body lives WHOLE in 'bodies'; 'received' keeps only a preview so the
+    # payload isn't duplicated in every check result (the 90MB-event bloat).
+    oob._received = []
+    oob._empty_checks = 0
+    oob._last_check_count = 0
+    oob._listener_ip = "10.10.14.5"
+    big = "K" * (oob._RECEIVED_BODY_PREVIEW + 5000)
+    oob._received.append({"method": "POST", "path": "/x", "body": big})
+    chk = oob.oob_listener("check")
+    assert chk["bodies"][0] == big                                # full payload in bodies
+    assert len(chk["received"][0]["body"]) < len(big)            # received is previewed
+    assert chk["received"][0]["body_len"] == len(big)
+    assert oob._received[0]["body"] == big                        # shared buffer untouched (decode still works)
+
+
 def test_default_port_cascades_past_a_bind_failure(monkeypatch):
     # Omitting port cascades through _DEFAULT_PORTS, skipping any that won't bind.
     monkeypatch.setattr(oob, "_get_interface_ip", lambda iface: "127.0.0.1")
