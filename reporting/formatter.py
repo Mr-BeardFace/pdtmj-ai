@@ -280,6 +280,10 @@ _TERMINATION = {
                              "lost and did not recover after retries. The findings reflect the work "
                              "completed up to that point; the engagement can be resumed once "
                              "connectivity is restored."),
+    "model_refused": (True, "The engagement was halted when the model declined to respond to the "
+                             "persona/objective content (a model-side refusal, not an engine error). "
+                             "The findings reflect the work completed beforehand; the engagement can be "
+                             "resumed with a different model."),
 }
 
 

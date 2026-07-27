@@ -32,7 +32,7 @@ from core.paths import (RESULTS_DIR, AGENTS_DIR, LOGS_DIR, ASSESSMENTS_DIR,
 from core.artifacts import ArtifactStore
 from core.registry import build_registry, load_all_agents
 from core.agent_loader import load_agent
-from core.llm_client import LLMClient, APIAccountLimitError, APIAuthError, APIConnectionError
+from core.llm_client import LLMClient, APIAccountLimitError, APIAuthError, APIConnectionError, ModelRefusalError
 from core.orchestrator import Orchestrator
 from core.engagement_state import EngagementState
 from core.session_log import SessionLogger
@@ -3106,6 +3106,21 @@ class PentestApp(App):
                 interrupted = True
                 termination = "auth_failed"
                 self.post_message(PentestApp.Activity(f"[red]⛔ {e}[/red]"))
+            except ModelRefusalError as e:
+                # Resumable like an account limit: the block is the model/persona
+                # combination, not the engagement state, so switching models and
+                # continuing picks up right where this run left off.
+                with self._pipeline_lock:
+                    self._pipeline_resume = {
+                        "brief": brief, "state": state, "assessment": assessment,
+                        "runs": prior_runs + driver.runs,
+                    }
+                interrupted = True
+                termination = "model_refused"
+                self.post_message(PentestApp.Activity(
+                    f"[red]⛔ {e}[/red]\n  Switch models with [bold cyan]/agent set model global "
+                    f"<model>[/bold cyan], then [bold cyan]/continue[/bold cyan] to resume."
+                ))
 
             if termination is None:
                 termination = driver.termination_reason   # paused / ended_early / cycle_cap / completed

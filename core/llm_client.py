@@ -30,6 +30,13 @@ class APIConnectionError(Exception):
     the engagement is saved so /continue picks it up once connectivity is back."""
 
 
+class ModelRefusalError(Exception):
+    """The model declined to respond to the request content (stop_reason='refusal').
+    Not retryable by re-sending the same turn — the persona/objective content is what
+    tripped it, so looping to the next lead just repeats the refusal for free. Halts
+    the engagement like an auth failure so the operator can switch models."""
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 _QUOTA_KEYWORDS = (

@@ -1,9 +1,11 @@
 """Orchestrator loop tests using a scripted fake LLM — no API calls."""
 import json
 
+import pytest
+
 from core.agent_loader import AgentDefinition
 from core.engagement_state import EngagementState
-from core.llm_client import _Message, _TextBlock, _ToolUseBlock, _Usage
+from core.llm_client import ModelRefusalError, _Message, _TextBlock, _ToolUseBlock, _Usage
 from core.models import Finding
 from core.orchestrator import Orchestrator
 from core.tool_registry import Tool, ToolRegistry
@@ -191,6 +193,19 @@ def test_max_turns_status(tmp_path):
     orch = _orchestrator(tmp_path, llm, _registry(lambda **kw: {"ok": True}))
     run = orch.run(_agent(["fake_tool"]), "10.10.10.5", max_turns=3)
     assert run.status == "max_turns"
+
+
+def test_model_refusal_raises_instead_of_silent_complete(tmp_path):
+    # A stop_reason="refusal" response (the model declining the request content) must
+    # not be swallowed as a normal tool-free close-out — that mislabels a refusal as
+    # "complete, 0 findings" and the frontier loop just re-picks and pays for the same
+    # refusal again. It should propagate so the pipeline halts and tells the operator.
+    refusal = _msg()
+    refusal.stop_reason = "refusal"
+    llm = FakeLLM([refusal])
+    orch = _orchestrator(tmp_path, llm, _registry(lambda **kw: {"ok": True}))
+    with pytest.raises(ModelRefusalError):
+        orch.run(_agent(["fake_tool"]), "10.10.10.5", max_turns=3)
 
 
 # ── sliding turn budget (don't kill a working exploit) ────────────────────────
