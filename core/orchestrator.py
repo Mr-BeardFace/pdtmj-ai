@@ -1105,11 +1105,6 @@ class Orchestrator:
         # Pivot nudge (per-run): consecutive hard failures within this agent run.
         pivot_after = int(_cfg_get("pivot_nudge", 4) or 0)
         fail_streak = 0          # consecutive unproductive tool results
-        # Stuck nudge (per-run): turns of NO net progress (fingerprint flat) before
-        # redirecting to bank the blocker as a dead_end and switch technique. Immune
-        # to the interleaved-noise reset that blinds the consecutive-failure pivot nudge.
-        stuck_after = int(_cfg_get("stuck_nudge", 6) or 0)
-        stuck_nudged_at = 0      # no_progress_turns value at last stuck nudge
         # Reuse + grind nudges are ENGAGEMENT-level (counters live on self.state) so
         # they survive the agent cycling — thrash spread over many runs still trips.
         reuse_threshold = int(_cfg_get("reuse_nudge", 10) or 0)
@@ -1688,27 +1683,6 @@ class Orchestrator:
                             "what you have already confirmed now (annotate_finding / record_credential "
                             "/ record_flag), then either try a fundamentally different approach or "
                             "move on. Do not keep tweaking the same payload/script.]"
-                        ),
-                    })
-
-                # Stuck nudge (per-run) — no NET progress (fingerprint flat) for
-                # `stuck_after` turns; re-fires each further `stuck_after` turns.
-                if (stuck_after and no_progress_turns
-                        and no_progress_turns >= stuck_nudged_at + stuck_after):
-                    stuck_nudged_at = no_progress_turns
-                    self._print(f"  [yellow]⊘ stuck nudge — {no_progress_turns} turns, no new progress[/yellow]")
-                    self._emit("stuck_nudge", turns=no_progress_turns)
-                    tool_results.append({
-                        "type": "text",
-                        "text": (
-                            f"[Engine notice: {no_progress_turns} turns with NO new finding, credential, "
-                            "flag, or shell. If a specific attack keeps failing, the problem is the "
-                            "APPROACH, not the parameters — varying the identity, target, or switches "
-                            "against the same blocker is not progress. Do two things now: (1) bank the "
-                            "blocker with annotate_finding(type='dead_end', verified=true) — record WHY it "
-                            "can't work (the invariant: e.g. 'issued cert has Server-Auth-only EKU, unusable "
-                            "for domain auth'), NOT just the failed command, so no later agent re-opens it; "
-                            "then (2) switch to a fundamentally different technique or lead, or move on.]"
                         ),
                     })
 

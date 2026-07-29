@@ -376,29 +376,6 @@ def test_no_pivot_nudge_when_calls_succeed(tmp_path):
     assert not any("dead end" in n for n in llm.notices)
 
 
-def test_stuck_nudge_fires_on_no_net_progress(tmp_path):
-    # Calls SUCCEED every turn (so the pivot nudge never fires) but bank nothing →
-    # after stuck_nudge (6) turns of a flat progress fingerprint, a stuck notice fires.
-    # This is the certipy-permutation loop pivot/grind can't see.
-    llm = NoticeWatchLLM([
-        _msg(_ToolUseBlock(id=f"t{i}", name="fake_tool", input={"n": i}))
-        for i in range(7)
-    ] + [_msg(_TextBlock(text="done"))])
-    state = EngagementState(target="10.10.10.5")
-    orch = _orchestrator(tmp_path, llm, _registry(lambda **kw: {"ok": True}), state)
-    orch.run(_agent(["fake_tool"]), "10.10.10.5", max_turns=12)
-    assert any("not the parameters" in n for n in llm.notices)
-
-
-def test_no_stuck_nudge_while_banking_progress(tmp_path):
-    # A distinct credential banked each turn keeps the fingerprint moving → no stuck notice.
-    llm = NoticeWatchLLM([_bank(i) for i in range(7)] + [_msg(_TextBlock(text="done"))])
-    state = EngagementState(target="10.10.10.5")
-    orch = _orchestrator(tmp_path, llm, _registry(lambda **kw: {}), state)
-    orch.run(_agent([]), "10.10.10.5", max_turns=12)
-    assert not any("not the parameters" in n for n in llm.notices)
-
-
 def test_reuse_nudge_on_heavy_run_script(tmp_path):
     from core.tool_registry import Tool, ToolRegistry
     reg = ToolRegistry()
