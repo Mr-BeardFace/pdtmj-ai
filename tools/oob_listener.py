@@ -26,6 +26,21 @@ _serve_dir:        str  = ""     # directory of payloads to serve, if any
 # is well under this; the agent gets the whole thing.
 _MAX_BODY = 8 * 1024 * 1024
 
+# A large body lives in 'bodies' (the whole-file channel); the 'received' view keeps
+# only a preview so the payload isn't carried twice in every check result.
+_RECEIVED_BODY_PREVIEW = 2000
+
+
+def _trim_received(hit: dict) -> dict:
+    """Copy of a callback with a large body previewed — full body stays in 'bodies'."""
+    body = hit.get("body")
+    if not isinstance(body, str) or len(body) <= _RECEIVED_BODY_PREVIEW:
+        return hit
+    v = dict(hit)
+    v["body"] = body[:_RECEIVED_BODY_PREVIEW] + f"…[+{len(body) - _RECEIVED_BODY_PREVIEW} chars — full payload under 'bodies']"
+    v["body_len"] = len(body)
+    return v
+
 
 # Deterministic decoders. The LLM decides WHICH one applies (it can see the raw
 # capture first and recognize base64/hex/gzip/…); the tool only executes the codec
@@ -232,7 +247,7 @@ def oob_listener(
         out = {
             "callback_fired": len(hits) > 0,
             "count":          len(hits),
-            "received":       hits,
+            "received":       [_trim_received(h) for h in hits],
             "bodies":         bodies,
             "callback_url":   f"http://{_listener_ip}:{_listener_port}/" if _listener_ip else "",
         }

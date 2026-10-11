@@ -12,7 +12,7 @@ from rich.panel import Panel
 from core.models import EngagementRun, Finding, ToolCall, CvssScores
 from core.agent_loader import AgentDefinition
 from core.tool_registry import ToolRegistry
-from core.llm_client import LLMClient, APIAuthError, APIAccountLimitError
+from core.llm_client import LLMClient, APIAuthError, APIAccountLimitError, ModelRefusalError
 from core.pricing import estimate_cost
 from core.engagement_state import EngagementState, _is_loopback_host
 from core.artifacts import ArtifactStore
@@ -1235,6 +1235,13 @@ class Orchestrator:
 
                 messages.append({"role": "assistant", "content": response.content})
 
+                if getattr(response, "stop_reason", None) == "refusal":
+                    raise ModelRefusalError(
+                        f"{effective_model} refused this request (turn {_turn}, "
+                        f"agent={agent.name}) — the persona/objective content tripped "
+                        f"the model's own refusal, not an engine bug. Switch models."
+                    )
+
                 tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
                 text_blocks     = [b for b in response.content if b.type == "text"]
 
@@ -1557,9 +1564,13 @@ class Orchestrator:
 
                         summary = _result_summary(tb.name, result)
                         self._print(f"[green]  ✓[/green] {summary}")
+                        # Emit the capped copy, not raw `result` — a huge field (e.g. a
+                        # whole-file OOB exfil body) would otherwise ride the event to the
+                        # TUI and session log and freeze the UI. Full output is offloaded
+                        # to an artifact below (read_artifact).
                         self._emit("tool_done", name=tb.name,
                                    command_str=tc.command_str, summary=summary,
-                                   inputs=inputs, output=result)
+                                   inputs=inputs, output=tc.output)
 
                         # Auth ledger — record success/fail so the same credential
                         # is not tried again (works even when the tool "errored").
@@ -1789,6 +1800,10 @@ class Orchestrator:
         except APIAuthError:
             run.status = "auth_failed"
             raise  # let the pipeline handle messaging
+
+        except ModelRefusalError:
+            run.status = "refused"
+            raise  # let the pipeline halt + tell the operator, not silently re-pick
 
         except Exception as e:
             run.status = "failed"

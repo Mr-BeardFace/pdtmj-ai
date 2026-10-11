@@ -30,6 +30,13 @@ class APIConnectionError(Exception):
     the engagement is saved so /continue picks it up once connectivity is back."""
 
 
+class ModelRefusalError(Exception):
+    """The model declined to respond to the request content (stop_reason='refusal').
+    Not retryable by re-sending the same turn — the persona/objective content is what
+    tripped it, so looping to the next lead just repeats the refusal for free. Halts
+    the engagement like an auth failure so the operator can switch models."""
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 _QUOTA_KEYWORDS = (
@@ -426,6 +433,10 @@ class LLMClient:
         # A model that rejects `temperature` (newer Opus/Sonnet) would otherwise 400 and
         # fail the whole run instead of retrying without it.
         if model in self._no_temperature_models:
+            temperature = None
+        # Subscription / custom-transport providers never accept temperature — drop it
+        # unconditionally so we don't pay a failed round-trip waiting for a 400.
+        if self._spec.request_handler:
             temperature = None
         try:
             return self._dispatch(model, system, messages, tools, max_tokens, temperature)

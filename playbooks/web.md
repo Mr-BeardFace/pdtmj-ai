@@ -34,7 +34,19 @@ class-level techniques below still apply to any app.
 - **Reflected input** → `<test>` then XSS payloads (`dalfox` to confirm/PoC).
 - **URL/param** → `'`, `"`, `{{7*7}}`, `; id`, `../../../etc/passwd`, `%0a`.
 - **SQLi** → `admin'--`, `' OR '1'='1`, `' UNION SELECT NULL--`; `sqlmap_scan` to confirm/extract (read-only).
-- **SSTI** → `{{7*7}}`, `${7*7}`, `<%= 7*7 %>`. **LFI** → traversal + PHP filter wrappers.
+- **SSTI** → `{{7*7}}`, `${7*7}`, `<%= 7*7 %>`.
+- **LFI** → traversal (`../../../etc/passwd`) + wrappers (`php://filter/convert.base64-encode/resource=`, `phar://`, `zip://`).
+  **A blocked/404 traversal is not proof it's safe** — the block is often the front
+  door (WAF/reverse proxy/IIS normalization) filtering the request before the app's
+  own code runs. Escalate the encoding before moving on — these are three FAMILIES to
+  permute within, not an exhaustive list: encoding layers (double URL-encoding
+  `%252e%252e%252f` to survive a decode-once filter; overlong UTF-8 `%c0%af`/`%c1%9c`
+  against older Unicode-aware stacks), non-canonical construction (`....//`, mixed
+  `\`/`/` against a non-recursive single-pass strip), and base-directory override
+  (an absolute path, or on Windows a UNC path like `\\127.0.0.1\C$\...` — `Path.Combine`/
+  `path.join` in many stacks discard the base directory entirely when given a rooted
+  segment). look for: an endpoint that blocks `../` but reads like a raw path-join with
+  no canonicalization — that mismatch is the bypass tell, not a dead end.
 - **Auth** → default/vendor creds; SQLi in login (`admin'--`, `admin' OR '1'='1'--`).
   For authenticated flows pass a named `session` to `http_request` (e.g. `session="admin"`):
   log in once and every later call with that name stays authenticated, cookies carried —

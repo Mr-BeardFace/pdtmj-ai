@@ -4,6 +4,7 @@ import json
 import queue
 import re
 import threading
+from collections import deque
 from datetime import datetime
 from core.timeutil import now_local
 from typing import Optional
@@ -31,13 +32,20 @@ from core.paths import (RESULTS_DIR, AGENTS_DIR, LOGS_DIR, ASSESSMENTS_DIR,
 from core.artifacts import ArtifactStore
 from core.registry import build_registry, load_all_agents
 from core.agent_loader import load_agent
-from core.llm_client import LLMClient, APIAccountLimitError, APIAuthError, APIConnectionError
+from core.llm_client import LLMClient, APIAccountLimitError, APIAuthError, APIConnectionError, ModelRefusalError
 from core.orchestrator import Orchestrator
 from core.engagement_state import EngagementState
 from core.session_log import SessionLogger
 from core.models import Assessment
 
 _MARKUP_RE = re.compile(r"\[/?[^\]]*\]")
+
+# Bounds on retained log volume so a busy engagement (many background tools firing
+# events) can't grow render/memory cost without limit. Pane keeps recent scrollback;
+# the Ctrl+L history keeps far more; the genuinely-full tool output lives in artifacts.
+_ACTIVITY_PANE_MAX = 5000        # lines retained in the live activity RichLog
+_CMD_LOG_MAX = 1000              # lines retained in the command RichLog
+_ACTIVITY_HISTORY_MAX = 50000    # lines retained for the Ctrl+L modal / copy
 
 # Seeded model ids — extended at runtime when the user runs `/models list`.
 _DEFAULT_MODEL_IDS = [
@@ -585,8 +593,9 @@ class PentestApp(App):
         # Findings store (list of full finding dicts)
         self._findings: list[dict] = []
 
-        # Activity log text for Ctrl+L modal / Ctrl+Y copy
-        self._activity_lines: list[str] = []
+        # Activity log text for Ctrl+L modal / Ctrl+Y copy. Bounded — a long/busy
+        # engagement must not grow it (or the mask-over-full-history) without limit.
+        self._activity_lines: deque = deque(maxlen=_ACTIVITY_HISTORY_MAX)
         # True when the pane's last line is already blank — guards _pane_gap doubling.
         self._pane_at_blank = True
         # Recent (tool, command, full_output_text), newest last — so when a credential
@@ -676,14 +685,16 @@ class PentestApp(App):
             # ── Right ─────────────────────────────────────────────────────────
             with Vertical(id="right-pane"):
                 yield Static("● AGENT WORKING  [dim](Ctrl+L view · Ctrl+Y copy)[/dim]", classes="pane-header")
-                yield RichLog(id="activity-log", markup=True, highlight=False, auto_scroll=True, wrap=True)
+                yield RichLog(id="activity-log", markup=True, highlight=False, auto_scroll=True,
+                              wrap=True, max_lines=_ACTIVITY_PANE_MAX)
                 with Vertical(id="cmd-dialogue"):
                     yield Static(
                         "● COMMANDS  [dim](Ctrl+D hide · click to copy)[/dim]",
                         classes="pane-header-toggle",
                         id="cmd-header",
                     )
-                    yield RichLog(id="cmd-log", markup=True, highlight=False, auto_scroll=True)
+                    yield RichLog(id="cmd-log", markup=True, highlight=False, auto_scroll=True,
+                                  max_lines=_CMD_LOG_MAX)
         yield Input(
             placeholder="PDTMJ-AI ›  (/ for commands · Tab to complete)",
             id="cmd-input",
@@ -3095,6 +3106,21 @@ class PentestApp(App):
                 interrupted = True
                 termination = "auth_failed"
                 self.post_message(PentestApp.Activity(f"[red]⛔ {e}[/red]"))
+            except ModelRefusalError as e:
+                # Resumable like an account limit: the block is the model/persona
+                # combination, not the engagement state, so switching models and
+                # continuing picks up right where this run left off.
+                with self._pipeline_lock:
+                    self._pipeline_resume = {
+                        "brief": brief, "state": state, "assessment": assessment,
+                        "runs": prior_runs + driver.runs,
+                    }
+                interrupted = True
+                termination = "model_refused"
+                self.post_message(PentestApp.Activity(
+                    f"[red]⛔ {e}[/red]\n  Switch models with [bold cyan]/agent set model global "
+                    f"<model>[/bold cyan], then [bold cyan]/continue[/bold cyan] to resume."
+                ))
 
             if termination is None:
                 termination = driver.termination_reason   # paused / ended_early / cycle_cap / completed

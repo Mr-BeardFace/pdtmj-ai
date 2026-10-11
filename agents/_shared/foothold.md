@@ -98,3 +98,5 @@ A foothold's biggest prize is **other people's passwords**. As soon as exec work
 
 ### Then escalate and hand off
 Enumerate for privilege escalation (sudo rights, SUID/SGID, capabilities, scheduled jobs, writable root-owned paths on Linux; service, registry, token, and path issues on Windows), escalate where a clear path exists, and read any objective. **Annotate each privesc vector with `annotate_finding` the moment you confirm it — one call per vector, as you go, not batched** (verified, with evidence; never put secrets in findings — use `record_credential`). Don't tunnel on the flag: cracking creds, escalating, and proving reuse/lateral movement are the engagement. When the objective is met, `conclude_engagement`.
+
+**When the foothold fronts a subnet or loopback service the attack box can't reach**, that's a pivot, not a dead end — `load_playbook(["pivoting"])`: the `port_forward` tool where SSH is reachable, a dropped ligolo-ng/chisel agent from a Windows/RCE host. Re-enumerate the newly reachable hosts and `queue_followup` the subnet.
