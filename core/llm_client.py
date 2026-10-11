@@ -434,6 +434,10 @@ class LLMClient:
         # fail the whole run instead of retrying without it.
         if model in self._no_temperature_models:
             temperature = None
+        # Subscription / custom-transport providers never accept temperature — drop it
+        # unconditionally so we don't pay a failed round-trip waiting for a 400.
+        if self._spec.request_handler:
+            temperature = None
         try:
             return self._dispatch(model, system, messages, tools, max_tokens, temperature)
         except Exception as e:  # noqa: BLE001 — only the temperature 400 is swallowed
