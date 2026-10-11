@@ -79,6 +79,7 @@ class Lead(BaseModel):
     created_by: str = ""            # agent/strategist that surfaced it
     attempts: int = 0
     notes: str = ""
+    detection_risk: Optional[str] = None   # redteam only: low|medium|high|certain
     timestamp: datetime = Field(default_factory=now_local)
 
     def ev(self, current_frontier: int = 0) -> float:
