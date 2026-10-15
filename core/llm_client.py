@@ -427,6 +427,7 @@ class LLMClient:
         tools:      list[dict],
         max_tokens: int = 8192,
         temperature: float | None = None,
+        thinking: dict | None = None,
     ):
         # Temperature self-heal at the top level, so it also covers a provider's custom
         # request_handler (e.g. the subscription path) — not just the built-in backends.
@@ -438,21 +439,24 @@ class LLMClient:
         # unconditionally so we don't pay a failed round-trip waiting for a 400.
         if self._spec.request_handler:
             temperature = None
+        # Extended thinking requires temperature=1 on the Anthropic API.
+        if thinking:
+            temperature = 1.0
         try:
-            return self._dispatch(model, system, messages, tools, max_tokens, temperature)
+            return self._dispatch(model, system, messages, tools, max_tokens, temperature, thinking)
         except Exception as e:  # noqa: BLE001 — only the temperature 400 is swallowed
             if temperature is not None and _is_temperature_rejected(str(e)):
                 self._no_temperature_models.add(model)
-                return self._dispatch(model, system, messages, tools, max_tokens, None)
+                return self._dispatch(model, system, messages, tools, max_tokens, None, thinking)
             raise
 
-    def _dispatch(self, model, system, messages, tools, max_tokens, temperature):
+    def _dispatch(self, model, system, messages, tools, max_tokens, temperature, thinking=None):
         if self._spec.request_handler:
             return self._spec.request_handler(
                 self, model, system, messages, tools, max_tokens, temperature)
         if not self._spec.native:
             return self._run_openai_compat(model, system, messages, tools, max_tokens, temperature)
-        return self._run_anthropic(model, system, messages, tools, max_tokens, temperature)
+        return self._run_anthropic(model, system, messages, tools, max_tokens, temperature, thinking)
 
     # ── Anthropic backend ─────────────────────────────────────────────────────
 
@@ -482,7 +486,7 @@ class LLMClient:
             return messages
         return messages[:-1] + [{**last, "content": new_content}]
 
-    def _run_anthropic(self, model, system, messages, tools, max_tokens, temperature=None):
+    def _run_anthropic(self, model, system, messages, tools, max_tokens, temperature=None, thinking=None):
         system_block = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
 
         cached_tools = None
@@ -498,7 +502,10 @@ class LLMClient:
             "system":     system_block,
             "messages":   self._with_conversation_cache(messages),
         }
-        if temperature is not None and model not in self._no_temperature_models:
+        if thinking:
+            kwargs["thinking"] = thinking
+            kwargs["temperature"] = 1  # required by Anthropic when thinking is enabled
+        elif temperature is not None and model not in self._no_temperature_models:
             kwargs["temperature"] = temperature
         if cached_tools:
             kwargs["tools"] = cached_tools
