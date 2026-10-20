@@ -608,29 +608,37 @@ def handle_agent_set_temp(args: list[str]) -> tuple[list[str], bool]:
         return [f"Error writing config: {e}"], False
 
 
+def _active_persona() -> str:
+    from core.config import get as _cfg_get
+    return _cfg_get("active_persona", "pentest")
+
+
 def _config_list(group: str | None = None) -> list[str]:
     from core import settings
-    groups = [group] if group else list(settings.GROUPS)
-    shown = [s for g in groups for s in settings.settings_in_group(g)]
+    persona = _active_persona()
+    groups = [group] if group else list(settings.groups_for_persona(persona))
+    shown = [s for g in groups for s in settings.settings_in_group(g, persona)]
     kw = max((len(s.key) for s in shown), default=10)
-    lines = ["Settings  —  /config <key> <value> to change · /config <key> for detail", ""]
+    lines = [f"Settings [{persona}]  —  /config <key> <value> to change · /config <key> for detail", ""]
     for g in groups:
-        gs = settings.settings_in_group(g)
+        gs = settings.settings_in_group(g, persona)
         if not gs:
             continue
         lines.append(f"  {g}")
         for s in gs:
             star = "*" if settings.is_changed(s) else " "
-            val = settings.format_value(settings.current_value(s))
+            val = settings.format_value(settings.current_value(s, persona))
             lines.append(f"   {star} {s.key:<{kw}}  {val:<7}  {s.desc}")
         lines.append("")
     lines.append("  * = changed from default")
     return lines
 
 
-def _config_show(s) -> list[str]:
+def _config_show(s, persona: str | None = None) -> list[str]:
     from core import settings
-    val  = settings.format_value(settings.current_value(s))
+    if persona is None:
+        persona = _active_persona()
+    val  = settings.format_value(settings.current_value(s, persona))
     dflt = settings.format_value(s.default)
     if s.choices:
         typ = " | ".join(s.choices)
@@ -640,10 +648,11 @@ def _config_show(s) -> list[str]:
         typ = "integer" + (f" ≥ {s.minimum}" if s.minimum is not None else "") + (" or null" if s.allow_null else "")
     else:
         typ = "text" + (" or null" if s.allow_null else "")
+    scope = f"ops only ({', '.join(s.personas)})" if s.personas else "all personas"
     return [
         f"  {s.key} = {val}",
         f"    {s.desc}",
-        f"    Type: {typ}     Default: {dflt}     Group: {s.group}",
+        f"    Type: {typ}     Default: {dflt}     Group: {s.group}     Scope: {scope}",
         f"    Change with: /config {s.key} <value>",
     ]
 
@@ -651,8 +660,10 @@ def _config_show(s) -> list[str]:
 def _config_unknown(name: str) -> list[str]:
     import difflib
     from core import settings
+    persona = _active_persona()
+    visible_keys = [s.key for s in settings.settings_for_persona(persona)]
     out = [f"Unknown setting: {name!r}"]
-    near = difflib.get_close_matches(name, settings.all_keys(), n=3)
+    near = difflib.get_close_matches(name, visible_keys, n=3)
     if near:
         out.append("  Did you mean: " + ", ".join(near) + "?")
     out.append("  /config to list everything, or /config <group>.")
@@ -664,26 +675,31 @@ def handle_config(args: list[str]) -> tuple[list[str], bool]:
     /config <group> filters, /config <key> shows detail, /config <key> <value> sets."""
     from core import settings
     from core.config import set_value
+    persona = _active_persona()
     if not args:
         return _config_list(), True
 
     first = args[0]
     if len(args) == 1:
-        if first.lower() in (g.lower() for g in settings.GROUPS):
+        if first.lower() in (g.lower() for g in settings.groups_for_persona(persona)):
             return _config_list(first), True
         s = settings.get_setting(first)
         if s:
-            return _config_show(s), True
+            if not s.allowed_for(persona):
+                return [f"{s.key!r} is not available for the {persona!r} persona."], False
+            return _config_show(s, persona), True
         return _config_unknown(first), False
 
     # /config <key> <value...>
     s = settings.get_setting(first)
     if not s:
         return _config_unknown(first), False
+    if not s.allowed_for(persona):
+        return [f"{s.key!r} is not available for the {persona!r} persona."], False
     value, err = settings.coerce(s, " ".join(args[1:]))
     if err:
         return [err], False
-    old = settings.current_value(s)
+    old = settings.current_value(s, persona)
     set_value(s.key, value)
     return [f"{s.key} = {settings.format_value(value)}   "
             f"(was {settings.format_value(old)})"], True
@@ -705,7 +721,10 @@ def handle_info() -> tuple[list[str], bool]:
         return f"  {label:<17}{value}".rstrip()
 
     def _on(key: str, default: bool) -> str:
-        return "ON" if cfg.get(key, default) else "OFF"
+        from core.config import get as _get
+        return "ON" if _get(key, default) else "OFF"
+
+    is_ops = persona in ("pentest", "redteam")
 
     # Fixed anchors — always shown, even at default. No command hints.
     lines = [
@@ -714,13 +733,16 @@ def handle_info() -> tuple[list[str], bool]:
         _row("Persona", persona),
         _row("Provider", provider),
         _row("Global model", gmodel or "— (per-agent defaults)"),
-        _row("Exploitation", _on("exploitation", True)),
         _row("Reporting", _on("reporting", True)),
-        _row("Confirm exploit", _on("confirm_exploit", True)),
     ]
+    if is_ops:
+        lines += [
+            _row("Exploitation", _on("exploitation", True)),
+            _row("Confirm exploit", _on("confirm_exploit", True)),
+        ]
 
-    # Anything moved off its default (excluding the always-shown anchors).
-    changed = [s for s in settings.SETTINGS
+    # Anything moved off its default (excluding the always-shown anchors, filtered by persona).
+    changed = [s for s in settings.settings_for_persona(persona)
                if not s.info_static and settings.is_changed(s)]
     if changed:
         lines += ["", "  Changed from defaults:"]

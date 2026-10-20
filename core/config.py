@@ -269,13 +269,35 @@ def save_config(cfg: dict[str, Any]) -> None:
     _cache_mtime = 0.0
 
 
-def get(key: str, default: Any = None) -> Any:
-    return load_config().get(key, default)
+def _persona_specific_keys() -> frozenset[str]:
+    """Keys that are stored per-persona (ops vs ctf isolation)."""
+    try:
+        from core.settings import SETTINGS, _OPS
+        return frozenset(s.key for s in SETTINGS if s.personas == _OPS)
+    except Exception:
+        return frozenset()
 
 
-def set_value(key: str, value: Any) -> None:
+def get(key: str, default: Any = None, persona: str | None = None) -> Any:
     cfg = load_config()
-    cfg[key] = value
+    if persona is None:
+        persona = cfg.get("active_persona", "pentest")
+    # Check per-persona override first for persona-specific keys
+    pc = cfg.get("persona_config", {}).get(persona, {})
+    if key in pc:
+        return pc[key]
+    return cfg.get(key, default)
+
+
+def set_value(key: str, value: Any, persona: str | None = None) -> None:
+    cfg = load_config()
+    if key in _persona_specific_keys():
+        # Store under persona_config[persona] to isolate from other personas
+        if persona is None:
+            persona = cfg.get("active_persona", "pentest")
+        cfg.setdefault("persona_config", {}).setdefault(persona, {})[key] = value
+    else:
+        cfg[key] = value
     save_config(cfg)
 
 
