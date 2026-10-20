@@ -35,6 +35,7 @@ sys.path.insert(0, str(_PROJECT_DIR))
 from core.paths import OPS_DIR  # noqa: E402
 
 _ACTIVE_OP_FILE = OPS_DIR / ".active_op"
+_ACTIVE_PERSONA_FILE = OPS_DIR.parent / ".active_persona"
 _PERSONAS = ("pentest", "redteam")
 _SEV_COLOR = {"info": "dim", "low": "green", "medium": "yellow",
               "high": "red", "critical": "bold red"}
@@ -49,14 +50,20 @@ def _active_op() -> str | None:
         return None
 
 
-def _set_active_op(op: str) -> None:
+def _set_active_op(op: str, persona: str = "") -> None:
     OPS_DIR.mkdir(parents=True, exist_ok=True)
     _ACTIVE_OP_FILE.write_text(op)
+    if persona:
+        _ACTIVE_PERSONA_FILE.write_text(persona)
 
 
 def _clear_active_op() -> None:
     try:
         _ACTIVE_OP_FILE.unlink(missing_ok=True)
+    except FileNotFoundError:
+        pass
+    try:
+        _ACTIVE_PERSONA_FILE.unlink(missing_ok=True)
     except Exception:
         pass
 
@@ -171,12 +178,12 @@ def start(op: str, persona: str, target: str, objective: str) -> None:
 
     if _daemon_running(op):
         _register_pid(op, os.getppid())
-        _set_active_op(op)
+        _set_active_op(op, persona)
         _console.print(f"saddle: daemon already running for [bold]{op}[/bold]")
         return
 
     _register_pid(op, os.getppid())
-    _set_active_op(op)
+    _set_active_op(op, persona)
 
     env = {**os.environ, "PYTHONPATH": str(_PROJECT_DIR)}
     proc = subprocess.Popen(

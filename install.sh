@@ -345,6 +345,28 @@ if [[ ":$PATH:" != *":$HOME/go/bin:"* ]]; then
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
+section "Shell hooks (zsh)"
+
+HOOK_FILE="${SCRIPT_DIR}/shell/pdtmj-hooks.zsh"
+SOURCE_LINE="source \"${HOOK_FILE}\""
+ZSHRC="${HOME}/.zshrc"
+
+if [[ ! -f "$HOOK_FILE" ]]; then
+    printf "  ${RED}✗${NC}  %-44s  hook file missing\n" "pdtmj-hooks.zsh"
+elif ! command -v zsh &>/dev/null; then
+    printf "  ${CYAN}=${NC}  %-44s  zsh not installed — skipped\n" "pdtmj-hooks.zsh"
+elif grep -qF "$SOURCE_LINE" "$ZSHRC" 2>/dev/null; then
+    already "pdtmj-hooks.zsh → ~/.zshrc"
+else
+    echo "$SOURCE_LINE" >> "$ZSHRC"
+    printf "  ${GREEN}✓${NC}  %-44s\n" "pdtmj-hooks.zsh → ~/.zshrc"
+    ((INSTALLED++)) || true
+    echo ""
+    echo -e "  ${YELLOW}!${NC}  Hooks added — run: ${BOLD}source ~/.zshrc${NC}"
+    echo -e "     Hooks activate only for pentest/redteam personas (no-op for pentest-ctf)."
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo -e "  ${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 printf   "  ${GREEN}✓${NC}  Installed:  %d\n" "$INSTALLED"
