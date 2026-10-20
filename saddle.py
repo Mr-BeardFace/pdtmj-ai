@@ -490,6 +490,25 @@ def list_ops() -> None:
         _console.print(f"  {name}{running}{marker}")
 
 
+# ── Config ───────────────────────────────────────────────────────────────────
+
+@cli.command("config")
+@click.argument("args", nargs=-1)
+def config_cmd(args: tuple[str, ...]) -> None:
+    """View or change settings.
+
+    \b
+    saddle config               — list all settings for active persona
+    saddle config <group>       — list one group
+    saddle config <key>         — show detail for a key
+    saddle config <key> <value> — change a setting
+    """
+    from ui.commands import handle_config
+    lines, _ok = handle_config(list(args))
+    for line in lines:
+        _console.print(line)
+
+
 # ── AI chat (requires TUI running) ───────────────────────────────────────────
 
 @cli.command()
