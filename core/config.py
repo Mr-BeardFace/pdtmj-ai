@@ -173,6 +173,15 @@ _DEFAULTS: dict[str, Any] = {
     # every LLM request/response/command to llm_debug.log in the engagement dir.
     "debug": False,
 
+    # ── Background log analyst (ops personas only) ─────────────────────────────
+    # Seconds between log-file polls.
+    "analyst_interval": 10,
+    # Quiet time after the last log chunk before analysis fires (seconds).
+    # Lets a burst of activity settle before sending to the LLM.
+    "analyst_debounce": 15,
+    # Model for the background log analyst. null → falls back to the small default.
+    "analyst_model": None,
+
     # ── hashcat (offline cracking, runs as a background job) ──────────────────
     "hashcat_wordlist": "/usr/share/wordlists/rockyou.txt",
     "hashcat_rules": "/usr/share/hashcat/rules/OneRuleToRuleThemAll.rule",

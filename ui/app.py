@@ -25,6 +25,8 @@ from textual.suggester import Suggester
 from ui.commands import (
     dispatch as cmd_dispatch,
     handle_cred_add,
+    handle_analyst,
+    handle_endop,
 )
 from core.utils import mask_secret
 from core.paths import (RESULTS_DIR, AGENTS_DIR, LOGS_DIR, ASSESSMENTS_DIR,
@@ -1446,6 +1448,22 @@ class PentestApp(App):
                     self._resynthesize_report()
             else:
                 self._cmd_report()
+            return
+
+        # /analyst — view/set log analyst settings (alias to /config Analyst group)
+        if parsed and parsed[0] == "/analyst":
+            lines, ok = handle_analyst(list(parsed[1]))
+            self._show_cmd_output(lines, ok)
+            return
+
+        # /endop — stop daemon, mark op ended, clear sentinel files, exit TUI
+        if parsed and parsed[0] == "/endop":
+            if self._is_running:
+                self._show_cmd_output(
+                    ["An engagement is running — /pause or /end it first."], False)
+                return
+            lines, ok = handle_endop(app=self)
+            self._show_cmd_output(lines, ok)
             return
 
         # /clear — wipe the current assessment's panels (keeps saved results/logs)

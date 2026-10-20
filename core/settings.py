@@ -131,6 +131,15 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("debug", "Debug capture", "Diagnostics", "bool",
             "Capture full LLM request/response/command transcript to llm_debug.log"),
 
+    # Background log analyst — ops only
+    Setting("analyst_interval", "Analyst poll interval",  "Analyst", "int",
+            "Seconds between log-file polls", minimum=3, personas=_OPS),
+    Setting("analyst_debounce", "Analyst debounce",       "Analyst", "int",
+            "Quiet seconds after last log chunk before analysis fires", minimum=0, personas=_OPS),
+    Setting("analyst_model",    "Analyst model",          "Analyst", "str",
+            "Model for the background log analyst (null = small default)",
+            allow_null=True, personas=_OPS),
+
     # Cracking — ops only
     Setting("hashcat_wordlist", "Hashcat wordlist", "Cracking", "str",
             "Wordlist path for hashcat jobs", personas=_OPS),

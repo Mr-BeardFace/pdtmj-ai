@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 """saddle — pdtmj-ai shell-native CLI.
 
-Manages pentest/redteam ops without the TUI.  pentest-ctf is JSON/in-memory
-and is not covered here.
+Manages pentest/redteam ops without the TUI.
 
 Usage:
-  saddle start --op <name> [--persona pentest|redteam] [--target <t>]
+  saddle start --op <name> [--persona pentest|redteam] [--target <t>] [--objective <o>]
   saddle stop  [--op <name>]
-  saddle status [--op <name>]
   saddle end   [--op <name>]
-  saddle findings/creds/surfaces/facts [--op <name>]
-  saddle ops
-  saddle ai <message...>  (requires TUI running)
+  saddle op    list | status | findings | creds | surfaces | facts | iocs
+  saddle config [key] [value]
+  saddle ai <message...>
 """
 from __future__ import annotations
 
@@ -34,14 +32,14 @@ sys.path.insert(0, str(_PROJECT_DIR))
 
 from core.paths import OPS_DIR  # noqa: E402
 
-_ACTIVE_OP_FILE = OPS_DIR / ".active_op"
+_ACTIVE_OP_FILE    = OPS_DIR / ".active_op"
 _ACTIVE_PERSONA_FILE = OPS_DIR.parent / ".active_persona"
 _PERSONAS = ("pentest", "redteam")
 _SEV_COLOR = {"info": "dim", "low": "green", "medium": "yellow",
               "high": "red", "critical": "bold red"}
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Internal helpers ──────────────────────────────────────────────────────────
 
 def _active_op() -> str | None:
     try:
@@ -55,6 +53,12 @@ def _set_active_op(op: str, persona: str = "") -> None:
     _ACTIVE_OP_FILE.write_text(op)
     if persona:
         _ACTIVE_PERSONA_FILE.write_text(persona)
+        # Keep config.yaml in sync so saddle config reads the right persona.
+        try:
+            from core.config import set_value as _cfg_set
+            _cfg_set("active_persona", persona)
+        except Exception:
+            pass
 
 
 def _clear_active_op() -> None:
@@ -124,11 +128,9 @@ def _unregister_pid(op: str, pid: int) -> None:
 def _open_store(op: str | None = None):
     """Return (EngagementStore, op_name). Fails if op has no DB."""
     from core.engagement_store import EngagementStore
-
     op_name = op or _active_op()
     if not op_name:
         raise click.ClickException("no active op — run: saddle start --op <name>")
-
     db_path = OPS_DIR / op_name / "engagement.db"
     if not db_path.exists():
         raise click.ClickException(
@@ -145,20 +147,19 @@ def _resolve_op(op: str | None) -> str:
     return name
 
 
-# ── Root group ────────────────────────────────────────────────────────────────
+# ── Root ──────────────────────────────────────────────────────────────────────
 
 @click.group()
 def cli() -> None:
     """saddle — pdtmj-ai shell CLI for pentest/redteam ops."""
 
 
-# ── Daemon lifecycle ──────────────────────────────────────────────────────────
+# ── Lifecycle (top-level — most typed) ───────────────────────────────────────
 
 @cli.command()
-@click.option("--op", required=True, help="Op name")
-@click.option("--persona", default="pentest", type=click.Choice(_PERSONAS),
-              show_default=True, help="Persona for this op")
-@click.option("--target", default="", help="Primary target (IP, CIDR, hostname)")
+@click.option("--op",        required=True, help="Op name")
+@click.option("--persona",   default="pentest", type=click.Choice(_PERSONAS), show_default=True)
+@click.option("--target",    default="", help="Primary target (IP, CIDR, hostname)")
 @click.option("--objective", default="", help="Engagement objective")
 def start(op: str, persona: str, target: str, objective: str) -> None:
     """Create or resume an op and start the session daemon."""
@@ -172,7 +173,7 @@ def start(op: str, persona: str, target: str, objective: str) -> None:
     if review_mode:
         _console.print(
             f"[yellow]saddle: op '{op}' was ended — loaded in review mode.[/yellow]\n"
-            "Use [bold]saddle end --reopen[/bold] to reactivate it (not yet implemented)."
+            "Use [bold]saddle end --reopen[/bold] to reactivate it."
         )
         return
 
@@ -186,7 +187,7 @@ def start(op: str, persona: str, target: str, objective: str) -> None:
     _set_active_op(op, persona)
 
     env = {**os.environ, "PYTHONPATH": str(_PROJECT_DIR)}
-    proc = subprocess.Popen(
+    subprocess.Popen(
         [sys.executable, "-m", "core.saddle_daemon", "--op", op, "--persona", persona],
         start_new_session=True,
         stdin=subprocess.DEVNULL,
@@ -209,7 +210,7 @@ def start(op: str, persona: str, target: str, objective: str) -> None:
 @cli.command()
 @click.option("--op", default=None, help="Op name (default: active op)")
 def stop(op: str | None) -> None:
-    """Stop the daemon and deregister this shell."""
+    """Stop the session daemon."""
     op_name = _resolve_op(op)
     _unregister_pid(op_name, os.getppid())
     if _daemon_running(op_name):
@@ -222,31 +223,51 @@ def stop(op: str | None) -> None:
     _console.print(f"saddle: stopped [bold]{op_name}[/bold]")
 
 
-@cli.command(hidden=True)
-@click.argument("pid", type=int)
-@click.option("--op", default=None)
-def register(pid: int, op: str | None) -> None:
-    """Register a shell PID with the active op (called by shell hooks)."""
-    op_name = _resolve_op(op)
-    _register_pid(op_name, pid)
-
-
-@cli.command(hidden=True)
-@click.argument("pid", type=int)
-@click.option("--op", default=None)
-def unregister(pid: int, op: str | None) -> None:
-    """Unregister a shell PID (called by shell EXIT trap)."""
-    op_name = op or _active_op()
-    if op_name:
-        _unregister_pid(op_name, pid)
-
-
-# ── Op status ─────────────────────────────────────────────────────────────────
-
 @cli.command()
+@click.option("--op", default=None)
+def end(op: str | None) -> None:
+    """Mark an op as ended (review-only on next open)."""
+    store, op_name = _open_store(op)
+    try:
+        store.end_engagement()
+    finally:
+        store.close()
+    if _active_op() == op_name:
+        _clear_active_op()
+    _console.print(f"[green]saddle:[/green] op [bold]{op_name}[/bold] marked ended")
+
+
+# ── Op subcommands ────────────────────────────────────────────────────────────
+
+@cli.group()
+def op() -> None:
+    """Op data views: list, status, findings, creds, surfaces, facts, iocs."""
+
+
+@op.command("list")
+def op_list() -> None:
+    """List all saved ops."""
+    if not OPS_DIR.exists():
+        _console.print("[dim]no saved ops[/dim]")
+        return
+    ops = sorted(
+        p.name for p in OPS_DIR.iterdir()
+        if p.is_dir() and (p / "engagement.db").exists()
+    )
+    if not ops:
+        _console.print("[dim]no saved ops[/dim]")
+        return
+    active = _active_op()
+    for name in ops:
+        running = "  [green]● daemon[/green]" if _daemon_running(name) else ""
+        marker  = "  [yellow]← active[/yellow]" if name == active else ""
+        _console.print(f"  {name}{running}{marker}")
+
+
+@op.command("status")
 @click.option("--op", default=None, help="Op name (default: active op)")
-@click.option("--clear", "clear_badge", is_flag=True, default=False)
-def status(op: str | None, clear_badge: bool) -> None:
+@click.option("--clear", "clear_badge", is_flag=True, default=False, help="Clear RPROMPT badge")
+def op_status(op: str | None, clear_badge: bool) -> None:
     """Show op summary (frontier, counts, badge)."""
     op_name = _resolve_op(op)
 
@@ -264,48 +285,28 @@ def status(op: str | None, clear_badge: bool) -> None:
             _console.print(f"[yellow]daemon error: {e}[/yellow]")
         return
 
-    # Fall back to DB
     store, _ = _open_store(op_name)
     try:
-        meta = store.load_engagement_meta()
+        meta   = store.load_engagement_meta()
         totals = store.token_usage_totals()
         _console.print(f"op:       [bold]{op_name}[/bold]")
         _console.print(f"persona:  [cyan]{meta.get('persona', '?')}[/cyan]")
         _console.print(f"target:   {meta.get('target', '—')}")
         _console.print(f"status:   {meta.get('status', '?')}")
-        findings = store.load_findings()
-        creds = store.load_credentials()
-        surfaces = store.load_surfaces()
-        _console.print(f"findings: {len(findings)}")
-        _console.print(f"creds:    {len(creds)}")
-        _console.print(f"surfaces: {len(surfaces)}")
+        _console.print(f"findings: {len(store.load_findings())}")
+        _console.print(f"creds:    {len(store.load_credentials())}")
+        _console.print(f"surfaces: {len(store.load_surfaces())}")
         if totals["cost_usd"]:
             _console.print(f"cost:     ${totals['cost_usd']:.2f}")
     finally:
         store.close()
 
 
-@cli.command()
-@click.option("--op", default=None)
-def end(op: str | None) -> None:
-    """Mark an engagement as ended (puts it in review mode on next open)."""
-    store, op_name = _open_store(op)
-    try:
-        store.end_engagement()
-    finally:
-        store.close()
-    if _active_op() == op_name:
-        _clear_active_op()
-    _console.print(f"[green]saddle:[/green] op [bold]{op_name}[/bold] marked ended")
-
-
-# ── Data views ────────────────────────────────────────────────────────────────
-
-@cli.command()
+@op.command("findings")
 @click.option("--op", default=None)
 @click.option("--severity", default=None,
               type=click.Choice(("info", "low", "medium", "high", "critical")))
-def findings(op: str | None, severity: str | None) -> None:
+def op_findings(op: str | None, severity: str | None) -> None:
     """List findings."""
     store, _ = _open_store(op)
     try:
@@ -320,29 +321,23 @@ def findings(op: str | None, severity: str | None) -> None:
         return
 
     t = Table(box=box.SIMPLE, show_header=True, header_style="bold")
-    t.add_column("ID", width=8)
-    t.add_column("Sev", width=8)
+    t.add_column("ID",     width=8)
+    t.add_column("Sev",    width=8)
     t.add_column("Title")
     t.add_column("Target")
-    t.add_column("V", width=1)
-
+    t.add_column("V",      width=1)
     for r in rows:
-        color = _SEV_COLOR.get(r.severity, "white")
-        t.add_row(
-            r.id,
-            f"[{color}]{r.severity.upper()}[/{color}]",
-            r.title,
-            r.target,
-            "[green]✓[/green]" if r.verified else "",
-        )
+        c = _SEV_COLOR.get(r.severity, "white")
+        t.add_row(r.id, f"[{c}]{r.severity.upper()}[/{c}]", r.title, r.target,
+                  "[green]✓[/green]" if r.verified else "")
     _console.print(t)
     _console.print(f"[dim]{len(rows)} finding(s)[/dim]")
 
 
-@cli.command()
+@op.command("creds")
 @click.option("--op", default=None)
 @click.option("--reveal", is_flag=True, default=False, help="Show full secrets")
-def creds(op: str | None, reveal: bool) -> None:
+def op_creds(op: str | None, reveal: bool) -> None:
     """List credentials."""
     store, _ = _open_store(op)
     try:
@@ -355,36 +350,26 @@ def creds(op: str | None, reveal: bool) -> None:
         return
 
     t = Table(box=box.SIMPLE, show_header=True, header_style="bold")
-    t.add_column("Type", width=10)
+    t.add_column("Type",     width=10)
     t.add_column("Username")
     t.add_column("Secret")
-    t.add_column("Format", width=14)
+    t.add_column("Format",   width=14)
     t.add_column("Location")
-    t.add_column("Service", width=8)
-
+    t.add_column("Service",  width=8)
     for r in rows:
         secret = r.secret or ""
-        if reveal:
-            display = secret or "(none)"
-        else:
-            display = r.secret_masked or (
-                (secret[:2] + "…" + secret[-2:]) if len(secret) > 6 else secret
-            )
-        t.add_row(
-            r.cred_type,
-            r.username or "",
-            display,
-            r.secret_format or "",
-            r.location or "",
-            r.service or "",
+        display = secret if reveal else (
+            r.secret_masked or ((secret[:2] + "…" + secret[-2:]) if len(secret) > 6 else secret)
         )
+        t.add_row(r.cred_type, r.username or "", display,
+                  r.secret_format or "", r.location or "", r.service or "")
     _console.print(t)
     _console.print(f"[dim]{len(rows)} credential(s)[/dim]")
 
 
-@cli.command()
+@op.command("surfaces")
 @click.option("--op", default=None)
-def surfaces(op: str | None) -> None:
+def op_surfaces(op: str | None) -> None:
     """List attack surfaces."""
     store, _ = _open_store(op)
     try:
@@ -399,27 +384,20 @@ def surfaces(op: str | None) -> None:
     t = Table(box=box.SIMPLE, show_header=True, header_style="bold")
     t.add_column("Host")
     t.add_column("Service", width=10)
-    t.add_column("Port", width=6)
+    t.add_column("Port",    width=6)
     t.add_column("Label")
-    t.add_column("Status", width=10)
-    t.add_column("Cycles", width=6)
-
+    t.add_column("Status",  width=10)
+    t.add_column("Cycles",  width=6)
     for r in rows:
-        t.add_row(
-            r.host,
-            r.service or "",
-            str(r.port or ""),
-            r.label or "",
-            r.status,
-            str(r.cycles),
-        )
+        t.add_row(r.host, r.service or "", str(r.port or ""),
+                  r.label or "", r.status, str(r.cycles))
     _console.print(t)
     _console.print(f"[dim]{len(rows)} surface(s)[/dim]")
 
 
-@cli.command()
+@op.command("facts")
 @click.option("--op", default=None)
-def facts(op: str | None) -> None:
+def op_facts(op: str | None) -> None:
     """List confirmed operational facts."""
     store, _ = _open_store(op)
     try:
@@ -430,7 +408,6 @@ def facts(op: str | None) -> None:
     if not rows:
         _console.print("[dim]no facts[/dim]")
         return
-
     for r in rows:
         scope = f"  [dim][{r.scope}][/dim]" if r.scope else ""
         _console.print(f"  ({r.kind}) {r.statement}{scope}")
@@ -438,14 +415,12 @@ def facts(op: str | None) -> None:
             _console.print(f"    [dim]{r.evidence[:100]}[/dim]")
 
 
-# ── Op management ─────────────────────────────────────────────────────────────
-
-@cli.command()
+@op.command("iocs")
 @click.option("--op", default=None)
 @click.option("--type", "ioc_type", default=None,
               type=click.Choice(("ip", "domain", "hash", "url", "c2", "email", "other")))
-def iocs(op: str | None, ioc_type: str | None) -> None:
-    """List tracked IOCs."""
+def op_iocs(op: str | None, ioc_type: str | None) -> None:
+    """List tracked IOCs (redteam)."""
     store, _ = _open_store(op)
     try:
         rows = store.load_iocs()
@@ -459,48 +434,27 @@ def iocs(op: str | None, ioc_type: str | None) -> None:
         return
 
     t = Table(box=box.SIMPLE, show_header=True, header_style="bold")
-    t.add_column("Type", width=8)
+    t.add_column("Type",    width=8)
     t.add_column("Value")
     t.add_column("Context")
     t.add_column("Source")
-
     for r in rows:
         t.add_row(r.ioc_type, r.value, r.context or "", r.source or "")
     _console.print(t)
     _console.print(f"[dim]{len(rows)} IOC(s)[/dim]")
 
 
-@cli.command("ops")
-def list_ops() -> None:
-    """List all saved ops."""
-    if not OPS_DIR.exists():
-        _console.print("[dim]no saved ops[/dim]")
-        return
-    ops = sorted(
-        p.name for p in OPS_DIR.iterdir()
-        if p.is_dir() and (p / "engagement.db").exists()
-    )
-    if not ops:
-        _console.print("[dim]no saved ops[/dim]")
-        return
-    active = _active_op()
-    for name in ops:
-        running = "  [green]● daemon[/green]" if _daemon_running(name) else ""
-        marker = "  [yellow]← active[/yellow]" if name == active else ""
-        _console.print(f"  {name}{running}{marker}")
-
-
-# ── Config ───────────────────────────────────────────────────────────────────
+# ── Config ────────────────────────────────────────────────────────────────────
 
 @cli.command("config")
 @click.argument("args", nargs=-1)
 def config_cmd(args: tuple[str, ...]) -> None:
-    """View or change settings.
+    """View or change settings (filtered by active persona).
 
     \b
-    saddle config               — list all settings for active persona
+    saddle config               — list all settings
     saddle config <group>       — list one group
-    saddle config <key>         — show detail for a key
+    saddle config <key>         — show key detail
     saddle config <key> <value> — change a setting
     """
     from ui.commands import handle_config
@@ -509,7 +463,7 @@ def config_cmd(args: tuple[str, ...]) -> None:
         _console.print(line)
 
 
-# ── AI chat (requires TUI running) ───────────────────────────────────────────
+# ── AI chat ───────────────────────────────────────────────────────────────────
 
 @cli.command()
 @click.argument("message", nargs=-1, required=True)
@@ -531,6 +485,26 @@ def ai(message: tuple[str, ...], op: str | None) -> None:
         raise
     except Exception as e:
         raise click.ClickException(str(e))
+
+
+# ── Hidden internals (called by zsh hooks) ────────────────────────────────────
+
+@cli.command(hidden=True)
+@click.argument("pid", type=int)
+@click.option("--op", default=None)
+def register(pid: int, op: str | None) -> None:
+    """Register a shell PID with the active op."""
+    _register_pid(_resolve_op(op), pid)
+
+
+@cli.command(hidden=True)
+@click.argument("pid", type=int)
+@click.option("--op", default=None)
+def unregister(pid: int, op: str | None) -> None:
+    """Unregister a shell PID."""
+    op_name = op or _active_op()
+    if op_name:
+        _unregister_pid(op_name, pid)
 
 
 if __name__ == "__main__":

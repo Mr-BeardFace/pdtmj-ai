@@ -139,6 +139,12 @@ COMMANDS: list[Command] = [
             (Sub("", "No arg re-renders the report now; regen re-runs the report agent on a "
                  "loaded assessment. (Toggle auto-reporting with /config reporting.)",
                  "[regen]", ("regen",)),)),
+    Command("/analyst", "Tune the background log analyst (ops personas only)", (
+        Sub("", "List analyst settings, or /analyst <key> [value] to view/set",
+            "[key] [value]", ("interval", "debounce", "model")),
+    )),
+    Command("/endop", "End the operation — stops daemon, marks engagement ended, clears active op",
+            (Sub("", "Stops the daemon, marks the engagement ended, clears sentinel files"),)),
     Command("/clear", "Reset to a blank window — panels, agent log, and token meter (saved files on disk are kept)",
             (Sub("", "Reset to a blank window — panels, agent log, and token meter (saved files on disk are kept)"),)),
     Command("/help", "Show this help — '/help <command>' for one command in detail",
@@ -609,8 +615,17 @@ def handle_agent_set_temp(args: list[str]) -> tuple[list[str], bool]:
 
 
 def _active_persona() -> str:
+    # Sentinel file wins (written by both TUI daemon start and saddle start).
+    try:
+        from pathlib import Path
+        _sentinel = Path.home() / ".local" / "share" / "pdtmj-ai" / ".active_persona"
+        name = _sentinel.read_text().strip()
+        if name:
+            return name
+    except Exception:
+        pass
     from core.config import get as _cfg_get
-    return _cfg_get("active_persona", "pentest")
+    return _cfg_get("active_persona", "pentest") or "pentest"
 
 
 def _config_list(group: str | None = None) -> list[str]:
@@ -668,6 +683,80 @@ def _config_unknown(name: str) -> list[str]:
         out.append("  Did you mean: " + ", ".join(near) + "?")
     out.append("  /config to list everything, or /config <group>.")
     return out
+
+
+def handle_analyst(args: list[str]) -> tuple[list[str], bool]:
+    """/analyst — thin alias to /config analyst group."""
+    # Map shorthand subcommand names to full setting keys
+    _KEY_MAP = {"interval": "analyst_interval", "debounce": "analyst_debounce",
+                "model": "analyst_model"}
+    if not args:
+        return _config_list("Analyst"), True
+    # Translate first arg if it's a shorthand
+    mapped = [_KEY_MAP.get(args[0], args[0])] + list(args[1:])
+    return handle_config(mapped)
+
+
+def handle_endop(app=None) -> tuple[list[str], bool]:
+    """/endop — stop daemon, mark op ended, clear sentinel files."""
+    from pathlib import Path
+    from core.paths import OPS_DIR
+
+    _active_op_file   = OPS_DIR / ".active_op"
+    _active_pers_file = OPS_DIR.parent / ".active_persona"
+
+    # Read active op before clearing
+    try:
+        op_name = _active_op_file.read_text().strip() or None
+    except FileNotFoundError:
+        op_name = None
+
+    lines: list[str] = []
+
+    # Stop daemon via socket
+    if op_name:
+        import json, socket as _sock
+        _sock_path = OPS_DIR / op_name / ".saddle.sock"
+        if _sock_path.exists():
+            try:
+                s = _sock.socket(_sock.AF_UNIX, _sock.SOCK_STREAM)
+                s.settimeout(3.0)
+                s.connect(str(_sock_path))
+                s.sendall(json.dumps({"type": "stop"}).encode() + b"\n")
+                s.recv(256)
+                s.close()
+                lines.append("[green]saddle:[/green] daemon stopped")
+            except Exception:
+                pass
+
+        # Mark engagement ended in the store
+        try:
+            from core.engagement_store import EngagementStore
+            store, _, _ = EngagementStore.open_or_create(op_name)
+            store.end_engagement()
+            store.close()
+            lines.append(f"[green]saddle:[/green] op [bold]{op_name}[/bold] marked ended")
+        except Exception as e:
+            lines.append(f"[yellow]warning:[/yellow] could not mark op ended: {e}")
+
+    # Clear sentinel files
+    try:
+        _active_op_file.unlink(missing_ok=True)
+        _active_pers_file.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+    if not lines:
+        lines.append("[dim]no active op[/dim]")
+
+    if app is not None:
+        # Signal the TUI to exit after displaying the message
+        try:
+            app.call_later(app.exit)
+        except Exception:
+            pass
+
+    return lines, True
 
 
 def handle_config(args: list[str]) -> tuple[list[str], bool]:

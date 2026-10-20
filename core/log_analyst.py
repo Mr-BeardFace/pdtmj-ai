@@ -26,8 +26,15 @@ if TYPE_CHECKING:
     pass
 
 _DEFAULT_MODEL = "claude-haiku-4-5"
-_DEBOUNCE_SECS = 15.0   # wait this long after last chunk before sending to LLM
 _MAX_CHARS = 12_000      # truncate input to keep token cost reasonable
+
+
+def _debounce_secs() -> float:
+    try:
+        from core.config import get as _cfg
+        return float(_cfg("analyst_debounce", 15))
+    except Exception:
+        return 15.0
 
 _SYSTEM_PROMPT = """\
 You are a passive OPSEC analyst embedded in an authorized red team engagement.
@@ -126,7 +133,7 @@ class LogAnalyst:
                 if not self._pending:
                     continue
                 age = time.monotonic() - self._last_feed
-                if age < _DEBOUNCE_SECS:
+                if age < _debounce_secs():
                     continue
                 batch, self._pending = self._pending, []
 
@@ -140,7 +147,7 @@ class LogAnalyst:
         try:
             from core.llm_client import LLMClient
             from core.config import get as cfg_get
-            model = cfg_get("global_model") or _DEFAULT_MODEL
+            model = cfg_get("analyst_model") or cfg_get("global_model") or _DEFAULT_MODEL
             client = LLMClient()
             resp = client.run(
                 model=model,

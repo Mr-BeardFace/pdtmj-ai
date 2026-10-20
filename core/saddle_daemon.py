@@ -117,7 +117,9 @@ class _Daemon:
 
             store, _, _ = EngagementStore.open_or_create(self._op)
             analyst = LogAnalyst(op=self._op, store=store)
-            watcher = LogWatcher(log_dir=log_dir, on_new_content=analyst.feed)
+            from core.config import get as _cfg
+            _interval = float(_cfg("analyst_interval", 10))
+            watcher = LogWatcher(log_dir=log_dir, on_new_content=analyst.feed, interval=_interval)
 
             analyst.start()
             watcher.start()
