@@ -735,8 +735,6 @@ class PentestApp(App):
                             yield DataTable(id="hosts-table", cursor_type="row")
                         with TabPane("Creds", id="tab-creds"):
                             yield DataTable(id="creds-table", cursor_type="row")
-                        with TabPane("Flags", id="tab-flags"):
-                            yield DataTable(id="flags-table", cursor_type="row")
                         with TabPane("Findings", id="tab-findings"):
                             yield ListView(id="findings-list")
                     with Vertical(id="next-steps-container"):
@@ -794,9 +792,12 @@ class PentestApp(App):
                 ht.add_column(label, key=label)
 
         # Flags table (CTF) — columns set up; tab shown only for the CTF persona
-        ft = self.query_one("#flags-table", DataTable)
-        for label in ("Flag", "Where", "✓"):
-            ft.add_column(label, key=label)
+        try:
+            ft = self.query_one("#flags-table", DataTable)
+            for label in ("Flag", "Where", "✓"):
+                ft.add_column(label, key=label)
+        except Exception:
+            pass
 
         # Load active persona from config (belt-and-suspenders after early __init__ read)
         try:
@@ -1491,8 +1492,15 @@ class PentestApp(App):
         # Sync app state for commands that change it
         if success and parsed:
             if parsed[0] == "/persona set" and parsed[1]:
+                prev = self._active_persona
                 self._active_persona = parsed[1][0].lower()
-                self._sync_flags_tab()
+                # Rebuild layout when crossing the ops/ctf boundary
+                prev_ops = prev in ("pentest", "redteam")
+                new_ops  = self._is_ops_persona
+                if prev_ops != new_ops:
+                    self._rebuild_left_pane()
+                else:
+                    self._sync_flags_tab()
                 self._update_status()
             elif parsed[0] == "/provider set":
                 self._update_status()
@@ -2373,6 +2381,77 @@ class PentestApp(App):
                 tabs.hide_tab("tab-flags")
         except Exception:
             pass
+
+    def _rebuild_left_pane(self) -> None:
+        """Rebuild the left pane layout when persona switches between ops and ctf."""
+        try:
+            lp = self.query_one("#left-pane", Vertical)
+        except Exception:
+            return
+
+        lp.remove_children()
+
+        # Clear display state — widgets are gone, dicts must match
+        self._host_rows.clear(); self._host_rowkeys.clear()
+        self._host_os.clear(); self._host_name.clear()
+        self._agent_cols.clear(); self._agent_os_ips.clear()
+        self._host_rowdata.clear(); self._hosts_compact.clear()
+        self._open_leads.clear()
+        self._findings.clear(); self._findings_title_map.clear()
+
+        if self._is_ops_persona:
+            info_tabs = TabbedContent(id="info-tabs")
+            next_steps = Vertical(id="next-steps-container")
+            lp.mount(info_tabs, next_steps)
+            info_tabs.add_pane(TabPane("Beacons",  DataTable(id="beacons-table",  cursor_type="row"), id="tab-beacons"))
+            info_tabs.add_pane(TabPane("Hosts",    DataTable(id="hosts-table",    cursor_type="row"), id="tab-hosts"))
+            info_tabs.add_pane(TabPane("Creds",    DataTable(id="creds-table",    cursor_type="row"), id="tab-creds"))
+            info_tabs.add_pane(TabPane("Findings", ListView(id="findings-list"),                      id="tab-findings"))
+            next_steps.mount(
+                Static("● SUGGESTED COMMANDS", classes="pane-header", id="next-steps-label"),
+                Static("[dim]No suggested commands yet[/dim]", id="next-steps-content"),
+            )
+        else:
+            info_tabs = TabbedContent(id="info-tabs")
+            lp.mount(
+                Static("● FINDINGS", classes="pane-header"),
+                ListView(id="findings-list"),
+                info_tabs,
+            )
+            info_tabs.add_pane(TabPane("Hosts",  DataTable(id="hosts-table",  cursor_type="row"), id="tab-hosts"))
+            info_tabs.add_pane(TabPane("Creds",  DataTable(id="creds-table",  cursor_type="row"), id="tab-creds"))
+            info_tabs.add_pane(TabPane("Flags",  DataTable(id="flags-table",  cursor_type="row"), id="tab-flags"))
+
+        self.call_after_refresh(self._setup_table_columns_after_rebuild)
+
+    def _setup_table_columns_after_rebuild(self) -> None:
+        """Re-add column headers after a left-pane rebuild."""
+        try:
+            ct = self.query_one("#creds-table", DataTable)
+            for label in ("Type", "Username", "Secret", "Format", "Location", "✓"):
+                ct.add_column(label, key=label)
+        except Exception:
+            pass
+        try:
+            ht = self.query_one("#hosts-table", DataTable)
+            if self._is_ops_persona:
+                for label in ("IP", "Hostname", "OS", "Ports"):
+                    ht.add_column(label, key=label)
+                bt = self.query_one("#beacons-table", DataTable)
+                for label in ("ID", "From", "OS", "Connected"):
+                    bt.add_column(label, key=label)
+            else:
+                for label in ("IP", "Hostname", "Vhost", "OS", "Port", "Protocol", "Service", "Fingerprint", "Tech"):
+                    ht.add_column(label, key=label)
+        except Exception:
+            pass
+        try:
+            ft = self.query_one("#flags-table", DataTable)
+            for label in ("Flag", "Where", "✓"):
+                ft.add_column(label, key=label)
+        except Exception:
+            pass
+        self._sync_flags_tab()
 
     def _add_flag_row(self, value: str, location: str, verified: bool) -> None:
         dt = self.query_one("#flags-table", DataTable)
