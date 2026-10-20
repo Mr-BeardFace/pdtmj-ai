@@ -39,6 +39,8 @@ ARTIFACTS_DIR = BASE_DIR / "artifacts"
 ASSESSMENTS_DIR = BASE_DIR / "assessments"
 # Legacy per-assessment scratch root (kept for back-compat / older callers).
 WORK_DIR = BASE_DIR / "work"
+# Per-op persistent state (pentest/redteam personas). Each op gets its own subdir.
+OPS_DIR = Path.home() / ".local" / "share" / "pdtmj-ai" / "ops"
 
 # The active assessment's root dir, set by set_assessment_dir(). None → not in an
 # assessment (CLI single run / tests) → writers fall back to the top-level dirs.

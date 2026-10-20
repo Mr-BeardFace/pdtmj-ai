@@ -495,10 +495,12 @@ class Orchestrator:
         artifact_store: Optional[ArtifactStore] = None,
         job_manager: Optional[JobManager] = None,
         control_queue: Optional[queue.Queue] = None,
+        engagement_store=None,
     ):
         self.llm = llm_client
         self.tools = tool_registry
         self.results_dir = results_dir
+        self._store = engagement_store
         self.results_dir.mkdir(exist_ok=True)
         self._log_callback = log_callback
         self._quiet = quiet
@@ -584,6 +586,7 @@ class Orchestrator:
             artifact_store=self._artifacts,
             job_manager=self._jobs,              # shared → bound to the shared _procs
             control_queue=queue.Queue(),
+            engagement_store=self._store,
         )
         w._procs = self._procs
         w._shells = self._shells
@@ -1877,6 +1880,11 @@ class Orchestrator:
             tag    = "[CONFIRMED]" if existing.verified else "[updated]"
             self._print(f"  [{color}]{tag}[/{color}] [{existing.severity.upper()}] {existing.title}")
             self._emit_annotation(existing)
+            if self._store:
+                try:
+                    self._store.upsert_finding(existing)
+                except Exception:
+                    pass
             return {"status": status, "finding_id": existing.id}
 
         # Deduplication — check against current run AND cross-agent findings
@@ -1920,6 +1928,11 @@ class Orchestrator:
         )
         self._apply_enrichment(finding, inputs)
         run.findings.append(finding)
+        if self._store:
+            try:
+                self._store.upsert_finding(finding)
+            except Exception:
+                pass
 
         color = SEV_COLOR.get(finding.severity, "white")
         tag   = "[potential]" if not finding.verified else "[CONFIRMED]"
@@ -2036,6 +2049,11 @@ class Orchestrator:
         self._print(f"  [magenta][surface][/magenta] {surface.label}  ({surface.origin})")
         self._emit("surface_registered", surface_id=surface.id,
                    label=surface.label, origin=surface.origin)
+        if self._store:
+            try:
+                self._store.upsert_surface(surface)
+            except Exception:
+                pass
         return {"registered": True, "surface_id": surface.id, "label": surface.label}
 
     # ── large-output offloading ────────────────────────────────────────────────
@@ -2295,6 +2313,11 @@ class Orchestrator:
         )
         sc = f" [{fact.scope}]" if fact.scope else ""
         self._print(f"  [cyan][fact][/cyan] ({fact.kind}){sc} {fact.statement}")
+        if self._store:
+            try:
+                self._store.upsert_fact(fact)
+            except Exception:
+                pass
         return {"recorded": True, "id": fact.id, "kind": fact.kind}
 
     def _handle_record_credential(self, inputs: dict, source_agent: str) -> dict:
@@ -2326,6 +2349,11 @@ class Orchestrator:
                    secret=cred.secret, secret_masked=cred.secret_masked,
                    secret_format=cred.secret_format, location=cred.location,
                    used_at=list(cred.used_at), verified=cred.verified)
+        if self._store:
+            try:
+                self._store.upsert_credential(cred)
+            except Exception:
+                pass
         return {"recorded": True, "cred_type": cred.cred_type, "username": cred.username}
 
     def _handle_record_service(self, inputs: dict, source_agent: str) -> dict:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import uuid
 from datetime import datetime
 from core.timeutil import now_local
 from urllib.parse import urlparse
@@ -193,6 +194,7 @@ class ToolLogEntry(BaseModel):
 
 
 class Credential(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
     cred_type: str = "password"     # password | hash | api_key | token | key
     username: Optional[str] = None
     secret: str                     # the value: password, hash, key, or token
