@@ -1,9 +1,9 @@
 ---
-engagement_id: {{ run.id }}
+{% if op_name %}op_name: {{ op_name }}{% else %}engagement_id: {{ run.id }}{% endif %}
 agent: {{ run.agent }}
 target: {{ run.target }}
-status: {{ run.status }}
-start: {{ run.start_time.strftime("%Y-%m-%d %H:%M UTC") }}
+{% if not is_ops_report %}status: {{ run.status }}
+{% endif %}start: {{ run.start_time.strftime("%Y-%m-%d %H:%M UTC") }}
 end: {{ run.end_time.strftime("%Y-%m-%d %H:%M UTC") if run.end_time else "N/A" }}
 generated: {{ generated_at }}
 ---
@@ -26,6 +26,9 @@ generated: {{ generated_at }}
 {{ run.summary | replace("```json", "") | replace("```", "") | trim }}
 {% else %}
 A penetration test was conducted against `{{ run.target }}`. {{ run.findings | length }} finding(s) were identified, including {{ severity_counts.critical }} critical and {{ severity_counts.high }} high severity issues.
+{% endif %}
+{% if iocs %}
+{{ iocs | length }} indicator(s) of compromise were captured during this exercise. A full IOC export (CSV) has been written to the engagement's `ai_workspace/` directory for ingestion into your threat intelligence platform or SIEM.
 {% endif %}
 
 ---
@@ -54,7 +57,7 @@ A penetration test was conducted against `{{ run.target }}`. {{ run.findings | l
 
 - **Target:** `{{ run.target }}`
 - **Agent:** {{ run.agent }}
-- **Engagement ID:** `{{ run.id }}`
+{% if op_name %}- **Op:** {{ op_name }}{% else %}- **Engagement ID:** `{{ run.id }}`{% endif %}
 - **Testing Period:** {{ run.start_time.strftime("%Y-%m-%d %H:%M") }} – {{ run.end_time.strftime("%Y-%m-%d %H:%M UTC") if run.end_time else "In Progress" }}
 
 ---

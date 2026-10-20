@@ -40,6 +40,7 @@ from tools.list_shells import TOOL_DEFINITION as LIST_SHELLS_DEF
 from tools.list_scripts import TOOL_DEFINITION as LIST_SCRIPTS_DEF
 from tools.record_persistence import TOOL_DEFINITION as RECORD_PERSIST_DEF
 from tools.load_playbook import TOOL_DEFINITION as LOAD_PLAYBOOK_DEF, load_playbook as _load_playbook_fn
+from tools.record_ioc import TOOL_DEFINITION as RECORD_IOC_DEF
 from core.shells import ShellManager
 
 console = Console()
@@ -54,8 +55,8 @@ SEV_COLOR = {
 
 # These tools are intercepted before reaching the registry
 _INTERCEPTED = {"annotate_finding", "queue_followup", "record_plan", "register_surface",
-                "record_credential", "record_service", "record_fact", "record_flag", "conclude_engagement",
-                "grep_artifact", "read_artifact", "check_jobs", "list_scripts",
+                "record_credential", "record_service", "record_fact", "record_flag", "record_ioc",
+                "conclude_engagement", "grep_artifact", "read_artifact", "check_jobs", "list_scripts",
                 "start_listener", "shell_exec", "list_shells", "record_persistence", "wait",
                 "load_playbook", "write_report"}
 
@@ -65,6 +66,19 @@ _AUTH_TOOLS = {"ssh_exec", "netexec", "ftp", "smbclient"}
 # Tools that reach a third-party service (web search / page fetch) and therefore must
 # never carry engagement specifics off the box. Scrubbed against live state below.
 _WEB_TOOLS = {"web_search", "fetch_url"}
+
+# High-impact tools that pause for operator confirmation when tool_gate="gated".
+# Criteria: brute-force (account-lockout risk), active exploitation (destructive/noisy),
+# coercion/relay (modifies target network state), or arbitrary code execution on target.
+_HIGH_IMPACT_TOOLS: frozenset[str] = frozenset({
+    "hydra", "kerbrute",                                       # brute force
+    "sqlmap_scan", "dalfox",                                   # active web exploitation
+    "coercer", "petitpotam", "impacket_ntlmrelay",            # coercion / relay
+    "run_script", "web_exec",                                  # arbitrary code on target
+    "run_daemon",                                              # persistent offensive services
+    "ysoserial",                                               # deserialization payload gen
+    "bloodhound_python",                                       # heavy AD recon
+})
 
 # Active scanning / enumeration / exploitation tools that take an explicit target
 # host and therefore must respect the authorized scope — they are HARD-BLOCKED
@@ -496,11 +510,13 @@ class Orchestrator:
         job_manager: Optional[JobManager] = None,
         control_queue: Optional[queue.Queue] = None,
         engagement_store=None,
+        tool_confirm_cb: Optional[Callable] = None,
     ):
         self.llm = llm_client
         self.tools = tool_registry
         self.results_dir = results_dir
         self._store = engagement_store
+        self._tool_confirm_cb = tool_confirm_cb
         self.results_dir.mkdir(exist_ok=True)
         self._log_callback = log_callback
         self._quiet = quiet
@@ -587,6 +603,7 @@ class Orchestrator:
             job_manager=self._jobs,              # shared → bound to the shared _procs
             control_queue=queue.Queue(),
             engagement_store=self._store,
+            tool_confirm_cb=self._tool_confirm_cb,
         )
         w._procs = self._procs
         w._shells = self._shells
@@ -1053,6 +1070,9 @@ class Orchestrator:
             # CTF flag capture — only when running the CTF persona.
             if self._active_persona == "pentest-ctf":
                 meta_defs.append(RECORD_FLAG_DEF)
+            # IOC tracking — redteam and pentest personas.
+            if self._active_persona in ("redteam", "pentest"):
+                meta_defs.append(RECORD_IOC_DEF)
         tool_schemas = [t.to_api_format() for t in available_tools] + meta_defs
 
         # Planning does not annotate findings — it only records a plan.
@@ -1354,6 +1374,15 @@ class Orchestrator:
                         })
                         continue
 
+                    if tb.name == "record_ioc":
+                        result = self._handle_record_ioc(tb.input)
+                        tool_results.append({
+                            "type":        "tool_result",
+                            "tool_use_id": tb.id,
+                            "content":     json.dumps(result),
+                        })
+                        continue
+
                     if tb.name == "record_flag":
                         result = self._handle_record_flag(tb.input, agent.name)
                         if self.state:
@@ -1543,6 +1572,32 @@ class Orchestrator:
                             }),
                         })
                         continue
+
+                    # ── high-impact tool gate ─────────────────────────────────
+                    if tb.name in _HIGH_IMPACT_TOOLS:
+                        from core.config import get as cfg_get
+                        if cfg_get("tool_gate", "autonomous") == "gated":
+                            if self._tool_confirm_cb is None:
+                                self._print(
+                                    f"[yellow]  ⚠ {tb.name} is high-impact — "
+                                    "gate=gated but no confirm hook; skipping.[/yellow]"
+                                )
+                                tool_results.append({
+                                    "type": "tool_result", "tool_use_id": tb.id,
+                                    "content": json.dumps({
+                                        "skipped": True,
+                                        "reason": f"{tb.name} requires operator approval (gate=gated) but no approval channel is available",
+                                    }),
+                                })
+                                continue
+                            ans = self._tool_confirm_cb(tb.name, inputs)
+                            if ans not in ("y", "a"):
+                                self._print(f"[yellow]  ✗ {tb.name} denied by operator[/yellow]")
+                                tool_results.append({
+                                    "type": "tool_result", "tool_use_id": tb.id,
+                                    "content": json.dumps({"skipped": True, "reason": "denied by operator"}),
+                                })
+                                continue
 
                     # ── normal tool dispatch ───────────────────────────────────
                     safe_inputs = self._redact_obj(inputs)
@@ -2153,7 +2208,8 @@ class Orchestrator:
         creds = tuple((c.cred_type, c.username, c.location or c.service,
                        c.secret_masked, tuple(c.used_at), c.verified)
                       for c in st.credentials)
-        return (ports, surfs, os_i, hns, creds)
+        leads = tuple((l.id, l.status) for l in st.lead_store.leads)
+        return (ports, surfs, os_i, hns, creds, leads)
 
     def _emit_forward_service(self, result: dict) -> None:
         """Emit the internal service a port_forward exposed as a live 'service' event
@@ -2176,7 +2232,8 @@ class Orchestrator:
         self._emit("state_update",
                    recon=self.state.recon.model_dump(),
                    credentials=[c.model_dump() for c in self.state.credentials],
-                   surfaces=[s.model_dump() for s in self.state.surfaces])
+                   surfaces=[s.model_dump() for s in self.state.surfaces],
+                   leads=[l.model_dump() for l in self.state.lead_store.leads if l.is_open])
 
     def _handle_list_scripts(self, inputs: dict) -> dict:
         if not self.state or not self.state.scripts:
@@ -2319,6 +2376,26 @@ class Orchestrator:
             except Exception:
                 pass
         return {"recorded": True, "id": fact.id, "kind": fact.kind}
+
+    def _handle_record_ioc(self, inputs: dict) -> dict:
+        value = (inputs.get("value") or "").strip()
+        if not value:
+            return {"recorded": False, "error": "value is required"}
+        ioc_type = (inputs.get("ioc_type") or "other").strip()
+        from core.models import IOC
+        ioc = IOC(
+            ioc_type=ioc_type,
+            value=value,
+            context=inputs.get("context", "") or "",
+            source=inputs.get("source", "") or "",
+        )
+        self._print(f"  [cyan][ioc][/cyan] [{ioc_type}] {value}")
+        if self._store:
+            try:
+                self._store.upsert_ioc(ioc)
+            except Exception:
+                pass
+        return {"recorded": True, "id": ioc.id, "ioc_type": ioc_type}
 
     def _handle_record_credential(self, inputs: dict, source_agent: str) -> dict:
         if not self.state:

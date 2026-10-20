@@ -433,6 +433,36 @@ def facts(op: str | None) -> None:
 
 # ── Op management ─────────────────────────────────────────────────────────────
 
+@cli.command()
+@click.option("--op", default=None)
+@click.option("--type", "ioc_type", default=None,
+              type=click.Choice(("ip", "domain", "hash", "url", "c2", "email", "other")))
+def iocs(op: str | None, ioc_type: str | None) -> None:
+    """List tracked IOCs."""
+    store, _ = _open_store(op)
+    try:
+        rows = store.load_iocs()
+    finally:
+        store.close()
+
+    if ioc_type:
+        rows = [r for r in rows if r.ioc_type == ioc_type]
+    if not rows:
+        _console.print("[dim]no IOCs[/dim]")
+        return
+
+    t = Table(box=box.SIMPLE, show_header=True, header_style="bold")
+    t.add_column("Type", width=8)
+    t.add_column("Value")
+    t.add_column("Context")
+    t.add_column("Source")
+
+    for r in rows:
+        t.add_row(r.ioc_type, r.value, r.context or "", r.source or "")
+    _console.print(t)
+    _console.print(f"[dim]{len(rows)} IOC(s)[/dim]")
+
+
 @cli.command("ops")
 def list_ops() -> None:
     """List all saved ops."""

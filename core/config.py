@@ -9,6 +9,10 @@ _CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
 
 _DEFAULTS: dict[str, Any] = {
     "confirm_exploit": True,
+    # Per-tool gating for high-impact tools.
+    # "autonomous" = run high-impact tools without confirmation (default / original behaviour)
+    # "gated"      = pause and ask the operator before running high-impact tools
+    "tool_gate": "autonomous",
     # Master switch for the exploitation phase (plan → exploit → validate). On by
     # default for all personas; toggle with /config exploitation on|off.
     "exploitation": True,

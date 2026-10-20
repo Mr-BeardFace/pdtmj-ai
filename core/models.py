@@ -44,6 +44,16 @@ class Finding(BaseModel):
     timestamp: datetime = Field(default_factory=lambda: now_local())
 
 
+class IOC(BaseModel):
+    """Indicator of Compromise — IPs, domains, hashes, URLs, C2 infra."""
+    id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
+    ioc_type: str                # ip | domain | hash | url | c2 | email | other
+    value: str                   # the indicator value itself
+    context: str = ""            # why it's notable
+    source: str = ""             # where it was found (log file, command output)
+    timestamp: datetime = Field(default_factory=lambda: now_local())
+
+
 class OperationalFact(BaseModel):
     """A confirmed operational fact — scaffolding the next run needs to ACT, not a
     reported vuln. Kept out of `findings` on purpose: these never reach the report,

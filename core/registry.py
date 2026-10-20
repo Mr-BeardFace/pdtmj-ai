@@ -91,6 +91,9 @@ _TOOL_MODULES: list[tuple[str, str]] = [
     ("tools.run_script",       "run_script"),
     # Local shell for inspecting downloaded/local files (strings/cat/grep/unzip)
     ("tools.local_exec",       "local_exec"),
+    # File read/write (write sandboxed to ai_workspace/)
+    ("tools.read_file",        "read_file"),
+    ("tools.write_file",       "write_file"),
     # Long-lived offensive daemons (responder / ntlmrelayx / mitm6) with read/stop
     ("tools.run_daemon",       "run_daemon"),
     # Self-provisioning missing tooling

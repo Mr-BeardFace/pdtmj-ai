@@ -366,18 +366,23 @@ class FindingDetailModal(ModalScreen):
 class ActivityLogModal(ModalScreen):
     BINDINGS = [("escape", "dismiss", "Close"), ("q", "dismiss", "Close")]
 
-    def __init__(self, text: str) -> None:
+    def __init__(self, lines: list) -> None:
         super().__init__()
-        self._text = text
+        self._lines = lines
 
     def compose(self) -> ComposeResult:
         with Vertical(id="modal-outer"):
             yield Static("  Activity Log", id="modal-title")
-            yield TextArea(self._text, id="modal-body", read_only=True)
+            yield RichLog(id="modal-body", markup=True, highlight=False, wrap=True)
             yield Static(
-                "  [dim]Esc / q — close  ·  select + Ctrl+C to copy[/dim]",
+                "  [dim]Esc / q — close  ·  Ctrl+Y to copy all[/dim]",
                 id="modal-hint",
             )
+
+    def on_mount(self) -> None:
+        log = self.query_one("#modal-body", RichLog)
+        for line in self._lines:
+            log.write(line)
 
 
 class CmdLogModal(ModalScreen):
@@ -490,6 +495,36 @@ class ExploitConfirmModal(ModalScreen):
         self.dismiss("n")
 
 
+class ToolGateModal(ModalScreen):
+    """Approve / deny a single high-impact tool call."""
+    BINDINGS = [("escape", "deny", "Deny")]
+
+    def __init__(self, tool_name: str, inputs: dict) -> None:
+        super().__init__()
+        self._tool_name = tool_name
+        self._inputs    = inputs
+
+    def compose(self) -> ComposeResult:
+        lines = [f"  Tool: [bold]{self._tool_name}[/bold]", ""]
+        for k, v in list(self._inputs.items())[:4]:
+            lines.append(f"    {k}: {markup_escape(str(v)[:120])}")
+        with Vertical(id="modal-outer"):
+            yield Static("  ⚠ Approve high-impact tool?", id="modal-title")
+            yield Static("\n".join(lines), id="modal-body")
+            yield Input(placeholder="y = yes  /  n = no", id="key-input")
+            yield Static("  [dim]y — run it  |  n / Esc — skip[/dim]", id="modal-hint")
+
+    def on_mount(self) -> None:
+        self.query_one("#key-input", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        ans = event.value.strip().lower()
+        self.dismiss("y" if ans == "y" else "n")
+
+    def action_deny(self) -> None:
+        self.dismiss("n")
+
+
 # ── Main App ──────────────────────────────────────────────────────────────────
 
 class PentestApp(App):
@@ -557,6 +592,11 @@ class PentestApp(App):
             self.hostname = hostname; self.vhost = vhost; self.bind = bind
             super().__init__()
 
+    class Shell(Message):
+        def __init__(self, session_id: str, addr: str, os_hint: str = "") -> None:
+            self.session_id = session_id; self.addr = addr; self.os_hint = os_hint
+            super().__init__()
+
     class PipelineEvent(Message):
         def __init__(self, ev: dict) -> None:
             self.ev = ev; super().__init__()
@@ -585,6 +625,11 @@ class PentestApp(App):
         self._current_agent  = ""
         self._current_target = ""
         self._active_persona = "pentest"
+        try:
+            from core.config import get as _pcfg
+            self._active_persona = _pcfg("active_persona", "pentest")
+        except Exception:
+            pass
 
         # Command history
         self._cmd_history: list[str] = []
@@ -598,6 +643,12 @@ class PentestApp(App):
         self._activity_lines: deque = deque(maxlen=_ACTIVITY_HISTORY_MAX)
         # True when the pane's last line is already blank — guards _pane_gap doubling.
         self._pane_at_blank = True
+        # Ops persona: compact host map {ip → {hostname, os, ports: list[str]}}
+        self._hosts_compact: dict[str, dict] = {}
+        # Open leads for Suggested Commands pane (list of lead dicts)
+        self._open_leads: list[dict] = []
+        # Activity store for persistence (ops persona only)
+        self._activity_store = None
         # Recent (tool, command, full_output_text), newest last — so when a credential
         # or finding is recorded we can surface the exact source line + context. Bounded.
         self._recent_outputs: list[tuple[str, str, str]] = []
@@ -667,24 +718,44 @@ class PentestApp(App):
 
     # ── Layout ────────────────────────────────────────────────────────────────
 
+    @property
+    def _is_ops_persona(self) -> bool:
+        return self._active_persona in ("pentest", "redteam")
+
     def compose(self) -> ComposeResult:
         yield Static("", id="status-bar")
         with Horizontal(id="main-panes"):
             # ── Left ──────────────────────────────────────────────────────────
             with Vertical(id="left-pane"):
-                yield Static("● FINDINGS", classes="pane-header")
-                yield ListView(id="findings-list")
-                with TabbedContent(id="info-tabs"):
-                    with TabPane("Hosts", id="tab-hosts"):
-                        yield DataTable(id="hosts-table", cursor_type="row")
-                    with TabPane("Creds", id="tab-creds"):
-                        yield DataTable(id="creds-table", cursor_type="row")
-                    # Flags tab is always built but hidden unless the CTF persona is active.
-                    with TabPane("Flags", id="tab-flags"):
-                        yield DataTable(id="flags-table", cursor_type="row")
+                if self._is_ops_persona:
+                    with TabbedContent(id="info-tabs"):
+                        with TabPane("Beacons", id="tab-beacons"):
+                            yield DataTable(id="beacons-table", cursor_type="row")
+                        with TabPane("Hosts", id="tab-hosts"):
+                            yield DataTable(id="hosts-table", cursor_type="row")
+                        with TabPane("Creds", id="tab-creds"):
+                            yield DataTable(id="creds-table", cursor_type="row")
+                        with TabPane("Flags", id="tab-flags"):
+                            yield DataTable(id="flags-table", cursor_type="row")
+                        with TabPane("Findings", id="tab-findings"):
+                            yield ListView(id="findings-list")
+                    with Vertical(id="next-steps-container"):
+                        yield Static("● SUGGESTED COMMANDS", classes="pane-header", id="next-steps-label")
+                        yield Static("[dim]No suggested commands yet[/dim]", id="next-steps-content")
+                else:
+                    yield Static("● FINDINGS", classes="pane-header")
+                    yield ListView(id="findings-list")
+                    with TabbedContent(id="info-tabs"):
+                        with TabPane("Hosts", id="tab-hosts"):
+                            yield DataTable(id="hosts-table", cursor_type="row")
+                        with TabPane("Creds", id="tab-creds"):
+                            yield DataTable(id="creds-table", cursor_type="row")
+                        # Flags tab is always built but hidden unless the CTF persona is active.
+                        with TabPane("Flags", id="tab-flags"):
+                            yield DataTable(id="flags-table", cursor_type="row")
             # ── Right ─────────────────────────────────────────────────────────
             with Vertical(id="right-pane"):
-                yield Static("● AGENT WORKING  [dim](Ctrl+L view · Ctrl+Y copy)[/dim]", classes="pane-header")
+                yield Static("● ACTIVITY LOG  [dim](Ctrl+L view · Ctrl+Y copy)[/dim]", classes="pane-header")
                 yield RichLog(id="activity-log", markup=True, highlight=False, auto_scroll=True,
                               wrap=True, max_lines=_ACTIVITY_PANE_MAX)
                 with Vertical(id="cmd-dialogue"):
@@ -709,19 +780,25 @@ class PentestApp(App):
         for label in ("Type", "Username", "Secret", "Format", "Location", "✓"):
             ct.add_column(label, key=label)
 
-        # Hosts table — the single target tracker. Populated as recon discovers
-        # hosts/ports/services. One row per host:port; host-level columns
-        # (Hostname/OS) repeat down a host's rows so each line stands alone.
+        # Hosts table — compact (IP/Hostname/OS/Ports) for ops personas, full detail otherwise.
         ht = self.query_one("#hosts-table", DataTable)
-        for label in ("IP", "Hostname", "Vhost", "OS", "Port", "Protocol", "Service", "Fingerprint", "Tech"):
-            ht.add_column(label, key=label)
+        if self._is_ops_persona:
+            for label in ("IP", "Hostname", "OS", "Ports"):
+                ht.add_column(label, key=label)
+            # Beacons table (ops personas only)
+            bt = self.query_one("#beacons-table", DataTable)
+            for label in ("ID", "From", "OS", "Connected"):
+                bt.add_column(label, key=label)
+        else:
+            for label in ("IP", "Hostname", "Vhost", "OS", "Port", "Protocol", "Service", "Fingerprint", "Tech"):
+                ht.add_column(label, key=label)
 
         # Flags table (CTF) — columns set up; tab shown only for the CTF persona
         ft = self.query_one("#flags-table", DataTable)
         for label in ("Flag", "Where", "✓"):
             ft.add_column(label, key=label)
 
-        # Load active persona from config
+        # Load active persona from config (belt-and-suspenders after early __init__ read)
         try:
             from core.config import get
             self._active_persona = get("active_persona", "pentest")
@@ -729,6 +806,26 @@ class PentestApp(App):
             pass
 
         self._sync_flags_tab()
+
+        # Ops persona: open activity store for persistence, load prior log
+        if self._is_ops_persona:
+            try:
+                from core.paths import OPS_DIR
+                active_op_file = OPS_DIR / ".active_op"
+                if active_op_file.exists():
+                    op_name = active_op_file.read_text(encoding="utf-8").strip()
+                    if op_name:
+                        from core.engagement_store import EngagementStore
+                        self._activity_store, _, _ = EngagementStore.open_or_create(op_name)
+                        prior = self._activity_store.get_activity_log()
+                        if prior:
+                            log = self.query_one("#activity-log", RichLog)
+                            for entry in prior:
+                                self._activity_lines.append(entry["message"])
+                            log.write(f"[dim]─── {len(prior)} events from prior session — Ctrl+L for full history ───[/dim]")
+                            self._pane_at_blank = False
+            except Exception:
+                pass
 
         # Preload completion candidate pools — real models for the active provider
         # (fetched in the background; placeholder shown until it returns).
@@ -919,7 +1016,8 @@ class PentestApp(App):
         return text
 
     def action_show_activity_log(self) -> None:
-        self.push_screen(ActivityLogModal(self._mask_known_secrets("\n".join(self._activity_lines))))
+        masked_text = self._mask_known_secrets("\n".join(self._activity_lines))
+        self.push_screen(ActivityLogModal(masked_text.splitlines()))
 
     def action_copy_activity_log(self) -> None:
         text = self._mask_known_secrets("\n".join(self._activity_lines))
@@ -1609,10 +1707,16 @@ class PentestApp(App):
         # summaries, findings, the surfaced evidence cluster. cap=False keeps the pane
         # line uncapped (LLM reasoning — the operator wants the whole thought).
         ts = datetime.now().strftime("%H:%M:%S")
-        self._activity_lines.append(f"{ts}  {_strip_markup(msg)}")   # full → Ctrl+L
         shown = _pane_cap(msg) if cap else msg
-        self.query_one("#activity-log", RichLog).write(f"[dim]{ts}[/dim]  {shown}")
+        formatted = f"[dim]{ts}[/dim]  {shown}"
+        self._activity_lines.append(formatted)   # full markup → Ctrl+L
+        self.query_one("#activity-log", RichLog).write(formatted)
         self._pane_at_blank = False
+        if self._activity_store is not None:
+            try:
+                self._activity_store.add_activity(ts, formatted)
+            except Exception:
+                pass
 
     def _pane_only(self, msg: str) -> None:
         """Pane only — for the at-a-glance distilled view. Not added to the Ctrl+L log
@@ -1630,7 +1734,7 @@ class PentestApp(App):
         """Full-log only (Ctrl+L) — the complete tool output, never rendered to the
         pane. This is the 'full output for the log, not the pane' split."""
         for ln in str(text).splitlines():
-            self._activity_lines.append(f"        {ln}")
+            self._activity_lines.append(f"        {markup_escape(ln)}")
 
     def _update_status(self) -> None:
         persona_str = f"  [dim]persona: {self._active_persona}[/dim]" if self._active_persona else ""
@@ -2082,6 +2186,8 @@ class PentestApp(App):
         self._host_os.clear(); self._host_name.clear()
         self._agent_cols.clear(); self._agent_os_ips.clear()
         self._host_rowdata.clear()
+        self._hosts_compact.clear()
+        self._open_leads.clear()
 
         self.query_one("#findings-list", ListView).clear()
         self._findings.clear(); self._findings_title_map.clear()
@@ -2439,6 +2545,62 @@ class PentestApp(App):
                     self._host_rowdata[k] = (d[0], value) + d[2:]
         self._regroup_hosts(dt)                     # leader gets it, siblings stay blank
 
+    # ── Compact hosts (ops persona) ───────────────────────────────────────────
+
+    def _add_host_compact(self, ip: str, hostname: str = "", os_str: str = "", port: str = "") -> None:
+        """Ops persona: one row per host, aggregate ports into a single Ports cell."""
+        if not ip:
+            return
+        h = self._hosts_compact.setdefault(ip, {"hostname": "", "os": "", "ports": []})
+        if hostname:
+            h["hostname"] = hostname
+        if os_str:
+            h["os"] = os_str
+        if port and port not in h["ports"]:
+            h["ports"].append(port)
+        dt = self.query_one("#hosts-table", DataTable)
+        ports_str = ", ".join(h["ports"][:10]) + ("…" if len(h["ports"]) > 10 else "")
+        try:
+            dt.update_cell(ip, "Hostname", h["hostname"], update_width=True)
+            dt.update_cell(ip, "OS", h["os"], update_width=True)
+            dt.update_cell(ip, "Ports", ports_str, update_width=True)
+        except Exception:
+            dt.add_row(ip, h["hostname"], h["os"], ports_str, key=ip)
+
+    # ── Suggested Commands (ops persona) ──────────────────────────────────────
+
+    def _refresh_next_steps(self) -> None:
+        try:
+            ns = self.query_one("#next-steps-content", Static)
+        except Exception:
+            return
+        _DEAD = {"dead", "exhausted", "skipped", "confirmed", "refuted"}
+        _REACH = {"recon": 0, "service": 1, "vuln": 2, "exploited": 3,
+                  "foothold": 4, "user": 5, "privesc": 6, "root": 7, "objective": 8}
+        _COST_W = {"cheap": 1.0, "medium": 3.0, "expensive": 6.0}
+        _RISK_CLR = {"low": "green", "medium": "yellow", "high": "red", "certain": "bold red"}
+
+        leads = [l for l in self._open_leads if l.get("status") not in _DEAD]
+        if not leads:
+            ns.update("[dim]No suggested commands yet[/dim]")
+            return
+
+        def _ev(l: dict) -> float:
+            gain = max(1, _REACH.get(l.get("reach_level", "vuln"), 2))
+            return gain * float(l.get("prior", 0.5)) / _COST_W.get(l.get("cost", "medium"), 3.0)
+
+        from rich.markup import escape as _esc
+        sorted_leads = sorted(leads, key=_ev, reverse=True)[:15]
+        lines = []
+        for l in sorted_leads:
+            risk = l.get("detection_risk") or "medium"
+            clr = _RISK_CLR.get(risk, "yellow")
+            lbl = risk[:4].upper()
+            tech = _esc((l.get("technique") or l.get("kind", ""))[:14])
+            desc = _esc(l.get("description", "")[:80])
+            lines.append(f"[dim]{tech:<14}[/dim]  [{clr}]{lbl}[/{clr}]  {desc}")
+        ns.update("\n".join(lines))
+
     # ── Event handler ─────────────────────────────────────────────────────────
 
     # ── Message handlers (run on the event loop — safe to await) ─────────────
@@ -2453,19 +2615,32 @@ class PentestApp(App):
         self._add_finding(ev.finding)
 
     def on_pentest_app_port(self, ev: Port) -> None:
-        if ev.ip:
+        if not ev.ip:
+            return
+        if self._is_ops_persona:
+            port_str = str(ev.entry.get("port", "")) if ev.entry.get("port") else ""
+            self._add_host_compact(ev.ip, hostname=ev.entry.get("hostname", ""), port=port_str)
+        else:
             self._add_host_row(ev.ip, ev.entry)
 
     def on_pentest_app_os_info(self, ev: OsInfo) -> None:
         # nmap OS guess (baseline) — store and backfill, but never overwrite an OS
         # the agent already set via record_service.
-        if ev.ip and ev.os_str and ev.ip not in self._agent_os_ips:
+        if not ev.ip or not ev.os_str:
+            return
+        if self._is_ops_persona:
+            self._add_host_compact(ev.ip, os_str=ev.os_str)
+        elif ev.ip not in self._agent_os_ips:
             self._host_os[ev.ip] = ev.os_str
             self._update_host_field(ev.ip, "OS", ev.os_str)
 
     def on_pentest_app_service(self, ev: Service) -> None:
         # Agent-annotated service detail — the LLM's interpretation of the raw
         # scan. AUTHORITATIVE: it wins over the nmap baseline and locks the cells.
+        if self._is_ops_persona:
+            port_str = str(ev.port) if ev.port else ""
+            self._add_host_compact(ev.host, hostname=ev.hostname, os_str=ev.os, port=port_str)
+            return
         if ev.os and ev.host:
             self._host_os[ev.host] = ev.os
             self._agent_os_ips.add(ev.host)
@@ -2480,6 +2655,19 @@ class PentestApp(App):
                 "version": fingerprint, "tech": ev.tech, "vhost": ev.vhost,
                 "bind": ev.bind,
             }, authoritative=True)
+
+    def on_pentest_app_shell(self, ev: Shell) -> None:
+        try:
+            bt = self.query_one("#beacons-table", DataTable)
+            ts = datetime.now().strftime("%H:%M:%S")
+            try:
+                bt.update_cell(ev.session_id, "From", ev.addr, update_width=True)
+                if ev.os_hint:
+                    bt.update_cell(ev.session_id, "OS", ev.os_hint, update_width=True)
+            except Exception:
+                bt.add_row(ev.session_id, ev.addr, ev.os_hint, ts, key=ev.session_id)
+        except Exception:
+            pass
 
     def on_pentest_app_cred(self, ev: Cred) -> None:
         if not ev.secret:
@@ -2774,6 +2962,21 @@ class PentestApp(App):
         done.wait()
         return answer.get("v", "n")
 
+    def _confirm_tool_from_worker(self, tool_name: str, inputs: dict) -> str:
+        """Block the worker thread on an operator y/n decision for a high-impact tool."""
+        answer: dict = {}
+        done = threading.Event()
+
+        def _show() -> None:
+            def _cb(ans: str | None) -> None:
+                answer["v"] = ans or "n"
+                done.set()
+            self.push_screen(ToolGateModal(tool_name, inputs), callback=_cb)
+
+        self.call_from_thread(_show)
+        done.wait()
+        return answer.get("v", "n")
+
     def _drain_stale_interrupts(self) -> None:
         """Discard instructions typed after the previous run ended — they must
         not leak into a new engagement."""
@@ -2843,6 +3046,18 @@ class PentestApp(App):
                         used_at=c.get("used_at", []),
                         verified=c.get("verified", False),
                     ))
+                leads = ev.get("leads")
+                if leads is not None:
+                    self._open_leads = leads
+                    self.call_from_thread(self._refresh_next_steps)
+            elif t == "shell_connected":
+                sid = ev.get("session_id", "")
+                addr = ev.get("addr", "")
+                if sid:
+                    self.post_message(PentestApp.Shell(sid, addr))
+                self.post_message(PentestApp.Activity(
+                    f"  [bold green]⚡ shell[/bold green] connected {addr}  [dim]id={sid}[/dim]"
+                ))
             elif t == "credential":
                 # record_credential fired — update the Creds tab immediately
                 self.post_message(PentestApp.Cred(
@@ -3004,6 +3219,7 @@ class PentestApp(App):
                 save_individual_runs=False,
                 session_logger=logger,
                 artifact_store=ArtifactStore(adir / "artifacts"),
+                tool_confirm_cb=self._confirm_tool_from_worker,
             )
             self._orchestrator = orchestrator   # for /job list|kill from the UI
 
@@ -3174,7 +3390,8 @@ class PentestApp(App):
                 self._generate_pipeline_report(
                     target, completed_runs,
                     persistence=[p.model_dump() for p in state.persistence],
-                    termination=termination)
+                    termination=termination,
+                    persona=self._active_persona)
             elif all_findings and not paused:
                 self.post_message(PentestApp.Activity(
                     "[dim]Reporting is OFF (/report on to re-enable) — no report generated. "
@@ -3250,18 +3467,54 @@ class PentestApp(App):
 
     def _generate_pipeline_report(self, target: str, completed_runs: list,
                                   persistence: list | None = None,
-                                  termination: str = "completed") -> None:
+                                  termination: str = "completed",
+                                  persona: str = "") -> None:
         """Merge all pipeline runs and write a single HTML report into the
         assessment folder (falls back to results/ if no assessment dir is set)."""
         try:
             from reporting.formatter import generate_merged_report
             out_dir = self._current_assessment_dir or RESULTS_DIR
+            op_name = ""
+            iocs: list = []
+            if persona in ("pentest", "redteam"):
+                try:
+                    from core.paths import OPS_DIR
+                    active_op_file = OPS_DIR / ".active_op"
+                    if active_op_file.exists():
+                        op_name = active_op_file.read_text(encoding="utf-8").strip()
+                    if op_name:
+                        from core.engagement_store import EngagementStore
+                        store, _, _ = EngagementStore.open_or_create(op_name)
+                        iocs = store.load_iocs()
+                        if iocs and persona == "redteam":
+                            self._export_iocs_csv(op_name, iocs, OPS_DIR)
+                except Exception:
+                    pass
             path = generate_merged_report(completed_runs, out_dir, fmt="html",
                                           target=target, persistence=persistence,
-                                          termination=termination)
+                                          termination=termination,
+                                          persona=persona, op_name=op_name, iocs=iocs)
             self.post_message(PentestApp.Activity(f"[green]HTML Report:[/green] {path}"))
         except Exception as e:
             self.post_message(PentestApp.Activity(f"[red]Report failed: {e}[/red]"))
+
+    @staticmethod
+    def _export_iocs_csv(op_name: str, iocs: list, ops_dir) -> None:
+        import csv
+        workspace = ops_dir / op_name / "ai_workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        out = workspace / "iocs.csv"
+        with out.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=["ioc_type", "value", "context", "source", "timestamp"])
+            writer.writeheader()
+            for ioc in iocs:
+                writer.writerow({
+                    "ioc_type": getattr(ioc, "ioc_type", ""),
+                    "value":    getattr(ioc, "value", ""),
+                    "context":  getattr(ioc, "context", ""),
+                    "source":   getattr(ioc, "source", ""),
+                    "timestamp": str(getattr(ioc, "timestamp", "")),
+                })
 
     @staticmethod
     def _rehydrate_report_state(state, assessment) -> None:
@@ -3355,7 +3608,8 @@ class PentestApp(App):
                 except Exception:
                     pass
             self._generate_pipeline_report(
-                target, assessment.runs, persistence=snap.get("persistence", []))
+                target, assessment.runs, persistence=snap.get("persistence", []),
+                persona=self._active_persona)
         except Exception as e:
             self.post_message(PentestApp.Activity(f"[red]Re-synthesis failed: {e}[/red]"))
         finally:

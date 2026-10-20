@@ -335,7 +335,8 @@ def _get_env() -> Environment:
 
 
 def _render(run: EngagementRun, fmt: str, output_dir: Path,
-            persistence: list | None = None, termination: str = "completed") -> Path:
+            persistence: list | None = None, termination: str = "completed",
+            persona: str = "", op_name: str = "", iocs: list | None = None) -> Path:
     output_dir.mkdir(exist_ok=True)
     env = _get_env()
 
@@ -369,6 +370,9 @@ def _render(run: EngagementRun, fmt: str, output_dir: Path,
         persistence=persistence or [],
         is_draft=is_draft,
         limitations={"ended_early": ended_early, "text": term_text, "reason": termination},
+        is_ops_report=persona in ("pentest", "redteam"),
+        op_name=op_name,
+        iocs=iocs or [],
     )
 
     if fmt == "html":
@@ -384,9 +388,10 @@ def _render(run: EngagementRun, fmt: str, output_dir: Path,
     return out_path
 
 
-def generate_report(run: EngagementRun, output_dir: Path, fmt: str = "html") -> Path:
+def generate_report(run: EngagementRun, output_dir: Path, fmt: str = "html",
+                    persona: str = "", op_name: str = "", iocs: list | None = None) -> Path:
     """Generate a report for a single EngagementRun."""
-    return _render(run, fmt, output_dir)
+    return _render(run, fmt, output_dir, persona=persona, op_name=op_name, iocs=iocs)
 
 
 def merge_runs(
@@ -499,7 +504,11 @@ def generate_merged_report(
     target: str = "",
     persistence: list | None = None,
     termination: str = "completed",
+    persona: str = "",
+    op_name: str = "",
+    iocs: list | None = None,
 ) -> Path:
     """Merge multiple EngagementRun objects into one report."""
     return _render(merge_runs(runs, target=target), fmt, output_dir,
-                   persistence=persistence, termination=termination)
+                   persistence=persistence, termination=termination,
+                   persona=persona, op_name=op_name, iocs=iocs)

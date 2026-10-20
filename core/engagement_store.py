@@ -115,6 +115,20 @@ class EngagementStore:
                 notes           TEXT NOT NULL DEFAULT '',
                 created_at      TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS iocs (
+                id              TEXT PRIMARY KEY,
+                engagement_id   TEXT NOT NULL,
+                json            TEXT NOT NULL,
+                created_at      TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS activity_log (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                engagement_id   TEXT NOT NULL,
+                ts              TEXT NOT NULL,
+                message         TEXT NOT NULL,
+                notable         INTEGER NOT NULL DEFAULT 0,
+                created_at      TEXT NOT NULL
+            );
         """)
         conn.commit()
 
@@ -242,6 +256,37 @@ class EngagementStore:
                 (status, summary, ended_at, run_id),
             )
         self._conn.commit()
+
+    def upsert_ioc(self, ioc) -> None:
+        """Insert or replace an IOC (by id)."""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO iocs (id, engagement_id, json, created_at)"
+            " VALUES (?, ?, ?, ?)",
+            (ioc.id, self.engagement_id, ioc.model_dump_json(), _now()),
+        )
+        self._conn.commit()
+
+    def load_iocs(self) -> list:
+        from core.models import IOC
+        rows = self._conn.execute(
+            "SELECT json FROM iocs WHERE engagement_id = ? ORDER BY created_at",
+            (self.engagement_id,),
+        ).fetchall()
+        return [IOC.model_validate_json(r["json"]) for r in rows]
+
+    def add_activity(self, ts: str, message: str, notable: bool = False) -> None:
+        self._conn.execute(
+            "INSERT INTO activity_log (engagement_id, ts, message, notable, created_at) VALUES (?, ?, ?, ?, ?)",
+            (self.engagement_id, ts, message, int(notable), _now()),
+        )
+        self._conn.commit()
+
+    def get_activity_log(self) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT ts, message, notable FROM activity_log WHERE engagement_id = ? ORDER BY id",
+            (self.engagement_id,),
+        ).fetchall()
+        return [{"ts": r["ts"], "message": r["message"], "notable": bool(r["notable"])} for r in rows]
 
     def end_engagement(self) -> None:
         """Mark the engagement ended — next open will be review_mode."""

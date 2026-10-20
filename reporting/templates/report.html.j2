@@ -297,11 +297,11 @@
     {% endif %}
     <div style="font-size:20px; color:var(--accent); margin: 4px 0 12px;">{{ run.target }}</div>
     <div class="meta">
-      <span><strong>Engagement ID</strong> {{ run.id }}</span>
-      <span><strong>Status</strong> {{ run.status | capitalize }}</span>
+      {% if op_name %}<span><strong>Op</strong> {{ op_name }}</span>{% else %}<span><strong>Engagement ID</strong> {{ run.id }}</span>{% endif %}
+      {% if not is_ops_report %}<span><strong>Status</strong> {{ run.status | capitalize }}</span>{% endif %}
       <span><strong>Period</strong> {{ run.start_time.strftime("%Y-%m-%d %H:%M") }} – {{ run.end_time.strftime("%Y-%m-%d %H:%M UTC") if run.end_time else "In Progress" }}</span>
       <span><strong>Generated</strong> {{ generated_at }}</span>
-      {% if run.estimated_cost_usd %}<span><strong>Model Cost</strong> ${{ "%.4f" | format(run.estimated_cost_usd) }}</span>{% endif %}
+      {% if not is_ops_report and run.estimated_cost_usd %}<span><strong>Model Cost</strong> ${{ "%.4f" | format(run.estimated_cost_usd) }}</span>{% endif %}
     </div>
   </div>
 
@@ -333,6 +333,9 @@
       {% endfor %}
     {% else %}
       <p>A penetration test was conducted against <code>{{ run.target }}</code>. {{ run.findings | length }} finding(s) were identified across {{ severity_counts.critical }} critical, {{ severity_counts.high }} high, {{ severity_counts.medium }} medium, and {{ severity_counts.low }} low severity categories.</p>
+    {% endif %}
+    {% if iocs %}
+    <p>{{ iocs | length }} indicator(s) of compromise were captured during this exercise. A full IOC export (CSV) has been written to the engagement's <code>ai_workspace/</code> directory for ingestion into your threat intelligence platform or SIEM.</p>
     {% endif %}
   </section>
 

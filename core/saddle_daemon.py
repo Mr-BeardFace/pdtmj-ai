@@ -89,17 +89,42 @@ class _Daemon:
         server.settimeout(1.0)
         threading.Thread(target=self._serve, args=(server,), daemon=True).start()
 
+        # Start log watching + analysis (redteam/pentest only — non-fatal if fails)
+        analyst = self._start_log_analyst()
+
         while not self._stop_evt.is_set():
             time.sleep(30)
             if not _live_pids(self._op):
                 break
 
+        if analyst:
+            analyst.stop()
         server.close()
         try:
             sock_path.unlink(missing_ok=True)
         except Exception:
             pass
         _write_badge(self._op, None, None)
+
+    def _start_log_analyst(self):
+        try:
+            from core.engagement_store import EngagementStore
+            from core.log_analyst import LogAnalyst
+            from core.log_watcher import LogWatcher
+
+            log_dir = _op_dir(self._op) / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+
+            store, _, _ = EngagementStore.open_or_create(self._op)
+            analyst = LogAnalyst(op=self._op, store=store)
+            watcher = LogWatcher(log_dir=log_dir, on_new_content=analyst.feed)
+
+            analyst.start()
+            watcher.start()
+            return analyst
+        except Exception as e:
+            print(f"saddle-daemon: log analyst init failed: {e}", file=sys.stderr)
+            return None
 
     def _serve(self, server: socket.socket) -> None:
         while True:
