@@ -2382,14 +2382,15 @@ class PentestApp(App):
         except Exception:
             pass
 
-    def _rebuild_left_pane(self) -> None:
+    @work(exclusive=True)
+    async def _rebuild_left_pane(self) -> None:
         """Rebuild the left pane layout when persona switches between ops and ctf."""
         try:
             lp = self.query_one("#left-pane", Vertical)
         except Exception:
             return
 
-        lp.remove_children()
+        await lp.remove_children()
 
         # Clear display state — widgets are gone, dicts must match
         self._host_rows.clear(); self._host_rowkeys.clear()
@@ -2402,27 +2403,27 @@ class PentestApp(App):
         if self._is_ops_persona:
             info_tabs = TabbedContent(id="info-tabs")
             next_steps = Vertical(id="next-steps-container")
-            lp.mount(info_tabs, next_steps)
-            info_tabs.add_pane(TabPane("Beacons",  DataTable(id="beacons-table",  cursor_type="row"), id="tab-beacons"))
-            info_tabs.add_pane(TabPane("Hosts",    DataTable(id="hosts-table",    cursor_type="row"), id="tab-hosts"))
-            info_tabs.add_pane(TabPane("Creds",    DataTable(id="creds-table",    cursor_type="row"), id="tab-creds"))
-            info_tabs.add_pane(TabPane("Findings", ListView(id="findings-list"),                      id="tab-findings"))
-            next_steps.mount(
+            await lp.mount(info_tabs, next_steps)
+            await info_tabs.add_pane(TabPane("Beacons",  DataTable(id="beacons-table",  cursor_type="row"), id="tab-beacons"))
+            await info_tabs.add_pane(TabPane("Hosts",    DataTable(id="hosts-table",    cursor_type="row"), id="tab-hosts"))
+            await info_tabs.add_pane(TabPane("Creds",    DataTable(id="creds-table",    cursor_type="row"), id="tab-creds"))
+            await info_tabs.add_pane(TabPane("Findings", ListView(id="findings-list"),                      id="tab-findings"))
+            await next_steps.mount(
                 Static("● SUGGESTED COMMANDS", classes="pane-header", id="next-steps-label"),
                 Static("[dim]No suggested commands yet[/dim]", id="next-steps-content"),
             )
         else:
             info_tabs = TabbedContent(id="info-tabs")
-            lp.mount(
+            await lp.mount(
                 Static("● FINDINGS", classes="pane-header"),
                 ListView(id="findings-list"),
                 info_tabs,
             )
-            info_tabs.add_pane(TabPane("Hosts",  DataTable(id="hosts-table",  cursor_type="row"), id="tab-hosts"))
-            info_tabs.add_pane(TabPane("Creds",  DataTable(id="creds-table",  cursor_type="row"), id="tab-creds"))
-            info_tabs.add_pane(TabPane("Flags",  DataTable(id="flags-table",  cursor_type="row"), id="tab-flags"))
+            await info_tabs.add_pane(TabPane("Hosts",  DataTable(id="hosts-table",  cursor_type="row"), id="tab-hosts"))
+            await info_tabs.add_pane(TabPane("Creds",  DataTable(id="creds-table",  cursor_type="row"), id="tab-creds"))
+            await info_tabs.add_pane(TabPane("Flags",  DataTable(id="flags-table",  cursor_type="row"), id="tab-flags"))
 
-        self.call_after_refresh(self._setup_table_columns_after_rebuild)
+        self._setup_table_columns_after_rebuild()
 
     def _setup_table_columns_after_rebuild(self) -> None:
         """Re-add column headers after a left-pane rebuild."""
