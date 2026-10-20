@@ -634,7 +634,7 @@ def _config_list(group: str | None = None) -> list[str]:
     groups = [group] if group else list(settings.groups_for_persona(persona))
     shown = [s for g in groups for s in settings.settings_in_group(g, persona)]
     kw = max((len(s.key) for s in shown), default=10)
-    lines = [f"Settings [{persona}]  —  /config <key> <value> to change · /config <key> for detail", ""]
+    lines = [f"Settings \\[{persona}]  —  /config <key> <value> to change · /config <key> for detail", ""]
     for g in groups:
         gs = settings.settings_in_group(g, persona)
         if not gs:
