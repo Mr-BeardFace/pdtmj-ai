@@ -421,8 +421,12 @@ def handle_key_set(args: list[str]) -> tuple[list[str], bool]:
         return [f"Keychain error: {e}"], False
 
 
-def _bedrock_fetch(bedrock_provider: str | None = None) -> list[dict]:
-    """Fetch Bedrock foundation model summaries via boto3, using API key or IAM profile."""
+def _bedrock_fetch(bedrock_provider: str | None = None) -> tuple[list[dict], str]:
+    """Fetch Bedrock foundation model summaries via boto3.
+
+    Returns (models, error_message); error is "" on success.
+    Auth: ABSKQ API key via AWS_BEARER_TOKEN_BEDROCK, or IAM profile fallback.
+    """
     from core import config as _cfg
     import os
     region  = _cfg.get("bedrock.region", "us-east-1")
@@ -437,15 +441,15 @@ def _bedrock_fetch(bedrock_provider: str | None = None) -> list[dict]:
             session = boto3.Session() if ak else boto3.Session(profile_name=profile)
             client  = session.client("bedrock", region_name=region)
             kwargs  = {"byProvider": bedrock_provider} if bedrock_provider else {}
-            return client.list_foundation_models(**kwargs).get("modelSummaries", [])
+            return client.list_foundation_models(**kwargs).get("modelSummaries", []), ""
         finally:
             if ak:
                 if prev is None:
                     os.environ.pop("AWS_BEARER_TOKEN_BEDROCK", None)
                 else:
                     os.environ["AWS_BEARER_TOKEN_BEDROCK"] = prev
-    except Exception:
-        return []
+    except Exception as e:
+        return [], str(e)
 
 
 def _fetch_models_raw(provider: str = "") -> tuple[list[dict], str]:
@@ -461,7 +465,9 @@ def _fetch_models_raw(provider: str = "") -> tuple[list[dict], str]:
         return [], f"Unknown provider: {provider!r}  (supported: {', '.join(_PROVIDER_NAMES)})"
     # Bedrock uses boto3, not an HTTP models endpoint
     if provider == "bedrock":
-        summaries = _bedrock_fetch()
+        summaries, err = _bedrock_fetch()
+        if err:
+            return [], f"Bedrock list_foundation_models failed: {err}"
         models = [{"id": m["modelId"], "name": m.get("modelName", ""),
                    "providerName": m.get("providerName", "")}
                   for m in summaries if m.get("modelId")]
@@ -1376,7 +1382,9 @@ def dispatch(text: str) -> tuple[list[str], bool] | None:
             outer = active
             bp    = args[0] if args else None
         if outer == "bedrock" and bp:
-            summaries = _bedrock_fetch(bp)
+            summaries, err = _bedrock_fetch(bp)
+            if err:
+                return [f"Bedrock error: {err}", "  Check credentials: /key set bedrock <ABSKQ...>"], False
             models = [{"id": m["modelId"], "name": m.get("modelName", "")}
                       for m in summaries if m.get("modelId")]
             if not models:
@@ -1388,14 +1396,16 @@ def dispatch(text: str) -> tuple[list[str], bool] | None:
             return lines, True
         return handle_models_list(outer)
     if cmd == "/models providers":
-        summaries  = _bedrock_fetch()
+        summaries, err = _bedrock_fetch()
+        if err:
+            return [f"Bedrock error: {err}", "", "  Check credentials: /key set bedrock <ABSKQ...>  or configure ~/.aws"], False
         providers  = sorted(set(m.get("providerName", "") for m in summaries if m.get("providerName")))
         lines = ["Bedrock model providers  [live from API]", ""]
         if providers:
             lines += [f"  {p}" for p in providers]
             lines += ["", "  List models: /models list bedrock <Provider>"]
         else:
-            lines.append("  [dim](none — check credentials: /key set ABSKQ...)[/dim]")
+            lines.append("  [dim](none — check credentials: /key set bedrock ABSKQ...)[/dim]")
         return lines, bool(providers)
     if cmd == "/agent list":
         return handle_agent_list()
