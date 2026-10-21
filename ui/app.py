@@ -1798,8 +1798,7 @@ class PentestApp(App):
             with self._chat_lock:
                 self._chat_history.append({"role": "assistant", "content": reply})
 
-            for line in reply.splitlines():
-                self.post_message(PentestApp.Activity(f"[bold cyan]AI:[/bold cyan] {line}"))
+            self.post_message(PentestApp.Activity(f"[bold cyan]AI:[/bold cyan] {reply}"))
 
         except Exception as e:
             self.post_message(PentestApp.Activity(f"[red]Chat error:[/red] {e}"))
