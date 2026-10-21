@@ -15,12 +15,11 @@ from __future__ import annotations
 import json
 import re
 
-import anthropic
-
-from core.llm_client import _resolve_anthropic_key
+from core.llm_client import LLMClient
 from core.models import EngagementBrief
 
-_INTAKE_MODEL = "claude-haiku-4-5-20251001"
+_INTAKE_MODEL_ANTHROPIC = "claude-haiku-4-5-20251001"
+_INTAKE_MODEL_BEDROCK   = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 
 _SYSTEM = """You are the intake classifier for a penetration testing platform. The operator
 describes an engagement in free-form text — possibly terse, possibly a paragraph with
@@ -89,13 +88,18 @@ def brief_from_intent(intent: dict, text: str) -> EngagementBrief:
 
 
 def classify_brief(text: str) -> EngagementBrief:
-    """Parse free-form engagement text into an EngagementBrief using Haiku."""
-    client = anthropic.Anthropic(api_key=_resolve_anthropic_key())
-    response = client.messages.create(
-        model=_INTAKE_MODEL,
-        max_tokens=800,
+    """Parse free-form engagement text into an EngagementBrief using the active provider."""
+    from core.config import get as _cfg_get, get_global_model
+    client = LLMClient()
+    provider = _cfg_get("active_provider", "anthropic")
+    model = (get_global_model()
+             or (_INTAKE_MODEL_BEDROCK if provider == "bedrock" else _INTAKE_MODEL_ANTHROPIC))
+    response = client.run(
+        model=model,
         system=_SYSTEM,
         messages=[{"role": "user", "content": text}],
+        tools=[],
+        max_tokens=800,
     )
     raw = response.content[0].text.strip() if response.content else "{}"
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
