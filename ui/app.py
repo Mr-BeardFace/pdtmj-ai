@@ -27,6 +27,7 @@ from ui.commands import (
     handle_cred_add,
     handle_analyst,
     handle_endop,
+    handle_ioc,
 )
 from core.utils import mask_secret
 from core.paths import (RESULTS_DIR, AGENTS_DIR, LOGS_DIR, ASSESSMENTS_DIR,
@@ -1450,9 +1451,16 @@ class PentestApp(App):
                 self._cmd_report()
             return
 
-        # /analyst — view/set log analyst settings (alias to /config Analyst group)
+        # /analyst — settings view or status
         if parsed and parsed[0] == "/analyst":
             lines, ok = handle_analyst(list(parsed[1]))
+            self._show_cmd_output(lines, ok)
+            return
+
+        # /ioc add|list|remove — manual IOC tracking
+        if parsed and parsed[0].startswith("/ioc"):
+            sub_tokens = parsed[0].split()[1:]
+            lines, ok = handle_ioc(sub_tokens + list(parsed[1]))
             self._show_cmd_output(lines, ok)
             return
 
@@ -1524,9 +1532,8 @@ class PentestApp(App):
                 self._update_status()
                 # the new provider has its own models — refresh the completion pool
                 self._seed_models_for_active_provider()
-            elif parsed[0] == "/models list":
-                # populate completion from the active provider's raw ids (robust to
-                # local/Ollama names the display-text parse would drop)
+            elif parsed[0] == "/models":
+                # populate completion from the active provider's raw ids
                 self._refresh_models_async()
 
     def _open_key_set_modal(self) -> None:
@@ -1869,8 +1876,8 @@ class PentestApp(App):
         act.write("")
         act.write("[dim]  run a full assessment against 10.10.10.1[/dim]")
         act.write("[dim]  run pentest/web against 10.10.10.1[/dim]")
-        act.write("[dim]  /persona set pentest-ctf  |  /cred add admin P@ss smb  |  /models list[/dim]")
-        act.write("[dim]  /provider set openrouter  |  /key set sk-or-...  |  /models list openrouter[/dim]")
+        act.write("[dim]  /persona set pentest-ctf  |  /cred add admin P@ss smb  |  /models[/dim]")
+        act.write("[dim]  /provider set openrouter  |  /key set sk-or-...  |  /models openrouter[/dim]")
         act.write("[dim]  /info — show all current settings  |  /help — commands[/dim]")
         act.write("[dim]  Ctrl+L — full log  |  Ctrl+D — toggle command pane  |  ↑↓ history[/dim]")
         act.write("[dim]  copy: Ctrl+L opens the log in a selectable view  ·  Ctrl+Y copies the whole log[/dim]")

@@ -59,22 +59,35 @@ class Sub:
     complete: tuple[str, ...] = ()     # extra completion suffixes (arg values)
 
 
+_IOC_TYPES = ("ip", "domain", "hash", "url", "c2", "email", "other")
+# Persona sets used for /help filtering (mirrors core.settings constants)
+_ALL_PERSONAS     = ()                                   # empty = show to everyone
+_PIPELINE         = ("pentest", "pentest-ctf")           # automated pipeline only
+_OPS_PERSONAS     = ("pentest", "redteam")               # daemon/analyst personas
+_PENTEST_ONLY     = ("pentest",)
+
+
 @dataclass(frozen=True)
 class Command:
     name: str                          # "/key"
     summary: str                       # family one-liner (grouped overview)
     subs: tuple[Sub, ...]              # subcommands; a lone Sub(name="") = leaf
     detail: tuple[str, ...] = ()       # extra lines for per-command help
+    personas: tuple[str, ...] = ()     # empty = all personas; else shown only to these
 
     @property
     def is_leaf(self) -> bool:
         return len(self.subs) == 1 and self.subs[0].name == ""
 
+    def visible_for(self, persona: str) -> bool:
+        return not self.personas or persona in self.personas
+
 
 COMMANDS: list[Command] = [
+    # ── Infrastructure (all personas) ─────────────────────────────────────────
     Command("/info", "Snapshot: anchors, anything off-default, and your keys",
             (Sub("", "Snapshot of the active config — anchors + changed-from-default + keys"),)),
-    Command("/config", "View or change any setting (the single place to configure)",
+    Command("/config", "View or change any setting (persona-filtered)",
             (Sub("", "List all (grouped), /config <group>, /config <key>, or /config <key> <value>",
                  "[key|group] [value]", _CONFIG_COMPLETIONS),)),
     Command("/key", "Manage API keys (stored in the system keychain)", (
@@ -83,9 +96,19 @@ COMMANDS: list[Command] = [
         Sub("clear", "Remove key(s) from the keychain",
             f"[{'|'.join(_PROVIDER_NAMES)}]", _PROVIDER_NAMES),
     )),
-    Command("/models", "List available models for a provider", (
-        Sub("list", "List models (free-only for OpenRouter)",
-            f"[{'|'.join(_PROVIDER_NAMES)}]", _PROVIDER_NAMES),
+    Command("/models", "List available models for the active (or named) provider",
+            (Sub("", "List models",
+                 f"[{'|'.join(_PROVIDER_NAMES)}]", _PROVIDER_NAMES),)),
+    Command("/provider", "Switch the active LLM provider", (
+        Sub("set",  "Switch active provider (local also takes a base URL)",
+            f"<{'|'.join(_PROVIDER_NAMES)}> [baseURL]", _PROVIDER_NAMES),
+        Sub("list", "Show current provider and key status"),
+        Sub("login", "Authenticate a provider that uses a login flow",
+            "<provider> [code]", _PROVIDER_NAMES),
+    )),
+    Command("/persona", "Switch the engagement persona", (
+        Sub("set",  "Set the engagement persona", "<persona-name>", _PERSONA_COMPLETIONS),
+        Sub("list", "List available personas"),
     )),
     Command("/agent", "Inspect and override per-agent models and temperatures", (
         Sub("set model", "Override the model for one agent (or 'global')",
@@ -94,63 +117,70 @@ COMMANDS: list[Command] = [
             "<name|global> <0.0-1.0|default>", ("global",)),
         Sub("list", "List all agents with their current model and temperature"),
     )),
+    # ── Op data (all personas) ────────────────────────────────────────────────
     Command("/cred", "Pre-load or manage engagement credentials", (
         Sub("add",    "Pre-load a credential", "[type] <user> <secret> [service]", _CRED_TYPES),
         Sub("list",   "List credentials (operator + agent-discovered), numbered"),
         Sub("remove", "Remove a credential by its number from /cred list", "<n>"),
         Sub("clear",  "Remove all manually added credentials"),
     )),
-    Command("/persona", "Switch the engagement persona", (
-        Sub("set",  "Set the engagement persona", "<persona-name>", _PERSONA_COMPLETIONS),
-        Sub("list", "List available personas"),
-    )),
-    Command("/provider", "Switch the active LLM provider", (
-        Sub("set",  "Switch active provider (local also takes a base URL)",
-            f"<{'|'.join(_PROVIDER_NAMES)}> [baseURL]", _PROVIDER_NAMES),
-        Sub("list", "Show current provider and key status"),
-        Sub("login", "Authenticate a provider that uses a login flow",
-            "<provider> [code]", _PROVIDER_NAMES),
-    )),
     Command("/scope", "Manage the engagement's in-scope targets", (
         Sub("add",    "Approve a target for agent followups", "<target>"),
         Sub("remove", "Take a host/IP/CIDR out of scope (and keep it out)", "<target>"),
         Sub("list",   "Show approved (and excluded) scope targets"),
     )),
-    Command("/job", "List running background jobs (and recent finished) or kill one by id",
+    # ── Ops persona commands (pentest + redteam — daemon-backed) ─────────────
+    Command("/ioc", "Track indicators of compromise", (
+        Sub("add",    "Record an IOC",
+            f"<{'|'.join(_IOC_TYPES)}> <value> [context]", _IOC_TYPES),
+        Sub("list",   "List all IOCs for the active op"),
+        Sub("remove", "Remove an IOC by its number from /ioc list", "<n>"),
+    ), personas=_OPS_PERSONAS),
+    Command("/analyst", "Tune or check the background log analyst", (
+        Sub("status",  "Show last advisory, opsec level, and token usage"),
+        Sub("",        "View/set analyst settings: /analyst <key> [value]",
+            "[key] [value]", ("interval", "debounce", "model")),
+    ), personas=_OPS_PERSONAS),
+    Command("/endop", "End the engagement — stops daemon, marks ended, clears active op",
+            (Sub("", "Stops the daemon, marks the engagement ended, clears sentinel files"),),
+            personas=_OPS_PERSONAS),
+    # ── Pipeline commands (pentest + ctf only) ────────────────────────────────
+    Command("/job", "List or kill running background jobs",
             (Sub("list", "List running jobs plus the last few finished"),
-             Sub("kill", "Terminate a running job and its process by id (or 'all')", "<id|all>",
-                 ("all",)))),
-    Command("/abort", "Hard-stop the current agent: kill every in-flight process and hold it for guidance",
-            (Sub("", "Kill all in-flight processes and hold the agent — then /continue or /skip"),)),
-    Command("/skip", "Abandon a held agent (after /abort) and advance to the next agent",
-            (Sub("", "Abandon a held agent (after /abort) and advance to the next agent"),)),
-    Command("/pause", "Temporarily pause the engagement after the current agent — resume with /continue",
-            (Sub("", "Temporarily pause the engagement after the current agent — resume with /continue"),)),
+             Sub("kill", "Terminate a running job by id (or 'all')", "<id|all>", ("all",))),
+            personas=_PIPELINE),
+    Command("/abort", "Hard-stop the current agent and hold for guidance",
+            (Sub("", "Kill all in-flight processes and hold the agent — then /continue or /skip"),),
+            personas=_PIPELINE),
+    Command("/skip", "Abandon a held agent (after /abort) and advance to the next",
+            (Sub("", "Abandon a held agent (after /abort) and advance to the next agent"),),
+            personas=_PIPELINE),
+    Command("/pause", "Pause the engagement after the current agent — resume with /continue",
+            (Sub("", "Temporarily pause the engagement after the current agent"),),
+            personas=_PIPELINE),
     Command("/end", "Stop the pipeline, run always-last agents, generate the report",
-            (Sub("", "Stop the pipeline, run always-last agents, generate the report"),)),
-    Command("/continue", "Resume a held agent (after /abort), a paused engagement, or one halted by an account limit",
-            (Sub("", "Resume a held agent (after /abort) with your guidance, or resume a paused/halted engagement"),)),
+            (Sub("", "Stop the pipeline, run always-last agents, generate the report"),),
+            personas=_PIPELINE),
+    Command("/continue", "Resume a held agent (/abort), paused engagement, or account-limit halt",
+            (Sub("", "Resume a held agent with guidance, or resume a paused/halted engagement"),),
+            personas=_PIPELINE),
     Command("/assessment", "List, load, or start a fresh assessment", (
         Sub("list", "List saved assessments (id, date, target, status)"),
         Sub("load", "Reload a saved assessment into the panels by id", "<assessment-id>"),
         Sub("new",  "Clear the board to start a fresh assessment"),
-    )),
-    Command("/report", "Generate a report now, or regen to re-synthesize a loaded assessment",
-            (Sub("", "No arg re-renders the report now; regen re-runs the report agent on a "
-                 "loaded assessment. (Toggle auto-reporting with /config reporting.)",
-                 "[regen]", ("regen",)),)),
-    Command("/analyst", "Tune the background log analyst (ops personas only)", (
-        Sub("", "List analyst settings, or /analyst <key> [value] to view/set",
-            "[key] [value]", ("interval", "debounce", "model")),
-    )),
-    Command("/endop", "End the operation — stops daemon, marks engagement ended, clears active op",
-            (Sub("", "Stops the daemon, marks the engagement ended, clears sentinel files"),)),
-    Command("/clear", "Reset to a blank window — panels, agent log, and token meter (saved files on disk are kept)",
-            (Sub("", "Reset to a blank window — panels, agent log, and token meter (saved files on disk are kept)"),)),
-    Command("/help", "Show this help — '/help <command>' for one command in detail",
-            (Sub("", "Show this help — '/help <command>' for one command in detail",
-                 "[command]"),)),
-    Command("/exit", "Exit PDTMJ-AI", (Sub("", "Exit PDTMJ-AI"),)),
+    ), personas=_PIPELINE),
+    Command("/report", "Generate a report now, or regen a loaded assessment",
+            (Sub("", "No arg renders the report now; regen re-runs the report agent on a "
+                 "loaded assessment. (Auto-report toggle: /config reporting — ctf only.)",
+                 "[regen]", ("regen",)),),
+            personas=_PIPELINE),
+    # ── Session (all personas) ────────────────────────────────────────────────
+    Command("/clear", "Reset to a blank window (saved files on disk are kept)",
+            (Sub("", "Reset panels, agent log, and token meter — saved files on disk are kept"),)),
+    Command("/help", "Show this help — '/help <command>' for detail on one command",
+            (Sub("", "Show this help", "[command]"),)),
+    Command("/exit", "Exit PDTMJ-AI  (/quit also works)",
+            (Sub("", "Exit PDTMJ-AI"),)),
     Command("/quit", "Exit PDTMJ-AI", (Sub("", "Exit PDTMJ-AI"),)),
 ]
 
@@ -228,36 +258,36 @@ def usage(cmd_path: str) -> str:
 
 # ── Help rendering ────────────────────────────────────────────────────────────
 
-# Command families for the grouped /help overview. Every command name MUST appear
-# in exactly one group (a startup check in _overview_lines guards against drift).
+# Command families for the grouped /help overview.
 _HELP_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Setup & config",        ("/info", "/config", "/key", "/models", "/agent", "/persona", "/provider")),
-    ("Engagement setup",      ("/scope", "/cred")),
+    ("Setup & config",          ("/info", "/config", "/key", "/models", "/agent", "/persona", "/provider")),
+    ("Engagement data",         ("/scope", "/cred", "/ioc")),
+    ("Ops (pentest/redteam)",   ("/analyst", "/endop")),
     ("Control (while running)", ("/abort", "/skip", "/pause", "/continue", "/end", "/job")),
-    ("Assessments & reports", ("/assessment", "/report")),
-    ("Session",               ("/clear", "/help", "/exit", "/quit")),
+    ("Assessments & reports",   ("/assessment", "/report")),
+    ("Session",                 ("/clear", "/help", "/exit", "/quit")),
 )
 
 
 def _overview_lines() -> list[str]:
-    """Grouped overview: commands organised by family. Group commands show their
-    subcommands in parens; leaf args are omitted here (they live in /help <cmd>)
-    so every summary aligns in one clean column regardless of arg length."""
+    """Grouped overview filtered by active persona."""
+    persona = _active_persona()
     lines = ["Slash commands (work anytime, even while an agent is running):", ""]
 
-    # Forms: group → "/name (sub | sub)", leaf → just "/name" (args go to /help).
     def _form(c: Command) -> str:
         if c.is_leaf:
             return c.name
-        return f"{c.name} ({' | '.join(s.name for s in c.subs)})"
+        subs = [s.name for s in c.subs if s.name]
+        return f"{c.name} ({' | '.join(subs)})" if subs else c.name
 
-    width = max(len(_form(c)) for c in COMMANDS) + 2
+    visible = [c for c in COMMANDS if c.visible_for(persona)]
+    width = max((len(_form(c)) for c in visible), default=10) + 2
     for title, names in _HELP_GROUPS:
+        group_cmds = [_BY_NAME[n] for n in names if n in _BY_NAME and _BY_NAME[n].visible_for(persona)]
+        if not group_cmds:
+            continue
         lines.append(f"[bold]{title}[/bold]")
-        for name in names:
-            c = _BY_NAME.get(name)
-            if c is None:                       # group references a missing command
-                continue
+        for c in group_cmds:
             lines.append(f"  [cyan]{_form(c):<{width}}[/cyan] {c.summary}")
         lines.append("")
     lines += [
@@ -686,13 +716,13 @@ def _config_unknown(name: str) -> list[str]:
 
 
 def handle_analyst(args: list[str]) -> tuple[list[str], bool]:
-    """/analyst — thin alias to /config analyst group."""
-    # Map shorthand subcommand names to full setting keys
+    """/analyst — settings view or status."""
     _KEY_MAP = {"interval": "analyst_interval", "debounce": "analyst_debounce",
                 "model": "analyst_model"}
     if not args:
         return _config_list("Analyst"), True
-    # Translate first arg if it's a shorthand
+    if args[0] == "status":
+        return handle_analyst_status()
     mapped = [_KEY_MAP.get(args[0], args[0])] + list(args[1:])
     return handle_config(mapped)
 
@@ -755,6 +785,157 @@ def handle_endop(app=None) -> tuple[list[str], bool]:
             app.call_later(app.exit)
         except Exception:
             pass
+
+    return lines, True
+
+
+def handle_ioc(args: list[str]) -> tuple[list[str], bool]:
+    """/ioc add|list|remove — manual IOC tracking for the active op."""
+    from pathlib import Path
+    from core.paths import OPS_DIR
+
+    def _open():
+        try:
+            op = (OPS_DIR / ".active_op").read_text().strip()
+        except FileNotFoundError:
+            op = None
+        if not op:
+            raise click_err("no active op")
+        from core.engagement_store import EngagementStore
+        store, _, _ = EngagementStore.open_or_create(op)
+        return store, op
+
+    def click_err(msg: str):
+        class _E(Exception):
+            pass
+        e = _E(msg)
+        return e
+
+    sub = args[0].lower() if args else "list"
+
+    if sub == "list":
+        try:
+            store, _ = _open()
+            rows = store.load_iocs()
+            store.close()
+        except Exception as e:
+            return [f"[red]{e}[/red]"], False
+        if not rows:
+            return ["[dim]no IOCs[/dim]"], True
+        out = []
+        for i, r in enumerate(rows, 1):
+            ctx = f"  [dim]{r.context}[/dim]" if r.context else ""
+            out.append(f"  {i:>3}.  [{r.ioc_type}]  {r.value}{ctx}")
+        out.append(f"\n  [dim]{len(rows)} IOC(s)[/dim]")
+        return out, True
+
+    if sub == "add":
+        rest = args[1:]
+        if not rest:
+            return [f"Usage: /ioc add <{'|'.join(_IOC_TYPES)}> <value> [context]"], False
+        ioc_type = rest[0].lower() if rest[0].lower() in _IOC_TYPES else "other"
+        value_idx = 1 if rest[0].lower() in _IOC_TYPES else 0
+        if value_idx >= len(rest):
+            return [f"Usage: /ioc add <{'|'.join(_IOC_TYPES)}> <value> [context]"], False
+        value   = rest[value_idx]
+        context = " ".join(rest[value_idx + 1:])
+        try:
+            store, _ = _open()
+            from core.models import IOC
+            store.upsert_ioc(IOC(ioc_type=ioc_type, value=value, context=context))
+            store.close()
+        except Exception as e:
+            return [f"[red]{e}[/red]"], False
+        return [f"IOC recorded: [{ioc_type}] {value}"], True
+
+    if sub == "remove":
+        if not args[1:] or not args[1].isdigit():
+            return ["Usage: /ioc remove <n>  (number from /ioc list)"], False
+        n = int(args[1])
+        try:
+            store, _ = _open()
+            rows = store.load_iocs()
+            if n < 1 or n > len(rows):
+                store.close()
+                return [f"No IOC #{n} — /ioc list to see current entries"], False
+            target = rows[n - 1]
+            store._conn.execute(
+                "DELETE FROM iocs WHERE id = ?", (target.id,))
+            store._conn.commit()
+            store.close()
+        except Exception as e:
+            return [f"[red]{e}[/red]"], False
+        return [f"IOC #{n} removed"], True
+
+    return [f"Unknown subcommand {sub!r} — /ioc add|list|remove"], False
+
+
+def handle_analyst_status() -> tuple[list[str], bool]:
+    """/analyst status — last advisory, opsec level, and token usage."""
+    import json
+    from pathlib import Path
+    from core.paths import OPS_DIR
+
+    try:
+        op = (OPS_DIR / ".active_op").read_text().strip()
+    except FileNotFoundError:
+        op = None
+    if not op:
+        return ["[dim]no active op[/dim]"], True
+
+    lines: list[str] = [f"Analyst status for [bold]{op}[/bold]", ""]
+
+    # Token usage
+    usage_path = OPS_DIR / op / ".analyst_usage"
+    if usage_path.exists():
+        try:
+            u = json.loads(usage_path.read_text())
+            lines.append(f"  tokens in/out  {u.get('in', 0):,} / {u.get('out', 0):,}")
+        except Exception:
+            pass
+
+    # Badge from daemon socket
+    import socket as _sock
+    sock_path = OPS_DIR / op / ".saddle.sock"
+    if sock_path.exists():
+        try:
+            s = _sock.socket(_sock.AF_UNIX, _sock.SOCK_STREAM)
+            s.settimeout(2.0)
+            s.connect(str(sock_path))
+            s.sendall(json.dumps({"type": "status"}).encode() + b"\n")
+            data = b""
+            while b"\n" not in data:
+                chunk = s.recv(1024)
+                if not chunk:
+                    break
+                data += chunk
+            s.close()
+            resp = json.loads(data.split(b"\n")[0])
+            badge = resp.get("badge")
+            badge_type = resp.get("badge_type", "info")
+            _colour = {"info": "dim", "warning": "yellow", "alert": "red", "critical": "bold red"}
+            c = _colour.get(badge_type, "white")
+            if badge:
+                lines.append(f"  badge          [{c}]{badge}[/{c}]")
+            else:
+                lines.append("  badge          [dim]clear[/dim]")
+        except Exception:
+            lines.append("  daemon         [dim]not reachable[/dim]")
+    else:
+        lines.append("  daemon         [dim]not running[/dim]")
+
+    # Last few analyst observations from the store
+    try:
+        from core.engagement_store import EngagementStore
+        store, _, _ = EngagementStore.open_or_create(op)
+        facts = [f for f in store.load_facts() if f.kind in ("opsec", "observation")]
+        store.close()
+        if facts:
+            lines += ["", "  Recent observations:"]
+            for f in facts[-3:]:
+                lines.append(f"    [dim]{f.scope}[/dim]  {f.statement}")
+    except Exception:
+        pass
 
     return lines, True
 
