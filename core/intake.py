@@ -19,7 +19,7 @@ from core.llm_client import LLMClient
 from core.models import EngagementBrief
 
 _INTAKE_MODEL_ANTHROPIC = "claude-haiku-4-5-20251001"
-_INTAKE_MODEL_BEDROCK   = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+_INTAKE_MODEL_BEDROCK   = "anthropic.claude-haiku-4-5-20251001-v1:0"  # us. prepended by handler
 
 _SYSTEM = """You are the intake classifier for a penetration testing platform. The operator
 describes an engagement in free-form text — possibly terse, possibly a paragraph with

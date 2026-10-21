@@ -1310,20 +1310,11 @@ def handle_provider_set(args: list[str]) -> tuple[list[str], bool]:
     if not spec.native and not get_global_model():
         out.append(f"  Note: set a model for this provider — /agent set model global <id>"
                    f"  (list them with /models list {provider}).")
-    # Bedrock uses cross-region inference profile IDs (e.g. us.anthropic.claude-...-v1:0),
-    # not the plain Anthropic API model IDs (claude-sonnet-4-6). Warn if the current
-    # global override looks like an Anthropic-native ID.
-    if provider == "bedrock":
-        gm = get_global_model()
-        if gm and "." not in gm:
-            out.append(f"  Warning: global model '{gm}' looks like an Anthropic API ID and will")
-            out.append(f"    fail on Bedrock. Set a Bedrock inference profile ID instead:")
-            out.append(f"    /agent set model global us.anthropic.claude-haiku-4-5-20251001-v1:0")
-            out.append(f"    (or run /models list bedrock to see available IDs)")
-        elif not gm:
-            out.append(f"  Note: Bedrock needs inference profile IDs, not plain model names.")
-            out.append(f"    Set one: /agent set model global us.anthropic.claude-haiku-4-5-20251001-v1:0")
-            out.append(f"    Or: /models list bedrock Anthropic  to see available IDs.")
+    # Bedrock auto-prepends "us." to model IDs, but the provider segment still needs
+    # to be present (e.g. anthropic.claude-sonnet-4-6, not just claude-sonnet-4-6).
+    if provider == "bedrock" and not get_global_model():
+        out.append(f"  Note: set a global model — /agent set model global anthropic.claude-sonnet-4-6")
+        out.append(f"    or run /models list bedrock Anthropic to see available IDs.")
     return out, True
 
 

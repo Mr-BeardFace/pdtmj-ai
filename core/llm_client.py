@@ -103,6 +103,11 @@ class ProviderSpec:
                 f"then /provider set {self.name}")
 
 
+def _bedrock_model_id(model: str) -> str:
+    """Prepend 'us.' if missing — Bedrock cross-region inference profiles require it."""
+    return model if model.startswith("us.") else "us." + model
+
+
 def _bedrock_request_handler(client, model, system, messages, tools, max_tokens, temperature):
     """Transport for AWS Bedrock — uses AnthropicBedrock SDK with API key or IAM profile."""
     import anthropic as _anth
@@ -114,7 +119,8 @@ def _bedrock_request_handler(client, model, system, messages, tools, max_tokens,
         aws_profile=None if ak else get("bedrock.profile", "default"),
         aws_region=get("bedrock.region", "us-east-1"),
     )
-    kwargs: dict = dict(model=model, max_tokens=max_tokens, system=system, messages=messages)
+    kwargs: dict = dict(model=_bedrock_model_id(model), max_tokens=max_tokens,
+                        system=system, messages=messages)
     if tools:
         kwargs["tools"] = tools
     if temperature is not None:
