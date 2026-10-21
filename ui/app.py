@@ -1474,13 +1474,15 @@ class PentestApp(App):
             self._show_cmd_output(lines, ok)
             return
 
-        # /clear — wipe the current assessment's panels (keeps saved results/logs)
+        # /clear — clear the command output pane (+ activity log if /clear log)
         if parsed and parsed[0] == "/clear":
-            if self._is_running:
-                self._show_cmd_output(["An engagement is running — /pause or /end it first."], False)
-            else:
-                self._reset_assessment_view(full=True)
-                self._show_cmd_output(["Board cleared. Run a new target to start a fresh assessment."], True)
+            args_clear = parsed[1] if parsed else []
+            sub_clear  = (args_clear[0].lower() if args_clear else "")
+            self.query_one("#cmd-log", RichLog).clear()
+            if sub_clear == "log":
+                self.query_one("#activity-log", RichLog).clear()
+                self._activity_lines.clear()
+                self._pane_at_blank = True
             return
 
         # /assessment list|load|new — manage saved assessments
@@ -2232,7 +2234,10 @@ class PentestApp(App):
         for c in self._manual_creds:                       # operator creds persist (none if full)
             self._show_cred_in_table(c, source="manual")
 
-        self.query_one("#flags-table", DataTable).clear()
+        try:
+            self.query_one("#flags-table", DataTable).clear()
+        except Exception:
+            pass
 
         self._current_assessment      = None
         self._current_assessment_path = None

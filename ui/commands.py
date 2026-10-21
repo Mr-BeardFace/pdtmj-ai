@@ -177,8 +177,10 @@ COMMANDS: list[Command] = [
                  "[regen]", ("regen",)),),
             personas=_PIPELINE),
     # ── Session (all personas) ────────────────────────────────────────────────
-    Command("/clear", "Reset to a blank window (saved files on disk are kept)",
-            (Sub("", "Reset panels, agent log, and token meter — saved files on disk are kept"),)),
+    Command("/clear", "Clear the command output pane (+ activity log with 'log')", (
+        Sub("",    "Clear the command output pane only"),
+        Sub("log", "Clear both the command output pane and the activity log"),
+    )),
     Command("/help", "Show this help — '/help <command>' for detail on one command",
             (Sub("", "Show this help", "[command]"),)),
     Command("/exit", "Exit PDTMJ-AI  (/quit also works)",
