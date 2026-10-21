@@ -275,7 +275,7 @@ _HELP_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Ops (pentest/redteam)",   ("/analyst", "/endop")),
     ("Control (while running)", ("/abort", "/skip", "/pause", "/continue", "/end", "/job")),
     ("Assessments & reports",   ("/assessment", "/report")),
-    ("Session",                 ("/clear", "/help", "/exit", "/quit")),
+    ("Session",                 ("/clear", "/help", "/exit")),
 )
 
 

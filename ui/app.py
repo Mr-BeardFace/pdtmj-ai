@@ -1886,17 +1886,11 @@ class PentestApp(App):
 
     def _welcome(self) -> None:
         act = self.query_one("#activity-log", RichLog)
-        act.write("[bold cyan]PDTMJ-AI[/bold cyan] [dim]— Please Don't Take My Job, AI[/dim]")
-        act.write("[dim]  agentic penetration testing[/dim]")
+        act.write("[bold cyan]PDTMJ-AI[/bold cyan]")
         act.write("")
-        act.write("[dim]  run a full assessment against 10.10.10.1[/dim]")
-        act.write("[dim]  run pentest/web against 10.10.10.1[/dim]")
-        act.write("[dim]  /persona set pentest-ctf  |  /cred add admin P@ss smb  |  /models[/dim]")
-        act.write("[dim]  /provider set openrouter  |  /key set sk-or-...  |  /models openrouter[/dim]")
-        act.write("[dim]  /info — show all current settings  |  /help — commands[/dim]")
-        act.write("[dim]  Ctrl+L — full log  |  Ctrl+D — toggle command pane  |  ↑↓ history[/dim]")
-        act.write("[dim]  copy: Ctrl+L opens the log in a selectable view  ·  Ctrl+Y copies the whole log[/dim]")
-        act.write("[dim]  click a Hosts/Creds/Flags row to copy it  ·  Shift+drag for native terminal select[/dim]")
+        act.write("[dim]  /         list all commands[/dim]")
+        act.write("[dim]  /config   view or change settings[/dim]")
+        act.write("[dim]  /info     current config snapshot[/dim]")
         act.write("")
 
     def _show_help(self) -> None:
