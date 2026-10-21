@@ -270,6 +270,7 @@ def usage(cmd_path: str) -> str:
 # Command families for the grouped /help overview.
 _HELP_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Setup & config",          ("/info", "/config", "/key", "/models", "/agent", "/persona", "/provider")),
+    ("Op management",           ("/op",)),
     ("Engagement data",         ("/scope", "/cred", "/ioc")),
     ("Ops (pentest/redteam)",   ("/analyst", "/endop")),
     ("Control (while running)", ("/abort", "/skip", "/pause", "/continue", "/end", "/job")),

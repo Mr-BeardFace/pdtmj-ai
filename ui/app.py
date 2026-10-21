@@ -1475,11 +1475,9 @@ class PentestApp(App):
             return
 
         # /clear — clear the command output pane (+ activity log if /clear log)
-        if parsed and parsed[0] == "/clear":
-            args_clear = parsed[1] if parsed else []
-            sub_clear  = (args_clear[0].lower() if args_clear else "")
+        if parsed and parsed[0] in ("/clear", "/clear log"):
             self.query_one("#cmd-log", RichLog).clear()
-            if sub_clear == "log":
+            if parsed[0] == "/clear log":
                 self.query_one("#activity-log", RichLog).clear()
                 self._activity_lines.clear()
                 self._pane_at_blank = True
