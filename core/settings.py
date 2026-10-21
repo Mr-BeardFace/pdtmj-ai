@@ -26,7 +26,10 @@ _OFF_WORDS = ("off", "false", "disable", "disabled", "no", "0")
 _NULL_WORDS = ("null", "none", "-", "default")
 
 
-_OPS = ("pentest", "redteam")   # ops-only personas
+_OPS         = ("pentest", "redteam")          # daemon + analyst personas
+_PENTEST_CTF = ("pentest", "pentest-ctf")     # automated-pipeline personas
+_PENTEST     = ("pentest",)                    # pentest-only settings
+_CTF         = ("pentest-ctf",)               # ctf-only settings
 # empty personas tuple on a Setting means "all personas"
 
 
@@ -54,84 +57,89 @@ class Setting:
 
 # ── The catalogue ────────────────────────────────────────────────────────────────
 SETTINGS: tuple[Setting, ...] = (
-    # Engagement — ops only
-    Setting("exploitation",   "Exploitation",    "Engagement", "bool",
-            "Run the plan → exploit → validate phase", info_static=True, personas=_OPS),
-    Setting("confirm_exploit","Confirm exploit",  "Engagement", "bool",
-            "Ask before each exploit action", info_static=True, personas=_OPS),
-    Setting("tool_gate",      "Tool gate",        "Engagement", "str",
-            "autonomous = run high-impact tools freely; gated = confirm before each high-impact tool call",
-            info_static=True, choices=("autonomous", "gated"), personas=_OPS),
-    Setting("validation",     "Validation pass",  "Engagement", "bool",
-            "Dedicated agent independently reproduces each finding", personas=_OPS),
-    Setting("package_install","Package install",  "Engagement", "bool",
-            "Let agents pip/apt-install missing tooling", personas=_OPS),
-    Setting("enum_turns",     "Enum turns/pass",  "Engagement", "int",
-            "Turn budget for each staged enumeration pass", minimum=1, personas=_OPS),
-    Setting("sliding_turns",  "Extend turns on progress", "Engagement", "bool",
-            "Treat the turn budget as a sliding window reset by progress", personas=_OPS),
-    Setting("turn_ceiling_factor", "Turn ceiling factor", "Engagement", "int",
-            "Absolute turn ceiling = max_turns × this", minimum=1, personas=_OPS),
+    # Engagement — pentest + ctf (automated pipeline)
+    Setting("exploitation",        "Exploitation",           "Engagement", "bool",
+            "Run the plan → exploit → validate phase", info_static=True, personas=_PENTEST_CTF),
+    Setting("confirm_exploit",     "Confirm exploit",        "Engagement", "bool",
+            "Pause and ask before each exploit action (when exploitation is on)",
+            info_static=True, personas=_PENTEST_CTF),
+    Setting("enum_turns",          "Enum turns/pass",        "Engagement", "int",
+            "Turn budget for each staged enumeration pass", minimum=1, personas=_PENTEST_CTF),
+    Setting("sliding_turns",       "Extend turns on progress","Engagement", "bool",
+            "Treat the turn budget as a sliding window reset by progress", personas=_PENTEST_CTF),
+    Setting("turn_ceiling_factor", "Turn ceiling factor",    "Engagement", "int",
+            "Absolute turn ceiling = max_turns × this", minimum=1, personas=_PENTEST_CTF),
+    Setting("agent_turns",         "Max turns/agent",        "Engagement", "int",
+            "Per-agent turn budget (0 = unlimited)", minimum=0, personas=_PENTEST_CTF),
+    # Engagement — pentest only (ctf always-on / redteam unused)
+    Setting("tool_gate",      "Tool gate",     "Engagement", "str",
+            "autonomous = run freely; gated = confirm before each high-impact tool call",
+            info_static=True, choices=("autonomous", "gated"), personas=_PENTEST),
+    Setting("validation",     "Validation pass","Engagement", "bool",
+            "Dedicated agent independently reproduces each finding before the report",
+            personas=_PENTEST),
+    Setting("package_install","Package install","Engagement", "bool",
+            "Let agents pip/apt-install missing tooling", personas=_PENTEST),
+    # Engagement — ctf only (always-on for pentest/redteam; /report handles manual reporting)
+    Setting("reporting",  "Auto-reporting", "Engagement", "bool",
+            "Run the report-writer agent automatically at pipeline end", info_static=True,
+            personas=_CTF),
+    Setting("web_search", "Web research",   "Engagement", "bool",
+            "Allow the web_search + fetch_url tools", personas=_CTF),
     # Engagement — all personas
-    Setting("reporting",   "Reporting",      "Engagement", "bool",
-            "Run the report-writer agent at engagement end", info_static=True),
-    Setting("web_search",  "Web research",   "Engagement", "bool",
-            "Allow the web_search + fetch_url tools"),
-    Setting("agent_turns", "Max turns/agent","Engagement", "int",
-            "Per-agent turn budget (0 = unlimited)", minimum=0),
     Setting("temp", "Temperature", "Engagement", "float",
             "Sampling temperature baseline, 0=focused … 1=varied (null=provider default; "
             "some models e.g. newer Opus reject it and it's dropped automatically). "
             "Per-agent overrides live in /agent set temp.",
             minimum=0.0, maximum=2.0, allow_null=True),
 
-    # Parallelism — ops only
+    # Parallelism — pentest + ctf
     Setting("parallel",          "Parallel",               "Parallelism", "bool",
-            "Work independent surfaces + hypotheses concurrently", personas=_OPS),
+            "Work independent surfaces + hypotheses concurrently", personas=_PENTEST_CTF),
     Setting("parallel_agents",   "Max parallel agents",    "Parallelism", "int",
-            "Global cap on concurrent agent loops", minimum=1, personas=_OPS),
+            "Global cap on concurrent agent loops", minimum=1, personas=_PENTEST_CTF),
     Setting("surface_fanout",    "Surface fanout",         "Parallelism", "int",
-            "Surfaces worked at once (1 = serial)", minimum=1, personas=_OPS),
+            "Surfaces worked at once (1 = serial)", minimum=1, personas=_PENTEST_CTF),
     Setting("hypothesis_fanout", "Hypothesis fanout",      "Parallelism", "int",
-            "Hypotheses proved/refuted at once per surface (1 = serial)", minimum=1, personas=_OPS),
+            "Hypotheses proved/refuted at once per surface (1 = serial)", minimum=1, personas=_PENTEST_CTF),
     Setting("hypothesis_turns",  "Hypothesis worker turns","Parallelism", "int",
-            "Per-worker turn budget for one prove/refute hypothesis", minimum=1, personas=_OPS),
+            "Per-worker turn budget for one prove/refute hypothesis", minimum=1, personas=_PENTEST_CTF),
 
-    # Loop backstops — ops only
+    # Loop backstops — pentest + ctf
     Setting("cycles_per_surface",    "Cycles per surface",    "Loop backstops", "int",
-            "Cap on enum→exploit cycles for one surface (null = off)", minimum=0, allow_null=True, personas=_OPS),
+            "Cap on enum→exploit cycles for one surface (null = off)", minimum=0, allow_null=True, personas=_PENTEST_CTF),
     Setting("dry_cycles_per_surface","Dry cycles per surface","Loop backstops", "int",
-            "Stop a surface after N cycles with no new finding (0 = off)", minimum=0, personas=_OPS),
+            "Stop a surface after N cycles with no new finding (0 = off)", minimum=0, personas=_PENTEST_CTF),
     Setting("total_cycles",          "Total cycles",          "Loop backstops", "int",
-            "Global cycle backstop across all surfaces (null = unlimited)", minimum=0, allow_null=True, personas=_OPS),
+            "Global cycle backstop across all surfaces (null = unlimited)", minimum=0, allow_null=True, personas=_PENTEST_CTF),
     Setting("surfaces",              "Max surfaces",          "Loop backstops", "int",
-            "Cap on surfaces investigated (null = unlimited)", minimum=0, allow_null=True, personas=_OPS),
+            "Cap on surfaces investigated (null = unlimited)", minimum=0, allow_null=True, personas=_PENTEST_CTF),
     Setting("frontier_actions",      "Frontier max actions",  "Loop backstops", "int",
-            "Max leads worked before stopping (null = use total cycles)", minimum=0, allow_null=True, personas=_OPS),
+            "Max leads worked before stopping (null = use total cycles)", minimum=0, allow_null=True, personas=_PENTEST_CTF),
     Setting("frontier_attempts",     "Frontier attempts cap", "Loop backstops", "int",
-            "Times a single lead is re-worked before it's exhausted", minimum=1, personas=_OPS),
+            "Times a single lead is re-worked before it's exhausted", minimum=1, personas=_PENTEST_CTF),
 
-    # Nudges — ops only
+    # Nudges — pentest + ctf
     Setting("repeat_nudge", "Repeat nudge",       "Nudges", "int",
-            "Flag a tool call repeated N times as a loop (0 = off)", minimum=0, personas=_OPS),
+            "Flag a tool call repeated N times as a loop (0 = off)", minimum=0, personas=_PENTEST_CTF),
     Setting("pivot_nudge",  "Pivot nudge",        "Nudges", "int",
-            "Nudge to pivot after N consecutive failures (0 = off)", minimum=0, personas=_OPS),
+            "Nudge to pivot after N consecutive failures (0 = off)", minimum=0, personas=_PENTEST_CTF),
     Setting("reuse_nudge",  "Script reuse nudge", "Nudges", "int",
-            "Remind to reuse scripts after N writes without list_scripts (0 = off)", minimum=0, personas=_OPS),
+            "Remind to reuse scripts after N writes without list_scripts (0 = off)", minimum=0, personas=_PENTEST_CTF),
     Setting("grind_nudge",  "Grind nudge",        "Nudges", "int",
-            "Flag a grind after N scripts with no banked finding (0 = off)", minimum=0, personas=_OPS),
+            "Flag a grind after N scripts with no banked finding (0 = off)", minimum=0, personas=_PENTEST_CTF),
 
-    # Routing — all personas
+    # Routing — pentest + ctf (pipeline agent routing; not relevant for redteam)
     Setting("llm_routing",  "LLM routing",  "Routing", "bool",
-            "Pick specialist agents with a model vs keyword heuristics"),
+            "Pick specialist agents with a model vs keyword heuristics", personas=_PENTEST_CTF),
     Setting("router_model", "Router model", "Routing", "str",
-            "Model id used for routing (null = small default)", allow_null=True),
+            "Model id used for routing (null = small default)", allow_null=True, personas=_PENTEST_CTF),
 
     # Diagnostics — all personas
     Setting("debug", "Debug capture", "Diagnostics", "bool",
             "Capture full LLM request/response/command transcript to llm_debug.log"),
 
-    # Background log analyst — ops only
+    # Background log analyst — pentest + redteam (ops with daemon)
     Setting("analyst_interval", "Analyst poll interval",  "Analyst", "int",
             "Seconds between log-file polls", minimum=3, personas=_OPS),
     Setting("analyst_debounce", "Analyst debounce",       "Analyst", "int",
@@ -140,13 +148,13 @@ SETTINGS: tuple[Setting, ...] = (
             "Model for the background log analyst (null = small default)",
             allow_null=True, personas=_OPS),
 
-    # Cracking — ops only
+    # Cracking — pentest + ctf
     Setting("hashcat_wordlist", "Hashcat wordlist", "Cracking", "str",
-            "Wordlist path for hashcat jobs", personas=_OPS),
+            "Wordlist path for hashcat jobs", personas=_PENTEST_CTF),
     Setting("hashcat_rules",    "Hashcat rules",    "Cracking", "str",
-            "Rules file for hashcat jobs", personas=_OPS),
+            "Rules file for hashcat jobs", personas=_PENTEST_CTF),
     Setting("hashcat_binary",   "Hashcat binary",   "Cracking", "str",
-            "hashcat executable name or path", personas=_OPS),
+            "hashcat executable name or path", personas=_PENTEST_CTF),
 )
 
 _BY_KEY: dict[str, Setting] = {s.key: s for s in SETTINGS}

@@ -279,10 +279,10 @@ def save_config(cfg: dict[str, Any]) -> None:
 
 
 def _persona_specific_keys() -> frozenset[str]:
-    """Keys that are stored per-persona (ops vs ctf isolation)."""
+    """Keys stored per-persona — any setting that isn't universal (personas != ())."""
     try:
-        from core.settings import SETTINGS, _OPS
-        return frozenset(s.key for s in SETTINGS if s.personas == _OPS)
+        from core.settings import SETTINGS
+        return frozenset(s.key for s in SETTINGS if s.personas)
     except Exception:
         return frozenset()
 
