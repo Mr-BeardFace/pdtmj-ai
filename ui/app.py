@@ -1742,7 +1742,7 @@ class PentestApp(App):
         ts = datetime.now().strftime("%H:%M:%S")
         shown = _pane_cap(msg) if cap else msg
         formatted = f"[dim]{ts}[/dim]  {shown}"
-        self._activity_lines.append(formatted)   # full markup → Ctrl+L
+        self._activity_lines.append(f"[dim]{ts}[/dim]  {msg}")  # full markup → Ctrl+L
         self.query_one("#activity-log", RichLog).write(formatted)
         self._pane_at_blank = False
         if self._activity_store is not None:
