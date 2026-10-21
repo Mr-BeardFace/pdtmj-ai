@@ -85,6 +85,11 @@ class Command:
 
 COMMANDS: list[Command] = [
     # ── Infrastructure (all personas) ─────────────────────────────────────────
+    Command("/op", "Create or switch the active op (engagement)", (
+        Sub("start",  "Create or resume an op and start the daemon", "<name> [persona]"),
+        Sub("list",   "List existing ops in the ops directory"),
+        Sub("status", "Show the active op name and daemon state"),
+    )),
     Command("/info", "Snapshot: anchors, anything off-default, and your keys",
             (Sub("", "Snapshot of the active config — anchors + changed-from-default + keys"),)),
     Command("/config", "View or change any setting (persona-filtered)",
@@ -1330,6 +1335,135 @@ def handle_provider_login(args: list[str]) -> tuple[list[str], bool]:
         return [f"{spec.label} login failed: {e}"], False
 
 
+# ── Op handlers ──────────────────────────────────────────────────────────────
+
+def handle_op_start(args: list[str]) -> tuple[list[str], bool]:
+    """Create or resume an op and start the session daemon.
+
+    Usage: /op start <name> [persona]
+    Writes the active-op sentinel, creates the EngagementStore, and spawns
+    the daemon process (same as `saddle start --op <name>`).
+    """
+    import re as _re, subprocess, sys, time
+    from core.paths import OPS_DIR
+    from core.engagement_store import EngagementStore
+
+    if not args:
+        return ["Usage: /op start <name> [persona]",
+                "  persona defaults to the current active persona (or pentest)"], False
+
+    op_name = args[0]
+    if not _re.match(r'^[a-zA-Z0-9_.-]+$', op_name):
+        return ["Op name may only contain letters, digits, hyphens, underscores, and dots."], False
+
+    persona = args[1].lower() if len(args) > 1 else _active_persona()
+
+    try:
+        store, is_new, review_mode = EngagementStore.open_or_create(op_name, persona=persona)
+        store.close()
+    except Exception as e:
+        return [f"Could not create op store: {e}"], False
+
+    if review_mode:
+        return [f"Op '{op_name}' was ended and is in review mode.",
+                "  Use `saddle end --reopen` to reactivate it."], False
+
+    # Write sentinel files
+    try:
+        OPS_DIR.mkdir(parents=True, exist_ok=True)
+        (OPS_DIR / ".active_op").write_text(op_name)
+        (OPS_DIR.parent / ".active_persona").write_text(persona)
+        from core.config import set_value as _cfg_set
+        _cfg_set("active_persona", persona)
+    except Exception as e:
+        return [f"Could not set active op: {e}"], False
+
+    # Check if daemon already running (socket probe)
+    sock_path = OPS_DIR / op_name / ".saddle.sock"
+    def _daemon_up() -> bool:
+        if not sock_path.exists():
+            return False
+        try:
+            import socket as _s
+            c = _s.socket(_s.AF_UNIX, _s.SOCK_STREAM)
+            c.settimeout(1.0); c.connect(str(sock_path)); c.close()
+            return True
+        except Exception:
+            return False
+
+    if _daemon_up():
+        label = "[dim](resumed — daemon already running)[/dim]"
+        return [f"Op [bold]{op_name}[/bold] active  persona=[cyan]{persona}[/cyan]  {label}"], True
+
+    # Spawn daemon
+    try:
+        project_dir = str(__import__("pathlib").Path(__file__).parent.parent)
+        env = {**os.environ, "PYTHONPATH": project_dir}
+        subprocess.Popen(
+            [sys.executable, "-m", "core.saddle_daemon", "--op", op_name, "--persona", persona],
+            start_new_session=True,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            env=env, cwd=project_dir,
+        )
+    except Exception as e:
+        return [f"Op store created but daemon failed to start: {e}",
+                f"  Op [bold]{op_name}[/bold] is active — daemon can be retried with `saddle start --op {op_name}`"], False
+
+    # Wait up to 3s for the daemon socket
+    for _ in range(15):
+        if _daemon_up():
+            label = "[dim](new)[/dim]" if is_new else "[dim](resumed)[/dim]"
+            return [f"Op [bold]{op_name}[/bold] started  persona=[cyan]{persona}[/cyan]  {label}"], True
+        time.sleep(0.2)
+
+    return [f"Op [bold]{op_name}[/bold] set as active  (daemon socket not yet ready — it may still be starting)"], True
+
+
+def handle_op_list() -> tuple[list[str], bool]:
+    from core.paths import OPS_DIR
+    try:
+        active = (OPS_DIR / ".active_op").read_text().strip()
+    except FileNotFoundError:
+        active = ""
+    try:
+        ops = sorted(p.name for p in OPS_DIR.iterdir()
+                     if p.is_dir() and (p / "engagement.db").exists())
+    except Exception as e:
+        return [f"Could not list ops: {e}"], False
+    if not ops:
+        return ["No ops found. Start one with: /op start <name>"], True
+    lines = ["Ops:", ""]
+    for op in ops:
+        marker = "  ← active" if op == active else ""
+        lines.append(f"  {op}{marker}")
+    lines += ["", "  /op start <name> to create or resume · /op status for detail"]
+    return lines, True
+
+
+def handle_op_status() -> tuple[list[str], bool]:
+    import socket as _sock
+    from core.paths import OPS_DIR
+    try:
+        op = (OPS_DIR / ".active_op").read_text().strip() or None
+    except FileNotFoundError:
+        op = None
+    if not op:
+        return ["No active op. Use /op start <name> to create one."], False
+    persona = _active_persona()
+    lines = [f"Active op: [bold]{op}[/bold]  persona=[cyan]{persona}[/cyan]", ""]
+    sock_path = OPS_DIR / op / ".saddle.sock"
+    if sock_path.exists():
+        try:
+            s = _sock.socket(_sock.AF_UNIX, _sock.SOCK_STREAM)
+            s.settimeout(1.0); s.connect(str(sock_path)); s.close()
+            lines.append("  Daemon: [green]running[/green]")
+        except Exception:
+            lines.append("  Daemon: [yellow]socket exists but not responding[/yellow]")
+    else:
+        lines.append("  Daemon: [dim]not running[/dim]  (start with /op start " + op + ")")
+    return lines, True
+
+
 # ── Main dispatcher ───────────────────────────────────────────────────────────
 
 def dispatch(text: str) -> tuple[list[str], bool] | None:
@@ -1353,6 +1487,12 @@ def dispatch(text: str) -> tuple[list[str], bool] | None:
     if cmd in GROUP_NAMES:
         return handle_help([cmd])
 
+    if cmd == "/op start":
+        return handle_op_start(args)
+    if cmd == "/op list":
+        return handle_op_list()
+    if cmd == "/op status":
+        return handle_op_status()
     if cmd == "/help":
         return handle_help(args)
     if cmd == "/info":

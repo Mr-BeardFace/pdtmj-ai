@@ -31,7 +31,7 @@ from ui.commands import (
 )
 from core.utils import mask_secret
 from core.paths import (RESULTS_DIR, AGENTS_DIR, LOGS_DIR, ASSESSMENTS_DIR,
-                        set_assessment_dir, use_assessment_scratch)
+                        OPS_DIR, set_assessment_dir, use_assessment_scratch)
 from core.artifacts import ArtifactStore
 from core.registry import build_registry, load_all_agents
 from core.agent_loader import load_agent
@@ -1519,7 +1519,22 @@ class PentestApp(App):
 
         # Sync app state for commands that change it
         if success and parsed:
-            if parsed[0] == "/persona set" and parsed[1]:
+            if parsed[0] == "/op start":
+                # Re-bind the activity store to the newly started op
+                try:
+                    op_name = (OPS_DIR / ".active_op").read_text().strip()
+                    if op_name:
+                        from core.engagement_store import EngagementStore as _ES
+                        if self._activity_store is not None:
+                            try:
+                                self._activity_store.close()
+                            except Exception:
+                                pass
+                        self._activity_store, _, _ = _ES.open_or_create(op_name)
+                except Exception:
+                    pass
+                self._update_status()
+            elif parsed[0] == "/persona set" and parsed[1]:
                 prev = self._active_persona
                 self._active_persona = parsed[1][0].lower()
                 # Rebuild layout when crossing the ops/ctf boundary
