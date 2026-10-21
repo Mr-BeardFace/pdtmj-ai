@@ -92,8 +92,13 @@ def classify_brief(text: str) -> EngagementBrief:
     from core.config import get as _cfg_get, get_global_model
     client = LLMClient()
     provider = _cfg_get("active_provider", "anthropic")
-    model = (get_global_model()
-             or (_INTAKE_MODEL_BEDROCK if provider == "bedrock" else _INTAKE_MODEL_ANTHROPIC))
+    override = get_global_model()
+    # Bedrock requires cross-region inference profile IDs (contain a dot, e.g.
+    # "us.anthropic.claude-..."). Discard an Anthropic-API-format override
+    # (e.g. "claude-sonnet-4-6") so it doesn't cause a 400 on Bedrock.
+    if provider == "bedrock" and override and "." not in override:
+        override = None
+    model = override or (_INTAKE_MODEL_BEDROCK if provider == "bedrock" else _INTAKE_MODEL_ANTHROPIC)
     response = client.run(
         model=model,
         system=_SYSTEM,
