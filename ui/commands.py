@@ -1005,6 +1005,13 @@ def handle_persona_set(args: list[str]) -> tuple[list[str], bool]:
                 "Use /persona list to see available personas.",
             ], False
         set_value("active_persona", persona)
+        try:
+            from pathlib import Path
+            _sentinel = Path.home() / ".local" / "share" / "pdtmj-ai" / ".active_persona"
+            _sentinel.parent.mkdir(parents=True, exist_ok=True)
+            _sentinel.write_text(persona)
+        except Exception:
+            pass
         return [f"Active persona set to: {persona}"], True
     except Exception as e:
         return [f"Error: {e}"], False
