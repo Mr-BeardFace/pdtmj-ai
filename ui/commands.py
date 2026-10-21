@@ -96,9 +96,11 @@ COMMANDS: list[Command] = [
         Sub("clear", "Remove key(s) from the keychain",
             f"[{'|'.join(_PROVIDER_NAMES)}]", _PROVIDER_NAMES),
     )),
-    Command("/models", "List available models for the active (or named) provider",
-            (Sub("", "List models",
-                 f"[{'|'.join(_PROVIDER_NAMES)}]", _PROVIDER_NAMES),)),
+    Command("/models", "List available models for a provider", (
+        Sub("list",      "List model IDs for a provider (active if omitted)",
+            f"[{'|'.join(_PROVIDER_NAMES)}] [BProvider]", _PROVIDER_NAMES),
+        Sub("providers", "List model providers available in AWS Bedrock"),
+    )),
     Command("/provider", "Switch the active LLM provider", (
         Sub("set",  "Switch active provider (local also takes a base URL)",
             f"<{'|'.join(_PROVIDER_NAMES)}> [baseURL]", _PROVIDER_NAMES),
@@ -419,6 +421,33 @@ def handle_key_set(args: list[str]) -> tuple[list[str], bool]:
         return [f"Keychain error: {e}"], False
 
 
+def _bedrock_fetch(bedrock_provider: str | None = None) -> list[dict]:
+    """Fetch Bedrock foundation model summaries via boto3, using API key or IAM profile."""
+    from core import config as _cfg
+    import os
+    region  = _cfg.get("bedrock.region", "us-east-1")
+    profile = _cfg.get("bedrock.profile", "default")
+    ak      = resolve_provider_key(PROVIDERS["bedrock"]) if "bedrock" in PROVIDERS else None
+    try:
+        import boto3
+        prev = os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
+        if ak:
+            os.environ["AWS_BEARER_TOKEN_BEDROCK"] = ak
+        try:
+            session = boto3.Session() if ak else boto3.Session(profile_name=profile)
+            client  = session.client("bedrock", region_name=region)
+            kwargs  = {"byProvider": bedrock_provider} if bedrock_provider else {}
+            return client.list_foundation_models(**kwargs).get("modelSummaries", [])
+        finally:
+            if ak:
+                if prev is None:
+                    os.environ.pop("AWS_BEARER_TOKEN_BEDROCK", None)
+                else:
+                    os.environ["AWS_BEARER_TOKEN_BEDROCK"] = prev
+    except Exception:
+        return []
+
+
 def _fetch_models_raw(provider: str = "") -> tuple[list[dict], str]:
     """Fetch the raw model dicts for a provider (active one if ''). Returns
     (models, error_message); error is "" on success. The single source of truth for
@@ -430,6 +459,15 @@ def _fetch_models_raw(provider: str = "") -> tuple[list[dict], str]:
     spec = PROVIDERS.get(provider)
     if spec is None:
         return [], f"Unknown provider: {provider!r}  (supported: {', '.join(_PROVIDER_NAMES)})"
+    # Bedrock uses boto3, not an HTTP models endpoint
+    if provider == "bedrock":
+        summaries = _bedrock_fetch()
+        models = [{"id": m["modelId"], "name": m.get("modelName", ""),
+                   "providerName": m.get("providerName", "")}
+                  for m in summaries if m.get("modelId")]
+        if not models:
+            return [], "No Bedrock models returned — check credentials (/key set ABSKQ... or ~/.aws)"
+        return models, ""
     models_url = models_url_for(spec)
     if not models_url:
         if spec.base_url_config:
@@ -1204,8 +1242,16 @@ def handle_provider_list() -> tuple[list[str], bool]:
     from core.config import get
     lines = [f"Active provider: {get('active_provider', 'anthropic')}", ""]
     for spec in PROVIDERS.values():
-        is_set = bool(resolve_provider_key(spec))
-        lines.append(f"  {spec.label:<12} {'set' if is_set else 'not set'}")
+        ak = resolve_provider_key(spec)
+        if spec.name == "bedrock":
+            status = "API key" if ak else "IAM (~/.aws)"
+        elif ak:
+            status = "set"
+        elif spec.key_optional:
+            status = "optional"
+        else:
+            status = "not set"
+        lines.append(f"  {spec.label:<22} {status}")
     lines += ["", f"  Switch with: /provider set <{'|'.join(_PROVIDER_NAMES)}>"]
     return lines, True
 
@@ -1319,8 +1365,38 @@ def dispatch(text: str) -> tuple[list[str], bool] | None:
             "  Key will be stored in your system keychain, not on disk.",
         ], False
     if cmd == "/models list":
-        provider = args[0] if args else ""
-        return handle_models_list(provider)
+        # /models list [outer-provider] [BedRockProvider]
+        # e.g. /models list bedrock Anthropic
+        from core.config import get
+        active = get("active_provider", "anthropic")
+        if args and args[0].lower() in _PROVIDER_NAMES:
+            outer = args[0].lower()
+            bp    = args[1] if len(args) > 1 else None
+        else:
+            outer = active
+            bp    = args[0] if args else None
+        if outer == "bedrock" and bp:
+            summaries = _bedrock_fetch(bp)
+            models = [{"id": m["modelId"], "name": m.get("modelName", "")}
+                      for m in summaries if m.get("modelId")]
+            if not models:
+                return [f"No Bedrock models for provider {bp!r} — check credentials"], False
+            lines = [f"AWS Bedrock — {bp} ({len(models)} models)", ""]
+            for m in sorted(models, key=lambda x: x.get("id", "")):
+                lines.append(f"  {m['id']}")
+            lines += ["", "  Set: /agent set model global <model-id>"]
+            return lines, True
+        return handle_models_list(outer)
+    if cmd == "/models providers":
+        summaries  = _bedrock_fetch()
+        providers  = sorted(set(m.get("providerName", "") for m in summaries if m.get("providerName")))
+        lines = ["Bedrock model providers  [live from API]", ""]
+        if providers:
+            lines += [f"  {p}" for p in providers]
+            lines += ["", "  List models: /models list bedrock <Provider>"]
+        else:
+            lines.append("  [dim](none — check credentials: /key set ABSKQ...)[/dim]")
+        return lines, bool(providers)
     if cmd == "/agent list":
         return handle_agent_list()
     if cmd == "/agent set model":

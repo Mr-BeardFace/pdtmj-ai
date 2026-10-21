@@ -103,12 +103,38 @@ class ProviderSpec:
                 f"then /provider set {self.name}")
 
 
+def _bedrock_request_handler(client, model, system, messages, tools, max_tokens, temperature):
+    """Transport for AWS Bedrock — uses AnthropicBedrock SDK with API key or IAM profile."""
+    import anthropic as _anth
+    from core.config import get
+    spec = PROVIDERS.get("bedrock")
+    ak   = resolve_provider_key(spec) if spec else None
+    bc   = _anth.AnthropicBedrock(
+        api_key=ak or None,
+        aws_profile=None if ak else get("bedrock.profile", "default"),
+        aws_region=get("bedrock.region", "us-east-1"),
+    )
+    kwargs: dict = dict(model=model, max_tokens=max_tokens, system=system, messages=messages)
+    if tools:
+        kwargs["tools"] = tools
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+    return bc.messages.create(**kwargs)
+
+
 PROVIDERS: dict[str, ProviderSpec] = {
     "anthropic": ProviderSpec(
         name="anthropic", label="Anthropic",
         keyring_key="anthropic_api_key", env_var="ANTHROPIC_API_KEY",
         key_prefixes=("sk-ant-",), native=True,
         models_url="https://api.anthropic.com/v1/models", auth_style="x-api-key",
+    ),
+    "bedrock": ProviderSpec(
+        name="bedrock", label="AWS Bedrock",
+        keyring_key="bedrock_api_key", env_var="AWS_BEARER_TOKEN_BEDROCK",
+        key_prefixes=("ABSKQ",),
+        key_optional=True,          # IAM profile (~/.aws) is the fallback auth method
+        request_handler=_bedrock_request_handler,
     ),
     "openrouter": ProviderSpec(
         name="openrouter", label="OpenRouter",

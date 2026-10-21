@@ -487,6 +487,82 @@ def ai(message: tuple[str, ...], op: str | None) -> None:
         raise click.ClickException(str(e))
 
 
+# ── Provider / key / models ──────────────────────────────────────────────────
+
+def _tui(text: str) -> None:
+    """Dispatch a TUI slash command and print its output."""
+    from ui.commands import dispatch
+    result = dispatch(text)
+    if result:
+        lines, _ = result
+        for line in lines:
+            _console.print(line)
+
+
+@cli.group()
+def provider() -> None:
+    """Switch the active LLM provider."""
+
+
+@provider.command("list")
+def provider_list() -> None:
+    """Show current provider and key status."""
+    _tui("/provider list")
+
+
+@provider.command("set")
+@click.argument("name")
+def provider_set(name: str) -> None:
+    """Switch the active provider."""
+    _tui(f"/provider set {name}")
+
+
+@cli.group()
+def key() -> None:
+    """Manage API keys (stored in system keychain)."""
+
+
+@key.command("list")
+def key_list() -> None:
+    """Show key status for all providers."""
+    _tui("/key list")
+
+
+@key.command("set")
+@click.argument("provider_name")
+def key_set(provider_name: str) -> None:
+    """Store an API key for a provider."""
+    api_key = click.prompt("API key", hide_input=True)
+    _tui(f"/key set {provider_name} {api_key}")
+
+
+@key.command("clear")
+@click.argument("provider_name", default="")
+def key_clear(provider_name: str) -> None:
+    """Remove a stored API key."""
+    _tui(f"/key clear {provider_name}".strip())
+
+
+@cli.group()
+def models() -> None:
+    """List models for a provider."""
+
+
+@models.command("list")
+@click.argument("provider_name", default="")
+@click.argument("bedrock_provider", default="")
+def models_list(provider_name: str, bedrock_provider: str) -> None:
+    """List model IDs. For Bedrock: saddle models list bedrock <Provider>"""
+    parts = [p for p in (provider_name, bedrock_provider) if p]
+    _tui(f"/models list {' '.join(parts)}".strip())
+
+
+@models.command("providers")
+def models_providers() -> None:
+    """List model providers available in AWS Bedrock."""
+    _tui("/models providers")
+
+
 # ── Hidden internals (called by zsh hooks) ────────────────────────────────────
 
 @cli.command(hidden=True)
