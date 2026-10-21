@@ -652,6 +652,9 @@ class PentestApp(App):
         self._open_leads: list[dict] = []
         # Activity store for persistence (ops persona only)
         self._activity_store = None
+        # Chat conversation history (pentest/redteam free-form fallback)
+        self._chat_history: list[dict] = []
+        self._chat_lock = threading.Lock()
         # Recent (tool, command, full_output_text), newest last — so when a credential
         # or finding is recorded we can surface the exact source line + context. Bounded.
         self._recent_outputs: list[tuple[str, str, str]] = []
@@ -1533,6 +1536,8 @@ class PentestApp(App):
                     pass
                 self._update_status()
             elif parsed[0] == "/persona set" and parsed[1]:
+                with self._chat_lock:
+                    self._chat_history.clear()
                 prev = self._active_persona
                 self._active_persona = parsed[1][0].lower()
                 # Rebuild layout when crossing the ops/ctf boundary
@@ -1713,9 +1718,12 @@ class PentestApp(App):
             return
 
         if not brief.primary_target:
-            self.post_message(PentestApp.Activity(
-                f"[yellow]No target found in request.[/yellow] {brief.rationale}"
-            ))
+            if self._active_persona in ("pentest", "redteam"):
+                self._chat_llm(text)
+            else:
+                self.post_message(PentestApp.Activity(
+                    f"[yellow]No target found in request.[/yellow] {brief.rationale}"
+                ))
             return
 
         extras = []
@@ -1739,6 +1747,62 @@ class PentestApp(App):
             self._run_pipeline(brief)
 
         self.call_from_thread(_start)
+
+    _CHAT_SYSTEM = (
+        "You are an expert red team advisor embedded in a live operation. "
+        "Answer concisely and tactically. "
+        "NEVER use web search with target IPs, hostnames, discovered credentials, "
+        "or anything that could reveal the operation to external services. "
+        "Public CVEs, tool usage, and general techniques only."
+    )
+
+    @work(thread=True)
+    def _chat_llm(self, text: str) -> None:
+        """Free-form LLM chat for pentest/redteam when no engagement target is found."""
+        from core.llm_client import LLMClient
+        from core.config import get as _cfg_get, get_global_model
+
+        try:
+            op = ""
+            try:
+                op = (OPS_DIR / ".active_op").read_text().strip()
+            except Exception:
+                pass
+            context = f"Persona: {self._active_persona}"
+            if op:
+                context += f"  |  Active op: {op}"
+
+            system = self._CHAT_SYSTEM + f"\n\n{context}"
+
+            with self._chat_lock:
+                self._chat_history.append({"role": "user", "content": text})
+                messages = list(self._chat_history[-20:])
+
+            provider = _cfg_get("active_provider", "anthropic")
+            model = get_global_model() or (
+                "anthropic.claude-sonnet-4-6" if provider == "bedrock"
+                else "claude-sonnet-4-6"
+            )
+            client = LLMClient()
+            response = client.run(
+                model=model,
+                system=system,
+                messages=messages,
+                tools=[],
+                max_tokens=4096,
+            )
+            reply = "\n".join(
+                b.text for b in response.content if hasattr(b, "text")
+            ).strip()
+
+            with self._chat_lock:
+                self._chat_history.append({"role": "assistant", "content": reply})
+
+            for line in reply.splitlines():
+                self.post_message(PentestApp.Activity(f"[bold cyan]AI:[/bold cyan] {line}"))
+
+        except Exception as e:
+            self.post_message(PentestApp.Activity(f"[red]Chat error:[/red] {e}"))
 
     def _cmd_agent_list(self) -> tuple[list[str], bool]:
         from ui.commands import handle_agent_list
