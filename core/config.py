@@ -53,6 +53,9 @@ _DEFAULTS: dict[str, Any] = {
         # rce + everything else use the `temp` baseline (0.4)
     },
     "active_provider": "anthropic",  # "anthropic" | "openrouter" | "nvidia"
+    # ── Analyst scope (helps distinguish op vs local commands) ────────────────
+    "scope_targets": [],       # e.g. ["10.10.10.1", "192.168.1.0/24", "target.htb"]
+    "scope_exclusions": [],    # e.g. ["127.0.0.1", "kali"]
     # ── Methodology loop ──────────────────────────────────────────────────────
     # The engagement cycles Enum→Plan→Exploit→Validate per surface until a cycle
     # produces no new intel (exhaustion). These are safety backstops only — set
