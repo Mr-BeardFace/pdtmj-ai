@@ -592,15 +592,19 @@ class EngagementStore:
         self, ip: str, hostname: str = "", os: str = "",
         notes: str = "", open_ports: list | None = None,
     ) -> None:
+        ports_json = json.dumps(open_ports) if open_ports else None
         self._conn.execute(
             "INSERT INTO hosts (ip, engagement_id, hostname, os, open_ports_json, notes, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)"
+            " VALUES (?, ?, ?, ?, COALESCE(?, '[]'), ?, ?)"
             " ON CONFLICT(ip, engagement_id) DO UPDATE SET"
-            "  hostname = excluded.hostname, os = excluded.os,"
-            "  open_ports_json = excluded.open_ports_json,"
-            "  notes = excluded.notes, updated_at = excluded.updated_at",
+            "  hostname  = COALESCE(NULLIF(excluded.hostname, ''), hosts.hostname),"
+            "  os        = COALESCE(NULLIF(excluded.os, ''), hosts.os),"
+            "  open_ports_json = CASE WHEN excluded.open_ports_json != '[]'"
+            "                    THEN excluded.open_ports_json ELSE hosts.open_ports_json END,"
+            "  notes     = COALESCE(NULLIF(excluded.notes, ''), hosts.notes),"
+            "  updated_at = excluded.updated_at",
             (ip, self.engagement_id, hostname, os,
-             json.dumps(open_ports or []), notes, _now()),
+             ports_json, notes, _now()),
         )
         self._conn.commit()
 
