@@ -511,41 +511,49 @@ class LogAnalyst:
 
         try:
             for h in _lst("hosts"):
-                ip = h.get("ip", "")
-                if not ip:
+                if not h.get("ip"):
                     continue
-                s.upsert_host(ip=ip, hostname=h.get("hostname", ""),
+                s.upsert_host(ip=h["ip"], hostname=h.get("hostname", ""),
                               os=h.get("os", ""), notes=h.get("notes", ""),
                               open_ports=h.get("open_ports"))
             for b in _lst("beacons"):
+                if not b.get("id"):
+                    continue
                 s.upsert_beacon(beacon_id=b["id"], host=b.get("host", ""),
                                 ip=b.get("ip", ""), user=b.get("user", ""),
                                 arch=b.get("arch", ""), os=b.get("os", ""),
                                 c2_type=b.get("c2_type", "unknown"),
                                 notes=b.get("notes", ""))
             for sv in _lst("surfaces"):
+                if not sv.get("host"):
+                    continue
                 from core.models import Surface
                 surf = Surface(host=sv["host"], service=sv.get("service", ""),
                                port=sv.get("port"), fingerprint=sv.get("fingerprint", ""),
                                notes=sv.get("notes", ""))
                 s.upsert_surface(surf)
             for c in _lst("credentials"):
-                if c.get("secret"):
-                    s.add_credential_from_analyst(
-                        username=c.get("username", ""), secret=c["secret"],
-                        cred_type=c.get("type", "password"),
-                        cred_format=c.get("format", ""),
-                        location=c.get("location", ""),
-                        service=c.get("service", ""),
-                        source_host=c.get("source_host", ""),
-                    )
+                if not c.get("secret"):
+                    continue
+                s.add_credential_from_analyst(
+                    username=c.get("username", ""), secret=c["secret"],
+                    cred_type=c.get("type", "password"),
+                    cred_format=c.get("format", ""),
+                    location=c.get("location", ""),
+                    service=c.get("service", ""),
+                    source_host=c.get("source_host", ""),
+                )
             for f in _lst("findings"):
+                if not f.get("title"):
+                    continue
                 s.add_finding_from_analyst(
                     severity=f.get("severity", "info"), title=f["title"],
                     description=f.get("description", ""), target=f.get("target", ""),
                     evidence=f.get("evidence", ""), technique=f.get("technique", ""),
                 )
             for lead in _lst("leads"):
+                if not lead.get("description"):
+                    continue
                 s.add_lead_from_analyst(
                     description=lead["description"],
                     reach_level=lead.get("reach_level", "vuln"),
