@@ -402,14 +402,33 @@ class LogAnalyst:
 
             self._analyse(batch)
 
+    def _log(self, msg: str) -> None:
+        """Write a message to both stderr and activity_log (visible in TUI)."""
+        print(f"log-analyst: {msg}", file=__import__('sys').stderr, flush=True)
+        if self._store:
+            ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+            try:
+                self._store.add_activity(ts, f"[dim]{ts}[/dim]  [cyan]analyst:[/cyan] {msg}")
+            except Exception:
+                pass
+
+    def _set_analyst_status(self, status: str) -> None:
+        """Write analyst processing status to a file the TUI polls for title updates."""
+        try:
+            p = OPS_DIR / self._op / ".analyst_status"
+            if status:
+                p.write_text(status)
+            else:
+                p.unlink(missing_ok=True)
+        except Exception:
+            pass
+
     def _analyse(self, chunks: list[dict]) -> None:
         text = chunks_to_text(chunks)
         if not text.strip():
             return
-        n_lines = text.count("\n") + 1
-        if self._store:
-            ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
-            self._store.add_activity(ts, f"[dim]{ts}[/dim]  [cyan]analyst:[/cyan] processing {n_lines} new log lines…")
+        n_cmds = sum(1 for c in chunks if c.get("command") and not c["command"].startswith("("))
+        self._set_analyst_status(f"processing {n_cmds} command(s)")
         if len(text) > _MAX_CHARS:
             text = text[:_MAX_CHARS] + "\n... [truncated]"
 
@@ -433,13 +452,14 @@ class LogAnalyst:
                     "role": "user",
                     "content": (
                         f"Current engagement state:\n{state_summary}\n\n"
-                        f"New log content to analyze:\n<TARGET_OUTPUT>\n{text}\n</TARGET_OUTPUT>\n\n"
+                        f"New log content to analyze:\n{text}\n\n"
                         "Update the engagement state. Rules:\n"
                         "- activities: ALL commands from new log content, tagged op/local/unknown.\n"
-                        "- beacons/hosts/surfaces: only add entries NOT already listed above.\n"
+                        "- hosts: add a host entry for EVERY target IP seen in commands, even if output is not available yet.\n"
+                        "- beacons/surfaces: only add entries NOT already listed above.\n"
                         "- credentials: only add credentials NOT already listed.\n"
                         "- findings: only add findings NOT already listed (match title+target).\n"
-                        "- leads: only add leads NOT already listed. status always 'open'.\n"
+                        "- leads: suggest next steps based on what commands reveal about the target.\n"
                         "- facts: only add facts NOT already listed.\n"
                         "- op_picture: update to reflect full current state.\n"
                         "- advisory: ONLY emit when there is something directly actionable."
@@ -449,7 +469,8 @@ class LogAnalyst:
                 max_tokens=8192,
             )
         except Exception as e:
-            print(f"log-analyst: LLM error: {e}", flush=True)
+            self._log(f"[bold red]LLM error:[/bold red] {e}")
+            self._set_analyst_status("")
             return
 
         usage = getattr(resp, "usage", None)
@@ -464,13 +485,20 @@ class LogAnalyst:
             except Exception:
                 pass
 
+        tool_called = False
         for block in (resp.content or []):
             if getattr(block, "type", None) == "tool_use" and block.name == "update_engagement_state":
+                tool_called = True
                 update = block.input
                 self._push_to_db(update, frontier, in_tok, out_tok, cost)
                 if self._store:
                     self._write_cycle_summary(update, in_tok, out_tok, cost)
                 break
+
+        if not tool_called:
+            self._log("[yellow]LLM returned text only — no state update[/yellow]")
+
+        self._set_analyst_status("")
 
     def _push_to_db(self, update: dict, frontier: str,
                     in_tok: int, out_tok: int, cost: float) -> None:
@@ -571,7 +599,7 @@ class LogAnalyst:
                          totals["input_tokens"], totals["output_tokens"], totals["cost_usd"])
 
         except Exception as e:
-            print(f"log-analyst: DB push error: {e}", flush=True)
+            self._log(f"[bold red]DB push error:[/bold red] {e}")
 
     def _write_cycle_summary(self, update: dict, in_tok: int, out_tok: int, cost: float) -> None:
         ts = datetime.now(timezone.utc).strftime("%H:%M:%S")

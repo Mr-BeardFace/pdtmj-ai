@@ -1405,14 +1405,17 @@ def handle_op_start(args: list[str]) -> tuple[list[str], bool]:
         label = "[dim](resumed — daemon already running)[/dim]"
         return [f"Op [bold]{op_name}[/bold] active  persona=[cyan]{persona}[/cyan]  {label}"], True
 
-    # Spawn daemon
+    # Spawn daemon — stderr → log file so analyst errors are visible
     try:
         project_dir = str(__import__("pathlib").Path(__file__).parent.parent)
         env = {**os.environ, "PYTHONPATH": project_dir}
+        daemon_log = OPS_DIR / op_name / "daemon.log"
+        daemon_log.parent.mkdir(parents=True, exist_ok=True)
+        _daemon_stderr = open(daemon_log, "a")
         subprocess.Popen(
             [sys.executable, "-m", "core.saddle_daemon", "--op", op_name, "--persona", persona],
             start_new_session=True,
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=_daemon_stderr,
             env=env, cwd=project_dir,
         )
     except Exception as e:

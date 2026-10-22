@@ -164,12 +164,15 @@ def start(op: str, persona: str, target: str, objective: str) -> None:
     _set_active_op(op, persona)
 
     env = {**os.environ, "PYTHONPATH": str(_PROJECT_DIR)}
+    daemon_log = _OPS_DIR / op / "daemon.log"
+    daemon_log.parent.mkdir(parents=True, exist_ok=True)
+    _daemon_stderr = open(daemon_log, "a")
     subprocess.Popen(
         [sys.executable, "-m", "core.saddle_daemon", "--op", op, "--persona", persona],
         start_new_session=True,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=_daemon_stderr,
         env=env,
         cwd=str(_PROJECT_DIR),
     )

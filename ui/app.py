@@ -1993,6 +1993,38 @@ class PentestApp(App):
         except Exception:
             pass
 
+        # Update activity log title from analyst status file
+        self._poll_analyst_status()
+
+    def _poll_analyst_status(self) -> None:
+        """Read .analyst_status file and update the activity log pane header."""
+        from core.paths import OPS_DIR
+        base_title = "● ACTIVITY LOG  [dim](Ctrl+L view · Ctrl+Y copy)[/dim]"
+        try:
+            if self._active_op:
+                status_path = OPS_DIR / self._active_op / ".analyst_status"
+                if status_path.exists():
+                    status = status_path.read_text().strip()
+                    if status:
+                        title = f"● ACTIVITY LOG [bold yellow]★ {status}[/bold yellow]  [dim](Ctrl+L view · Ctrl+Y copy)[/dim]"
+                        self._set_activity_title(title)
+                        return
+            self._set_activity_title(base_title)
+        except Exception:
+            self._set_activity_title(base_title)
+
+    def _set_activity_title(self, title: str) -> None:
+        """Update the activity log pane header text, avoiding redundant updates."""
+        try:
+            headers = self.query(".pane-header")
+            for h in headers:
+                if "ACTIVITY LOG" in str(h.renderable):
+                    if str(h.renderable) != title:
+                        h.update(title)
+                    break
+        except Exception:
+            pass
+
     def _set_running(self, value: bool) -> None:
         import time
         if value and self._run_start is None:
