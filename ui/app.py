@@ -1841,6 +1841,8 @@ class PentestApp(App):
             state_block = self._build_chat_state()
             system = self._CHAT_SYSTEM + f"\n\n{context}\n\n{state_block}"
 
+            self._activity(f"[bold]You:[/bold] {text}", cap=False)
+
             with self._chat_lock:
                 self._chat_history.append({"role": "user", "content": text})
                 messages = list(self._chat_history[-20:])
