@@ -2208,7 +2208,8 @@ class Orchestrator:
         creds = tuple((c.cred_type, c.username, c.location or c.service,
                        c.secret_masked, tuple(c.used_at), c.verified)
                       for c in st.credentials)
-        leads = tuple((l.id, l.status) for l in st.lead_store.leads)
+        ls = getattr(st, "lead_store", None)
+        leads = tuple((l.id, l.status) for l in ls.leads) if ls else ()
         return (ports, surfs, os_i, hns, creds, leads)
 
     def _emit_forward_service(self, result: dict) -> None:
@@ -2233,7 +2234,7 @@ class Orchestrator:
                    recon=self.state.recon.model_dump(),
                    credentials=[c.model_dump() for c in self.state.credentials],
                    surfaces=[s.model_dump() for s in self.state.surfaces],
-                   leads=[l.model_dump() for l in self.state.lead_store.leads if l.is_open])
+                   leads=[l.model_dump() for l in getattr(getattr(self.state, "lead_store", None), "leads", []) if l.is_open])
 
     def _handle_list_scripts(self, inputs: dict) -> dict:
         if not self.state or not self.state.scripts:
