@@ -104,8 +104,12 @@ class ProviderSpec:
 
 
 def _bedrock_model_id(model: str) -> str:
-    """Prepend 'us.' if missing — Bedrock cross-region inference profiles require it."""
-    return model if model.startswith("us.") else "us." + model
+    """Normalize to Bedrock cross-region inference profile: us.anthropic.<model>."""
+    if model.startswith("us."):
+        return model
+    if not model.startswith("anthropic."):
+        model = "anthropic." + model
+    return "us." + model
 
 
 def _bedrock_request_handler(client, model, system, messages, tools, max_tokens, temperature):
