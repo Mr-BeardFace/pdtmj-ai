@@ -376,6 +376,11 @@ class LogAnalyst:
         chunks = parse_chunks(raw)
         if not chunks:
             return
+        if self._store:
+            try:
+                self._store.add_chunks(chunks)
+            except Exception:
+                pass
         with self._lock:
             if not self._pending:
                 self._first_pend = time.monotonic()

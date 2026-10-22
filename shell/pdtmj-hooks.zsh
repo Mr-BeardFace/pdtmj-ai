@@ -196,3 +196,14 @@ pdtmj_op() {
     rm -f "$raw_log"
     unset _PDTMJ_IN_SCRIPT
 }
+
+# ── Auto-start TTY capture ───────────────────────────────────────────────────
+# When an op is active and we're not already inside script(1), start capture.
+
+if [[ -z "$_PDTMJ_IN_SCRIPT" ]] && _pdtmj_is_ops_persona; then
+    _pdtmj_auto_log=$(_pdtmj_log_dir)
+    if [[ -n "$_pdtmj_auto_log" ]]; then
+        pdtmj_op
+    fi
+    unset _pdtmj_auto_log
+fi

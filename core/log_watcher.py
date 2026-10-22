@@ -15,10 +15,12 @@ class LogWatcher:
         log_dir: Path,
         on_new_content: Callable[[Path, bytes], None],
         interval: float = 10.0,
+        on_cursor_update: Callable[[str, int], None] | None = None,
     ) -> None:
         self._log_dir = log_dir
         self._on_new_content = on_new_content
         self._interval = interval
+        self._on_cursor_update = on_cursor_update
         self._cursors: dict[str, int] = {}
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -57,5 +59,10 @@ class LogWatcher:
                 self._cursors[str(path)] = size
                 if data:
                     self._on_new_content(path, data)
+                    if self._on_cursor_update:
+                        try:
+                            self._on_cursor_update(str(path), size)
+                        except Exception:
+                            pass
             except OSError:
                 pass

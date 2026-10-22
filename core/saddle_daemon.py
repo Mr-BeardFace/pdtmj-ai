@@ -103,9 +103,11 @@ class _Daemon:
             analyst  = LogAnalyst(op=self._op, store=store)
             interval = float(_cfg("analyst_interval", 10))
             watcher  = LogWatcher(log_dir=log_dir, on_new_content=analyst.feed,
-                                  interval=interval)
+                                  interval=interval,
+                                  on_cursor_update=store.set_log_cursor)
+            cursors = store.load_log_cursors()
             analyst.start()
-            watcher.start()
+            watcher.start(cursors=cursors)
             return analyst, watcher
         except Exception as e:
             print(f"saddle-daemon: analyst init failed: {e}", file=sys.stderr)

@@ -235,6 +235,18 @@ class EngagementStore:
                 cleanup         TEXT NOT NULL DEFAULT '',
                 created_at      TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS log_chunks (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                engagement_id   TEXT NOT NULL,
+                ts              TEXT NOT NULL,
+                command         TEXT NOT NULL DEFAULT '',
+                output          TEXT NOT NULL DEFAULT '',
+                context         TEXT NOT NULL DEFAULT '',
+                remote_user     TEXT,
+                remote_host     TEXT,
+                remote_privs    TEXT,
+                created_at      TEXT NOT NULL
+            );
         """)
         conn.commit()
 
@@ -701,6 +713,24 @@ class EngagementStore:
             (self.engagement_id,),
         ).fetchall()
         return {r["file_path"]: r["byte_offset"] for r in rows}
+
+    # ── Log chunks ─────────────────────────────────────────────────────────────
+
+    def add_chunks(self, chunks: list[dict]) -> int:
+        """Bulk insert parsed log chunks. Returns total rows written."""
+        now = _now()
+        self._conn.executemany(
+            """INSERT INTO log_chunks
+               (engagement_id, ts, command, output, context,
+                remote_user, remote_host, remote_privs, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [(self.engagement_id, c["timestamp"], c["command"],
+              c.get("output", ""), c.get("context", ""),
+              c.get("remote_user"), c.get("remote_host"),
+              c.get("remote_privs"), now) for c in chunks],
+        )
+        self._conn.commit()
+        return len(chunks)
 
     # ── Analyst state ──────────────────────────────────────────────────────────
 

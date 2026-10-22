@@ -21,6 +21,11 @@ def strip_ansi(text: str) -> str:
 
 # ── prompt patterns ───────────────────────────────────────────────────────────
 
+# cmd_YYYYMMDD.log format from preexec hook: "[2024-10-22 20:12:38] nmap -sC ..."
+_CMD_LOG_LINE = re.compile(
+    r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]\s+(.+)$"
+)
+
 _LOCAL_PROMPT = re.compile(
     r"^(?:\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\])?"
     r"\[([^\]]+)\]:([^\$\n]*)\$"
@@ -236,12 +241,34 @@ class _Block:
         })
 
 
+# ── cmd log fast path ────────────────────────────────────────────────────────
+
+def _parse_cmd_log(lines: list[str]) -> list[dict]:
+    """Parse preexec cmd log lines: '[YYYY-MM-DD HH:MM:SS] command'."""
+    chunks: list[dict] = []
+    for line in lines:
+        m = _CMD_LOG_LINE.match(line)
+        if m:
+            chunks.append({
+                "timestamp": m.group(1),
+                "command": m.group(2),
+                "output": "",
+                "context": "local",
+            })
+    return chunks
+
+
 # ── main entry points ─────────────────────────────────────────────────────────
 
 def parse_chunks(raw: bytes) -> list[dict]:
     """Parse raw script/tty log bytes into [{timestamp, command, output, context}]."""
     text = strip_ansi(raw.decode("utf-8", errors="replace"))
     lines = text.splitlines()
+
+    # Fast path: detect cmd_YYYYMMDD.log format (every non-blank line matches _CMD_LOG_LINE)
+    non_blank = [l.strip() for l in lines if l.strip()]
+    if non_blank and all(_CMD_LOG_LINE.match(l) for l in non_blank):
+        return _parse_cmd_log(non_blank)
 
     chunks: list[dict] = []
     current: _Block | None = None
@@ -263,6 +290,17 @@ def parse_chunks(raw: bytes) -> list[dict]:
             continue
 
         if _OSC_REMNANT.match(stripped) and not re.search(r"[$#]", stripped):
+            continue
+
+        # cmd log line embedded in mixed content (e.g. tty log with timestamps)
+        cm = _CMD_LOG_LINE.match(stripped)
+        if cm:
+            if current is not None:
+                chunk = current.finalize()
+                if chunk:
+                    chunks.append(chunk)
+            current = _Block(timestamp=cm.group(1), context="local")
+            current.add(cm.group(2))
             continue
 
         m = _LOCAL_PROMPT.match(stripped)
