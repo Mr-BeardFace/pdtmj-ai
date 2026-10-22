@@ -677,6 +677,72 @@ def config_cmd(args: tuple[str, ...]) -> None:
         _console.print(line)
 
 
+# ── Scope ─────────────────────────────────────────────────────────────────────
+
+@cli.group()
+def scope() -> None:
+    """Manage analyst scope targets and exclusions."""
+
+
+@scope.command("list")
+def scope_list() -> None:
+    """Show current scope targets and exclusions."""
+    from core.config import load_config
+    cfg = load_config()
+    targets = cfg.get("scope_targets") or []
+    exclusions = cfg.get("scope_exclusions") or []
+    _console.print("[bold]Scope targets:[/bold]")
+    if targets:
+        for t in targets:
+            _console.print(f"  [green]+[/green] {t}")
+    else:
+        _console.print("  [dim](none)[/dim]")
+    _console.print("[bold]Exclusions:[/bold]")
+    if exclusions:
+        for e in exclusions:
+            _console.print(f"  [red]-[/red] {e}")
+    else:
+        _console.print("  [dim](none)[/dim]")
+
+
+@scope.command("add")
+@click.argument("value")
+@click.option("--exclude", is_flag=True, default=False, help="Add as exclusion instead of target")
+def scope_add(value: str, exclude: bool) -> None:
+    """Add a scope target or exclusion (IP, CIDR, hostname)."""
+    from core.config import load_config, save_config
+    cfg = load_config()
+    key = "scope_exclusions" if exclude else "scope_targets"
+    lst = cfg.get(key) or []
+    if value in lst:
+        _console.print(f"[yellow]{value} already in {key}[/yellow]")
+        return
+    lst.append(value)
+    cfg[key] = lst
+    save_config(cfg)
+    label = "exclusion" if exclude else "target"
+    _console.print(f"Added {label}: [bold]{value}[/bold]")
+
+
+@scope.command("remove")
+@click.argument("value")
+@click.option("--exclude", is_flag=True, default=False, help="Remove from exclusions instead of targets")
+def scope_remove(value: str, exclude: bool) -> None:
+    """Remove a scope target or exclusion."""
+    from core.config import load_config, save_config
+    cfg = load_config()
+    key = "scope_exclusions" if exclude else "scope_targets"
+    lst = cfg.get(key) or []
+    if value not in lst:
+        _console.print(f"[yellow]{value} not found in {key}[/yellow]")
+        return
+    lst.remove(value)
+    cfg[key] = lst
+    save_config(cfg)
+    label = "exclusion" if exclude else "target"
+    _console.print(f"Removed {label}: [bold]{value}[/bold]")
+
+
 # ── Provider / key / models ──────────────────────────────────────────────────
 
 def _tui(text: str) -> None:

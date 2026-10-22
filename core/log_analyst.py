@@ -388,6 +388,7 @@ class LogAnalyst:
         self._lock  = threading.Lock()
         self._stop  = threading.Event()
         self._thread: threading.Thread | None = None
+        self._client: "LLMClient | None" = None
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._drain_loop, daemon=True,
@@ -448,6 +449,15 @@ class LogAnalyst:
         except Exception:
             pass
 
+    def _get_client(self):
+        if self._client is None:
+            from core.llm_client import LLMClient
+            self._client = LLMClient(on_retry=self._on_retry)
+        return self._client
+
+    def _on_retry(self, attempt: int, wait: float, reason: str) -> None:
+        self._log(f"[dim]retry #{attempt} in {wait:.0f}s — {reason}[/dim]")
+
     def _analyse(self, chunks: list[dict]) -> None:
         text = chunks_to_text(chunks)
         if not text.strip():
@@ -469,8 +479,7 @@ class LogAnalyst:
         system = _ANALYSIS_SYSTEM.format(phase_hint=phase_hint, scope_hints=scope_hints)
 
         try:
-            from core.llm_client import LLMClient
-            client = LLMClient()
+            client = self._get_client()
             resp = client.run(
                 model=_analyst_model(),
                 system=system,
@@ -502,9 +511,10 @@ class LogAnalyst:
             return
 
         usage = getattr(resp, "usage", None)
-        in_tok  = getattr(usage, "input_tokens",  0) if usage else 0
-        out_tok = getattr(usage, "output_tokens", 0) if usage else 0
-        cost    = self._calc_cost(in_tok, out_tok, _analyst_model())
+        in_tok    = getattr(usage, "input_tokens",  0) if usage else 0
+        out_tok   = getattr(usage, "output_tokens", 0) if usage else 0
+        cache_tok = getattr(usage, "cache_read_input_tokens", 0) if usage else 0
+        cost      = self._calc_cost(in_tok, out_tok, _analyst_model(), cache_tok)
         _write_usage(self._op, in_tok, out_tok, cost)
 
         if self._store:
@@ -521,6 +531,7 @@ class LogAnalyst:
                 self._push_to_db(update, frontier, in_tok, out_tok, cost)
                 if self._store:
                     self._write_cycle_summary(update, in_tok, out_tok, cost)
+                    self._surface_advisory(update)
                 break
 
         if not tool_called:
@@ -652,6 +663,14 @@ class LogAnalyst:
         self._store.add_activity(
             ts, f"[dim]{ts}[/dim]  [cyan]analyst:[/cyan] done — {summary}  [dim]{tok_str}[/dim]")
 
+    def _surface_advisory(self, update: dict) -> None:
+        advisory = (update.get("advisory") or "").strip()
+        if not advisory:
+            return
+        opsec = update.get("opsec_level", "low")
+        color = {"critical": "bold red", "high": "red", "medium": "yellow"}.get(opsec, "dim")
+        self._log(f"[{color}]advisory:[/{color}] {advisory}")
+
     def _build_state_summary(self) -> str:
         if not self._store:
             return "No engagement state available."
@@ -761,7 +780,7 @@ class LogAnalyst:
         return ". ".join(parts)
 
     @staticmethod
-    def _calc_cost(in_tok: int, out_tok: int, model: str) -> float:
+    def _calc_cost(in_tok: int, out_tok: int, model: str, cache_read_tok: int = 0) -> float:
         _PRICING = [
             ("opus",   15.0, 75.0),
             ("sonnet",  3.0, 15.0),
@@ -770,5 +789,7 @@ class LogAnalyst:
         m = model.lower()
         for prefix, inp_r, out_r in _PRICING:
             if prefix in m:
-                return (in_tok * inp_r + out_tok * out_r) / 1_000_000
-        return (in_tok * 3.0 + out_tok * 15.0) / 1_000_000
+                billable_in = (in_tok - cache_read_tok) * inp_r + cache_read_tok * inp_r * 0.1
+                return (billable_in + out_tok * out_r) / 1_000_000
+        billable_in = (in_tok - cache_read_tok) * 3.0 + cache_read_tok * 0.3
+        return (billable_in + out_tok * 15.0) / 1_000_000
