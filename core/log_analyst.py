@@ -662,9 +662,11 @@ class LogAnalyst:
         self._set_analyst_status(f"done — {summary}")
 
     _OPSEC_CLR = {"low": "green", "medium": "yellow", "high": "red", "critical": "bold red"}
+    _OPSEC_RE = __import__("re").compile(
+        r"\|_\s*OPSEC\s*\[?(low|medium|high|critical)\]?\s*[-–—]\s*(.*)", __import__("re").IGNORECASE,
+    )
 
     def _surface_advisory(self, update: dict) -> None:
-        import re as _re
         from rich.markup import escape as _esc
         advisory = (update.get("advisory") or "").strip()
         if not advisory:
@@ -678,15 +680,15 @@ class LogAnalyst:
                     self._store.add_activity(ts, "\n".join(pending))
                     pending = []
                 continue
-            m = _re.match(r"\|_\s*OPSEC\s*\[(low|medium|high|critical)\]\s*-\s*(.*)", s, _re.IGNORECASE)
+            m = self._OPSEC_RE.match(s)
             if m:
                 lvl, reason = m.group(1).lower(), m.group(2)
                 clr = self._OPSEC_CLR.get(lvl, "yellow")
-                pending.append(f"[#6e7681]└─ OPSEC [[{clr}]{lvl.upper()}[/{clr}]][#6e7681] — {_esc(reason)}[/#6e7681]")
+                pending.append(f"[#6e7681]└─ OPSEC [[{clr}]{lvl.upper()}[/{clr}]] — {_esc(reason)}[/#6e7681]")
                 self._store.add_activity(ts, "\n".join(pending))
                 pending = []
             else:
-                pending.append(_esc(s))
+                pending.append(f"[#8b949e]{_esc(s)}[/#8b949e]")
         if pending:
             self._store.add_activity(ts, "\n".join(pending))
 
