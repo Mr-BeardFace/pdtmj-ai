@@ -511,7 +511,7 @@ class LogAnalyst:
 
         try:
             for h in _lst("hosts"):
-                ip = h.get("ip") or h.get("host") or h.get("address", "")
+                ip = h.get("ip", "")
                 if not ip:
                     continue
                 s.upsert_host(ip=ip, hostname=h.get("hostname", ""),
