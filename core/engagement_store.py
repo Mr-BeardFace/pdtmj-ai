@@ -23,6 +23,16 @@ from typing import Optional
 
 from core.paths import OPS_DIR
 
+# Migration columns: (table, col_name, col_def) — added if missing on open
+_MIGRATIONS: list[tuple[str, str, str]] = [
+    ("analyst_cycles", "frontier_level", "TEXT NOT NULL DEFAULT ''"),
+    ("analyst_cycles", "summary",        "TEXT NOT NULL DEFAULT ''"),
+    ("analyst_cycles", "hypothesis",     "TEXT NOT NULL DEFAULT ''"),
+    ("analyst_cycles", "next_steps_json","TEXT NOT NULL DEFAULT '[]'"),
+    ("analyst_cycles", "op_picture",     "TEXT NOT NULL DEFAULT ''"),
+    ("analyst_cycles", "advisory",       "TEXT NOT NULL DEFAULT ''"),
+]
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -113,6 +123,12 @@ class EngagementStore:
                 engagement_id   TEXT NOT NULL,
                 run_id          TEXT NOT NULL DEFAULT '',
                 notes           TEXT NOT NULL DEFAULT '',
+                frontier_level  TEXT NOT NULL DEFAULT '',
+                summary         TEXT NOT NULL DEFAULT '',
+                hypothesis      TEXT NOT NULL DEFAULT '',
+                next_steps_json TEXT NOT NULL DEFAULT '[]',
+                op_picture      TEXT NOT NULL DEFAULT '',
+                advisory        TEXT NOT NULL DEFAULT '',
                 created_at      TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS iocs (
@@ -129,7 +145,110 @@ class EngagementStore:
                 notable         INTEGER NOT NULL DEFAULT 0,
                 created_at      TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS hosts (
+                ip              TEXT NOT NULL,
+                engagement_id   TEXT NOT NULL,
+                hostname        TEXT NOT NULL DEFAULT '',
+                os              TEXT NOT NULL DEFAULT '',
+                open_ports_json TEXT NOT NULL DEFAULT '[]',
+                notes           TEXT NOT NULL DEFAULT '',
+                updated_at      TEXT NOT NULL,
+                PRIMARY KEY (ip, engagement_id)
+            );
+            CREATE TABLE IF NOT EXISTS beacons (
+                beacon_id       TEXT NOT NULL,
+                engagement_id   TEXT NOT NULL,
+                host            TEXT NOT NULL DEFAULT '',
+                ip              TEXT NOT NULL DEFAULT '',
+                user_ctx        TEXT NOT NULL DEFAULT '',
+                arch            TEXT NOT NULL DEFAULT '',
+                os              TEXT NOT NULL DEFAULT '',
+                c2_type         TEXT NOT NULL DEFAULT 'unknown',
+                notes           TEXT NOT NULL DEFAULT '',
+                first_seen      TEXT NOT NULL,
+                last_seen       TEXT NOT NULL,
+                PRIMARY KEY (beacon_id, engagement_id)
+            );
+            CREATE TABLE IF NOT EXISTS auth_attempts (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                engagement_id   TEXT NOT NULL,
+                service         TEXT NOT NULL DEFAULT '',
+                host            TEXT NOT NULL DEFAULT '',
+                port            INTEGER,
+                username        TEXT NOT NULL DEFAULT '',
+                secret_masked   TEXT NOT NULL DEFAULT '',
+                result          TEXT NOT NULL DEFAULT 'fail',
+                created_at      TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS activity_records (
+                activity_id     TEXT NOT NULL,
+                engagement_id   TEXT NOT NULL,
+                beacon_id       TEXT NOT NULL DEFAULT '',
+                timestamp       TEXT NOT NULL DEFAULT '',
+                ioc_type        TEXT NOT NULL DEFAULT 'unknown',
+                execution_context TEXT NOT NULL DEFAULT '',
+                execution_host  TEXT NOT NULL DEFAULT '',
+                user_context    TEXT NOT NULL DEFAULT '',
+                command_action  TEXT NOT NULL DEFAULT '',
+                result          TEXT NOT NULL DEFAULT '',
+                observable_artifacts TEXT NOT NULL DEFAULT '',
+                created_at      TEXT NOT NULL,
+                PRIMARY KEY (activity_id, engagement_id)
+            );
+            CREATE TABLE IF NOT EXISTS log_cursors (
+                file_path       TEXT NOT NULL,
+                engagement_id   TEXT NOT NULL,
+                byte_offset     INTEGER NOT NULL DEFAULT 0,
+                updated_at      TEXT NOT NULL,
+                PRIMARY KEY (file_path, engagement_id)
+            );
+            CREATE TABLE IF NOT EXISTS analyst_state (
+                engagement_id   TEXT PRIMARY KEY,
+                frontier        TEXT NOT NULL DEFAULT 'recon',
+                op_picture      TEXT NOT NULL DEFAULT '',
+                advisory        TEXT NOT NULL DEFAULT '',
+                opsec_level     TEXT NOT NULL DEFAULT 'low',
+                updated_at      TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS chat_history (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                engagement_id   TEXT NOT NULL,
+                role            TEXT NOT NULL,
+                content         TEXT NOT NULL,
+                created_at      TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS c2_state (
+                engagement_id   TEXT NOT NULL,
+                backend         TEXT NOT NULL,
+                session_id      TEXT NOT NULL DEFAULT '',
+                agent_index_json TEXT NOT NULL DEFAULT '{}',
+                agent_done_json TEXT NOT NULL DEFAULT '[]',
+                updated_at      TEXT NOT NULL,
+                PRIMARY KEY (engagement_id, backend)
+            );
+            CREATE TABLE IF NOT EXISTS persistence (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                engagement_id   TEXT NOT NULL,
+                kind            TEXT NOT NULL DEFAULT 'other',
+                host            TEXT NOT NULL DEFAULT '',
+                detail          TEXT NOT NULL DEFAULT '',
+                cleanup         TEXT NOT NULL DEFAULT '',
+                created_at      TEXT NOT NULL
+            );
         """)
+        conn.commit()
+
+    @staticmethod
+    def _migrate_schema(conn: sqlite3.Connection) -> None:
+        """Add new columns to existing tables without breaking existing DBs."""
+        existing: dict[str, set[str]] = {}
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
+            tbl = row[0]
+            cols = {r[1] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall()}
+            existing[tbl] = cols
+        for table, col, col_def in _MIGRATIONS:
+            if table in existing and col not in existing[table]:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
         conn.commit()
 
     # ── Factory ───────────────────────────────────────────────────────────────
@@ -155,6 +274,7 @@ class EngagementStore:
         conn.execute("PRAGMA busy_timeout=5000")
         conn.row_factory = sqlite3.Row
         cls._init_schema(conn)
+        cls._migrate_schema(conn)
 
         row = conn.execute(
             "SELECT id, status FROM engagements WHERE name = ? ORDER BY created_at DESC LIMIT 1",
@@ -351,6 +471,364 @@ class EngagementStore:
             "cache_read": row["cr"], "cache_write": row["cw"],
             "cost_usd": row["cost"],
         }
+
+    # ── Analyst helpers (flat-kwarg shortcuts for analyst DB writes) ──────────
+
+    def add_finding_from_analyst(
+        self, severity: str, title: str, description: str,
+        target: str = "", evidence: str = "", technique: str = "",
+    ) -> None:
+        from core.models import Finding
+        f = Finding(
+            type="vuln",
+            severity=severity,
+            title=title,
+            description=description,
+            target=target,
+            evidence={"raw": evidence} if evidence else {},
+        )
+        if technique:
+            f.type = technique
+        self.upsert_finding(f)
+
+    def add_credential_from_analyst(
+        self, username: str = "", secret: str = "",
+        cred_type: str = "password", cred_format: str = "",
+        location: str = "", service: str = "",
+        source_host: str = "", added_by: str = "analyst",
+    ) -> None:
+        from core.engagement_state import Credential
+        c = Credential(
+            cred_type=cred_type,
+            username=username or None,
+            secret=secret,
+            secret_format=cred_format,
+            location=location,
+            service=service,
+            source_agent=added_by,
+        )
+        self.upsert_credential(c)
+
+    def add_lead_from_analyst(
+        self, description: str, reach_level: str = "vuln",
+        prior: float = 0.5, cost: str = "medium",
+        target: str = "", technique: str = "",
+        command: str = "", opsec: str = "medium",
+        insight: str = "routine", notes: str = "",
+    ) -> None:
+        from core.leads import Lead
+        lead = Lead(
+            kind=technique or "vuln",
+            description=description,
+            technique=technique,
+            target=target,
+            reach_level=reach_level,
+            prior=prior,
+            cost=cost,
+            status="open",
+            created_by="analyst",
+            notes=(f"opsec:{opsec} insight:{insight} command:{command}" +
+                   (f"\n{notes}" if notes else "")),
+            detection_risk=opsec,
+        )
+        self._conn.execute(
+            "INSERT OR IGNORE INTO leads (id, engagement_id, json, created_at)"
+            " VALUES (?, ?, ?, ?)",
+            (lead.id, self.engagement_id, lead.model_dump_json(), _now()),
+        )
+        self._conn.commit()
+
+    def add_fact(self, statement: str, evidence: str = "", scope: str = "") -> None:
+        from core.models import OperationalFact
+        self.upsert_fact(OperationalFact(kind="target", statement=statement,
+                                         evidence=evidence, scope=scope))
+
+    def add_analyst_cycle(
+        self, frontier_level: str = "", summary: str = "",
+        hypothesis: str = "", next_steps: list | None = None,
+        op_picture: str = "", advisory: str = "",
+    ) -> None:
+        self._conn.execute(
+            "INSERT INTO analyst_cycles"
+            " (engagement_id, frontier_level, summary, hypothesis, next_steps_json,"
+            "  op_picture, advisory, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (self.engagement_id, frontier_level, summary, hypothesis,
+             json.dumps(next_steps or []), op_picture, advisory, _now()),
+        )
+        self._conn.commit()
+
+    # ── Hosts ──────────────────────────────────────────────────────────────────
+
+    def upsert_host(
+        self, ip: str, hostname: str = "", os: str = "",
+        notes: str = "", open_ports: list | None = None,
+    ) -> None:
+        self._conn.execute(
+            "INSERT INTO hosts (ip, engagement_id, hostname, os, open_ports_json, notes, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(ip, engagement_id) DO UPDATE SET"
+            "  hostname = excluded.hostname, os = excluded.os,"
+            "  open_ports_json = excluded.open_ports_json,"
+            "  notes = excluded.notes, updated_at = excluded.updated_at",
+            (ip, self.engagement_id, hostname, os,
+             json.dumps(open_ports or []), notes, _now()),
+        )
+        self._conn.commit()
+
+    def load_hosts(self) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT ip, hostname, os, open_ports_json, notes FROM hosts"
+            " WHERE engagement_id = ? ORDER BY updated_at",
+            (self.engagement_id,),
+        ).fetchall()
+        return [{
+            "ip": r["ip"], "hostname": r["hostname"], "os": r["os"],
+            "open_ports": json.loads(r["open_ports_json"] or "[]"),
+            "notes": r["notes"],
+        } for r in rows]
+
+    # ── Beacons ────────────────────────────────────────────────────────────────
+
+    def upsert_beacon(
+        self, beacon_id: str, host: str = "", ip: str = "",
+        user: str = "", arch: str = "", os: str = "",
+        c2_type: str = "unknown", notes: str = "",
+    ) -> None:
+        now = _now()
+        self._conn.execute(
+            "INSERT INTO beacons"
+            " (beacon_id, engagement_id, host, ip, user_ctx, arch, os, c2_type, notes, first_seen, last_seen)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(beacon_id, engagement_id) DO UPDATE SET"
+            "  host=excluded.host, ip=excluded.ip, user_ctx=excluded.user_ctx,"
+            "  arch=excluded.arch, os=excluded.os, c2_type=excluded.c2_type,"
+            "  notes=excluded.notes, last_seen=excluded.last_seen",
+            (beacon_id, self.engagement_id, host, ip, user, arch, os, c2_type, notes, now, now),
+        )
+        self._conn.commit()
+
+    def load_beacons(self) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT beacon_id, host, ip, user_ctx, arch, os, c2_type, notes, first_seen, last_seen"
+            " FROM beacons WHERE engagement_id = ? ORDER BY first_seen",
+            (self.engagement_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Auth attempts ──────────────────────────────────────────────────────────
+
+    def add_auth_attempt(
+        self, service: str, host: str, result: str,
+        port: int | None = None, username: str = "", secret_masked: str = "",
+    ) -> None:
+        self._conn.execute(
+            "INSERT INTO auth_attempts"
+            " (engagement_id, service, host, port, username, secret_masked, result, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (self.engagement_id, service, host, port, username, secret_masked, result, _now()),
+        )
+        self._conn.commit()
+
+    def load_auth_attempts(self) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT service, host, port, username, secret_masked, result, created_at"
+            " FROM auth_attempts WHERE engagement_id = ? ORDER BY id",
+            (self.engagement_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Activity records (analyst-extracted) ──────────────────────────────────
+
+    def add_activity_record(
+        self, activity_id: str, beacon_id: str = "",
+        timestamp: str = "", ioc_type: str = "unknown",
+        execution_context: str = "", execution_host: str = "",
+        user_context: str = "", command_action: str = "",
+        result: str = "", observable_artifacts: str = "",
+    ) -> None:
+        self._conn.execute(
+            "INSERT OR IGNORE INTO activity_records"
+            " (activity_id, engagement_id, beacon_id, timestamp, ioc_type,"
+            "  execution_context, execution_host, user_context, command_action,"
+            "  result, observable_artifacts, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (activity_id, self.engagement_id, beacon_id, timestamp, ioc_type,
+             execution_context, execution_host, user_context, command_action,
+             result, observable_artifacts, _now()),
+        )
+        self._conn.commit()
+
+    def load_activity_records(self, limit: int = 200) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT activity_id, beacon_id, timestamp, ioc_type, execution_context,"
+            "       execution_host, user_context, command_action, result, observable_artifacts"
+            " FROM activity_records WHERE engagement_id = ? ORDER BY created_at DESC LIMIT ?",
+            (self.engagement_id, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Log cursors ────────────────────────────────────────────────────────────
+
+    def get_log_cursor(self, file_path: str) -> int:
+        row = self._conn.execute(
+            "SELECT byte_offset FROM log_cursors WHERE file_path = ? AND engagement_id = ?",
+            (file_path, self.engagement_id),
+        ).fetchone()
+        return row["byte_offset"] if row else 0
+
+    def set_log_cursor(self, file_path: str, offset: int) -> None:
+        self._conn.execute(
+            "INSERT INTO log_cursors (file_path, engagement_id, byte_offset, updated_at)"
+            " VALUES (?, ?, ?, ?)"
+            " ON CONFLICT(file_path, engagement_id) DO UPDATE SET"
+            "  byte_offset=excluded.byte_offset, updated_at=excluded.updated_at",
+            (file_path, self.engagement_id, offset, _now()),
+        )
+        self._conn.commit()
+
+    def load_log_cursors(self) -> dict[str, int]:
+        rows = self._conn.execute(
+            "SELECT file_path, byte_offset FROM log_cursors WHERE engagement_id = ?",
+            (self.engagement_id,),
+        ).fetchall()
+        return {r["file_path"]: r["byte_offset"] for r in rows}
+
+    # ── Analyst state ──────────────────────────────────────────────────────────
+
+    def upsert_analyst_state(
+        self, frontier: str = "recon", op_picture: str = "",
+        advisory: str = "", opsec_level: str = "low",
+    ) -> None:
+        self._conn.execute(
+            "INSERT INTO analyst_state (engagement_id, frontier, op_picture, advisory, opsec_level, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(engagement_id) DO UPDATE SET"
+            "  frontier=excluded.frontier, op_picture=excluded.op_picture,"
+            "  advisory=excluded.advisory, opsec_level=excluded.opsec_level,"
+            "  updated_at=excluded.updated_at",
+            (self.engagement_id, frontier, op_picture, advisory, opsec_level, _now()),
+        )
+        self._conn.commit()
+
+    def get_analyst_state(self) -> dict | None:
+        row = self._conn.execute(
+            "SELECT frontier, op_picture, advisory, opsec_level, updated_at"
+            " FROM analyst_state WHERE engagement_id = ?",
+            (self.engagement_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    # ── Chat history ───────────────────────────────────────────────────────────
+
+    def add_chat_message(self, role: str, content: str) -> None:
+        self._conn.execute(
+            "INSERT INTO chat_history (engagement_id, role, content, created_at)"
+            " VALUES (?, ?, ?, ?)",
+            (self.engagement_id, role, content, _now()),
+        )
+        self._conn.commit()
+
+    def load_chat_history(self, limit: int = 20) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT role, content FROM chat_history WHERE engagement_id = ?"
+            " ORDER BY id DESC LIMIT ?",
+            (self.engagement_id, limit),
+        ).fetchall()
+        return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
+
+    def clear_chat_history(self) -> None:
+        self._conn.execute(
+            "DELETE FROM chat_history WHERE engagement_id = ?", (self.engagement_id,)
+        )
+        self._conn.commit()
+
+    # ── C2 state ───────────────────────────────────────────────────────────────
+
+    def upsert_c2_state(
+        self, backend: str, session_id: str = "",
+        agent_index: dict | None = None, agent_done: list | None = None,
+    ) -> None:
+        self._conn.execute(
+            "INSERT INTO c2_state"
+            " (engagement_id, backend, session_id, agent_index_json, agent_done_json, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(engagement_id, backend) DO UPDATE SET"
+            "  session_id=excluded.session_id, agent_index_json=excluded.agent_index_json,"
+            "  agent_done_json=excluded.agent_done_json, updated_at=excluded.updated_at",
+            (self.engagement_id, backend, session_id,
+             json.dumps(agent_index or {}), json.dumps(agent_done or []), _now()),
+        )
+        self._conn.commit()
+
+    def get_c2_state(self, backend: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT session_id, agent_index_json, agent_done_json FROM c2_state"
+            " WHERE engagement_id = ? AND backend = ?",
+            (self.engagement_id, backend),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "session_id": row["session_id"],
+            "agent_index": json.loads(row["agent_index_json"] or "{}"),
+            "agent_done": json.loads(row["agent_done_json"] or "[]"),
+        }
+
+    # ── Persistence ────────────────────────────────────────────────────────────
+
+    def add_persistence(
+        self, kind: str = "other", host: str = "",
+        detail: str = "", cleanup: str = "",
+    ) -> None:
+        self._conn.execute(
+            "INSERT INTO persistence (engagement_id, kind, host, detail, cleanup, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (self.engagement_id, kind, host, detail, cleanup, _now()),
+        )
+        self._conn.commit()
+
+    def load_persistence(self) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT kind, host, detail, cleanup, created_at FROM persistence"
+            " WHERE engagement_id = ? ORDER BY id",
+            (self.engagement_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Token totals summary ───────────────────────────────────────────────────
+
+    def get_token_summary(self) -> dict:
+        """Quick token totals + cost across all analyst cycles for this engagement."""
+        row = self._conn.execute(
+            "SELECT SUM(input_tokens) as inp, SUM(output_tokens) as out, SUM(cost_usd) as cost"
+            " FROM token_usage WHERE engagement_id = ?",
+            (self.engagement_id,),
+        ).fetchone()
+        if not row or row["inp"] is None:
+            return {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
+        return {"input_tokens": int(row["inp"]), "output_tokens": int(row["out"]),
+                "cost_usd": float(row["cost"] or 0.0)}
+
+    # ── Notable leads count (for badge) ───────────────────────────────────────
+
+    def count_notable_open_leads(self) -> int:
+        """Count open leads with insight=notable (for RPROMPT badge)."""
+        rows = self._conn.execute(
+            "SELECT json FROM leads WHERE engagement_id = ?", (self.engagement_id,)
+        ).fetchall()
+        count = 0
+        for r in rows:
+            try:
+                d = json.loads(r["json"])
+                # leads store insight in notes field as "opsec:X insight:Y command:Z"
+                notes = d.get("notes", "")
+                status = d.get("status", "open")
+                if status in ("open", "active", "advancing") and "insight:notable" in notes:
+                    count += 1
+            except Exception:
+                pass
+        return count
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 

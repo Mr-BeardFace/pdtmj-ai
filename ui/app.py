@@ -652,6 +652,8 @@ class PentestApp(App):
         self._open_leads: list[dict] = []
         # Activity store for persistence (ops persona only)
         self._activity_store = None
+        # Last activity_log id seen during DB poll (for incremental load)
+        self._db_poll_last_activity_id: int = 0
         # Chat conversation history (pentest/redteam free-form fallback)
         self._chat_history: list[dict] = []
         self._chat_lock = threading.Lock()
@@ -843,7 +845,8 @@ class PentestApp(App):
             self._known_agents = []
 
         self._update_status()
-        self.set_interval(1.0, self._tick_clock)   # live assessment clock
+        self.set_interval(1.0,  self._tick_clock)  # live assessment clock
+        self.set_interval(10.0, self._poll_db)     # pull new analyst data from DB
         self._welcome()
 
     # ── completion ────────────────────────────────────────────────────────────
@@ -1532,12 +1535,22 @@ class PentestApp(App):
                             except Exception:
                                 pass
                         self._activity_store, _, _ = _ES.open_or_create(op_name)
+                        # Load chat history from DB for continuity across sessions
+                        with self._chat_lock:
+                            self._chat_history = self._activity_store.load_chat_history(limit=20)
+                        # Reset DB poll cursor so we don't replay old activity
+                        self._db_poll_last_activity_id = 0
                 except Exception as _e:
                     self._activity(f"[yellow]Warning: could not bind activity store: {_e}[/yellow]")
                 self._update_status()
             elif parsed[0] == "/persona set" and parsed[1]:
                 with self._chat_lock:
                     self._chat_history.clear()
+                if self._activity_store is not None:
+                    try:
+                        self._activity_store.clear_chat_history()
+                    except Exception:
+                        pass
                 prev = self._active_persona
                 self._active_persona = parsed[1][0].lower()
                 # Rebuild layout when crossing the ops/ctf boundary
@@ -1777,6 +1790,11 @@ class PentestApp(App):
             with self._chat_lock:
                 self._chat_history.append({"role": "user", "content": text})
                 messages = list(self._chat_history[-20:])
+            if self._activity_store is not None:
+                try:
+                    self._activity_store.add_chat_message("user", text)
+                except Exception:
+                    pass
 
             provider = _cfg_get("active_provider", "anthropic")
             model = get_global_model() or (
@@ -1797,6 +1815,11 @@ class PentestApp(App):
 
             with self._chat_lock:
                 self._chat_history.append({"role": "assistant", "content": reply})
+            if self._activity_store is not None:
+                try:
+                    self._activity_store.add_chat_message("assistant", reply)
+                except Exception:
+                    pass
 
             self.post_message(PentestApp.Activity(f"[bold cyan]AI:[/bold cyan] {reply}"))
 
@@ -1931,6 +1954,33 @@ class PentestApp(App):
         # Refresh the status bar once a second while running so the clock ticks.
         if self._is_running:
             self._update_status()
+
+    def _poll_db(self) -> None:
+        """Pull new analyst findings from DB into the activity pane (~10s interval)."""
+        if self._activity_store is None:
+            return
+        try:
+            s = self._activity_store
+            # Pull activity_log rows newer than last seen
+            rows = s._conn.execute(
+                "SELECT id, ts, message FROM activity_log"
+                " WHERE engagement_id = ? AND id > ? ORDER BY id",
+                (s.engagement_id, self._db_poll_last_activity_id),
+            ).fetchall()
+            for r in rows:
+                self._db_poll_last_activity_id = max(self._db_poll_last_activity_id, r["id"])
+                self._activity(r["message"])
+
+            # Sync analyst advisory to status badge if analyst_state changed
+            st = s.get_analyst_state()
+            if st:
+                adv = st.get("advisory", "")
+                if adv:
+                    # Show advisory notes in activity pane if newer than last cycle
+                    # (ponytail: simple flag — full dedup unnecessary, advisory changes rarely)
+                    pass
+        except Exception:
+            pass
 
     def _set_running(self, value: bool) -> None:
         import time

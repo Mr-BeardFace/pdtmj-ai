@@ -148,6 +148,13 @@ COMMANDS: list[Command] = [
         Sub("",        "View/set analyst settings: /analyst <key> [value]",
             "[key] [value]", ("interval", "debounce", "model")),
     ), personas=_OPS_PERSONAS),
+    Command("/c2", "Connect and manage C2 backend (NightHawk)", (
+        Sub("status",     "Show C2 configuration and beacon status"),
+        Sub("url",        "Set NightHawk C2 server URL", "<https://c2-host>"),
+        Sub("auth",       "Set NightHawk username (password prompted)", "<username>"),
+        Sub("connect",    "Enable C2 polling (restart daemon to apply)"),
+        Sub("disconnect", "Clear active C2 session from DB"),
+    ), personas=_OPS_PERSONAS),
     Command("/endop", "End the engagement — stops daemon, marks ended, clears active op",
             (Sub("", "Stops the daemon, marks the engagement ended, clears sentinel files"),),
             personas=_OPS_PERSONAS),
@@ -272,7 +279,7 @@ _HELP_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Setup & config",          ("/info", "/config", "/key", "/models", "/agent", "/persona", "/provider")),
     ("Op management",           ("/op",)),
     ("Engagement data",         ("/scope", "/cred", "/ioc")),
-    ("Ops (pentest/redteam)",   ("/analyst", "/endop")),
+    ("Ops (pentest/redteam)",   ("/analyst", "/c2", "/endop")),
     ("Control (while running)", ("/abort", "/skip", "/pause", "/continue", "/end", "/job")),
     ("Assessments & reports",   ("/assessment", "/report")),
     ("Session",                 ("/clear", "/help", "/exit")),
@@ -1062,6 +1069,20 @@ def handle_info() -> tuple[list[str], bool]:
             _row("Exploitation", _on("exploitation", True)),
             _row("Confirm exploit", _on("confirm_exploit", True)),
         ]
+        from core.config import get as _cfg
+        c2_enabled = _cfg("c2.enabled", False)
+        c2_url     = _cfg("c2.nighthawk.url", "")
+        c2_user    = _cfg("c2.nighthawk.username", "")
+        lines += [
+            "",
+            "  C2 (NightHawk):",
+            _row("  c2.enabled", "[green]yes[/green]" if c2_enabled else "[dim]no[/dim]"),
+        ]
+        if c2_url:
+            lines.append(_row("  nighthawk.url",  c2_url))
+            lines.append(_row("  username",        c2_user or "[dim](not set)[/dim]"))
+        else:
+            lines.append("    [dim](not configured — /c2 url <url>)[/dim]")
 
     # Anything moved off its default (excluding the always-shown anchors, filtered by persona).
     changed = [s for s in settings.settings_for_persona(persona)
@@ -1470,6 +1491,92 @@ def handle_op_status() -> tuple[list[str], bool]:
     return lines, True
 
 
+# ── C2 handlers ───────────────────────────────────────────────────────────────
+
+def handle_c2_status() -> tuple[list[str], bool]:
+    from core.config import get as _cfg
+    from core.paths import OPS_DIR
+    enabled = _cfg("c2.enabled", False)
+    url     = _cfg("c2.nighthawk.url", "")
+    user    = _cfg("c2.nighthawk.username", "")
+    lines = [
+        f"  c2.enabled:   {'[green]yes[/green]' if enabled else '[dim]no[/dim]'}",
+        f"  nighthawk:    {url or '[dim](not set — /c2 url <url>)[/dim]'}",
+        f"  username:     {user or '[dim](not set — /c2 auth <user>)[/dim]'}",
+    ]
+    try:
+        active = (OPS_DIR / ".active_op").read_text().strip()
+        if active:
+            from core.engagement_store import EngagementStore
+            store, _, _ = EngagementStore.open_or_create(active)
+            state   = store.get_c2_state("nighthawk")
+            beacons = store.load_beacons()
+            store.close()
+            if state and state.get("session_id"):
+                lines.append(f"  session:      {state['session_id'][:12]}…")
+            n = len([b for b in beacons if b.get("c2_type") == "nighthawk"])
+            if n:
+                lines.append(f"  beacons:      {n}")
+                for b in beacons[:5]:
+                    lines.append(f"    {b['beacon_id'][:8]}  {b['host']}  {b['user_ctx']}")
+    except Exception:
+        pass
+    return lines, True
+
+
+def handle_c2_url(args: list[str]) -> tuple[list[str], bool]:
+    if not args:
+        return ["Usage: /c2 url <https://nighthawk-host>"], False
+    from core.config import set_value as _set
+    url = args[0].rstrip("/")
+    _set("c2.nighthawk.url", url)
+    _set("c2.enabled", True)
+    return [f"[green]c2:[/green] NightHawk URL set to {url}",
+            "  Restart op daemon to apply: /endop then /op start"], True
+
+
+def handle_c2_auth(args: list[str]) -> tuple[list[str], bool]:
+    """Set NightHawk username. Password must be stored via 'saddle c2 auth' (prompts securely)."""
+    if not args:
+        return ["Usage: /c2 auth <username>"], False
+    from core.config import set_value as _set
+    _set("c2.nighthawk.username", args[0])
+    return [
+        f"[green]c2:[/green] NightHawk username set to {args[0]}.",
+        "  Store password: saddle c2 auth <username>  (prompts securely in terminal)",
+        "  Then: /endop and /op start to apply.",
+    ], True
+
+
+def handle_c2_connect() -> tuple[list[str], bool]:
+    from core.config import get as _cfg
+    url  = _cfg("c2.nighthawk.url", "")
+    user = _cfg("c2.nighthawk.username", "")
+    if not url or not user:
+        return [
+            "[yellow]c2:[/yellow] URL or username not set.",
+            "  /c2 url <url>   then   saddle c2 auth <user>",
+        ], False
+    return [
+        "[green]c2:[/green] NightHawk polling enabled.",
+        "  Restart daemon to apply: /endop then /op start",
+    ], True
+
+
+def handle_c2_disconnect() -> tuple[list[str], bool]:
+    from core.paths import OPS_DIR
+    try:
+        active = (OPS_DIR / ".active_op").read_text().strip()
+        if active:
+            from core.engagement_store import EngagementStore
+            store, _, _ = EngagementStore.open_or_create(active)
+            store.upsert_c2_state("nighthawk", session_id="", agent_index={}, agent_done=[])
+            store.close()
+    except Exception as e:
+        return [f"[red]c2:[/red] Error clearing session: {e}"], False
+    return ["[green]c2:[/green] NightHawk session cleared from DB"], True
+
+
 # ── Main dispatcher ───────────────────────────────────────────────────────────
 
 def dispatch(text: str) -> tuple[list[str], bool] | None:
@@ -1577,6 +1684,16 @@ def dispatch(text: str) -> tuple[list[str], bool] | None:
         return handle_provider_set(args)
     if cmd == "/provider login":
         return handle_provider_login(args)
+    if cmd == "/c2 status":
+        return handle_c2_status()
+    if cmd == "/c2 url":
+        return handle_c2_url(args)
+    if cmd == "/c2 auth":
+        return handle_c2_auth(args)
+    if cmd == "/c2 connect":
+        return handle_c2_connect()
+    if cmd == "/c2 disconnect":
+        return handle_c2_disconnect()
 
     # Unknown command
     return [
