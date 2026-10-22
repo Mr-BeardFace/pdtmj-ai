@@ -15,15 +15,23 @@ _PDTMJ_ACTIVE_PERSONA_FILE="${_PDTMJ_BASE}/.active_persona"
 _PDTMJ_HOOKS_DIR="${${(%):-%x}:A:h}"
 _PDTMJ_REPO_DIR="${_PDTMJ_HOOKS_DIR:h}"
 
-# Auto-detect Python: prefer repo venv, then any active venv, then system python3
+# Auto-detect Python: repo .venv → active venv → pipenv → system python3
+# Result cached for the session so pipenv --venv runs at most once.
 _pdtmj_python() {
+    if [[ -n "$_PDTMJ_PYTHON" ]]; then echo "$_PDTMJ_PYTHON"; return; fi
     if [[ -x "${_PDTMJ_REPO_DIR}/.venv/bin/python3" ]]; then
-        echo "${_PDTMJ_REPO_DIR}/.venv/bin/python3"
+        _PDTMJ_PYTHON="${_PDTMJ_REPO_DIR}/.venv/bin/python3"
     elif [[ -n "$VIRTUAL_ENV" && -x "${VIRTUAL_ENV}/bin/python3" ]]; then
-        echo "${VIRTUAL_ENV}/bin/python3"
-    else
-        echo "python3"
+        _PDTMJ_PYTHON="${VIRTUAL_ENV}/bin/python3"
+    elif command -v pipenv >/dev/null 2>&1; then
+        local pv
+        pv=$(cd "$_PDTMJ_REPO_DIR" && pipenv --venv 2>/dev/null)
+        if [[ -x "${pv}/bin/python3" ]]; then
+            _PDTMJ_PYTHON="${pv}/bin/python3"
+        fi
     fi
+    _PDTMJ_PYTHON="${_PDTMJ_PYTHON:-python3}"
+    echo "$_PDTMJ_PYTHON"
 }
 
 unalias saddle 2>/dev/null
