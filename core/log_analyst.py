@@ -354,28 +354,17 @@ def _usage_path(op: str) -> Path:
     return OPS_DIR / op / ".analyst_usage"
 
 
-def _write_badge(op: str, notable_leads: int, opsec_level: str,
-                 in_tok: int, out_tok: int, cost: float) -> None:
-    """Write zsh RPROMPT badge line.
-
-    Format:
-      %{$fg[red]%}LEADS:N%{$reset_color%} %{$fg[yellow]%}OPSEC%{$reset_color%} ↑Xk ↓Xk $X.XX
-    Leads prefix only when notable_leads > 0.
-    OPSEC prefix only when opsec_level is high/critical.
-    """
-    def _tok(n: int) -> str:
-        return f"{n // 1000}k" if n >= 1000 else str(n)
-
+def _write_badge(op: str, notable_leads: int, opsec_level: str) -> None:
+    """Write zsh RPROMPT badge (LEADS/OPSEC only; tokens+cost go in .analyst_usage)."""
     parts: list[str] = []
     if notable_leads > 0:
-        parts.append(f"%{{$fg[red]%}}LEADS:{notable_leads}%{{$reset_color%}}")
+        parts.append(f"LEADS:{notable_leads}")
     if opsec_level in ("high", "critical"):
-        col = "red" if opsec_level == "critical" else "yellow"
-        parts.append(f"%{{$fg[{col}]%}}OPSEC%{{$reset_color%}}")
-    parts.append(f"↑{_tok(in_tok)} ↓{_tok(out_tok)} ${cost:.2f}")
+        parts.append("OPSEC")
+    badge_type = "opsec" if opsec_level in ("high", "critical") else "frontier" if notable_leads else ""
     badge = " ".join(parts)
     try:
-        _badge_path(op).write_text(badge + "\n" + opsec_level + "\n")
+        _badge_path(op).write_text(badge + "\n" + badge_type + "\n")
     except Exception:
         pass
 
@@ -645,8 +634,7 @@ class LogAnalyst:
 
             totals    = s.get_token_summary()
             n_notable = s.count_notable_open_leads()
-            _write_badge(self._op, n_notable, opsec_level,
-                         totals["input_tokens"], totals["output_tokens"], totals["cost_usd"])
+            _write_badge(self._op, n_notable, opsec_level)
 
         except Exception as e:
             self._log(f"[bold red]DB push error:[/bold red] {e}")
