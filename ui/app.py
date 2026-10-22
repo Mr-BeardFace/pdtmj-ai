@@ -1969,7 +1969,7 @@ class PentestApp(App):
                 st = (f"[green]▶ {agent_disp}[/green] [dim]→ {tgt}[/dim]" if tgt
                       else f"[green]▶ {agent_disp}[/green]")
             else:
-                st = "[dim]idle[/dim]"
+                st = "" if self._active_op else "[dim]idle[/dim]"
             return (f"[bold cyan]PDTMJ-AI[/bold cyan]{persona_str}{op_str}  "
                     f"{st}{clock_str}{tokens_str}")
 
