@@ -1774,9 +1774,56 @@ class PentestApp(App):
         "Public CVEs, tool usage, and general techniques only."
     )
 
+    def _build_chat_state(self) -> str:
+        """Build engagement state summary for chat context."""
+        if self._activity_store is None:
+            return ""
+        s = self._activity_store
+        lines: list[str] = []
+        try:
+            st = s.get_analyst_state()
+            if st:
+                lines.append(f"Frontier: {st.get('frontier', 'recon')}")
+                pic = st.get("op_picture", "")
+                if pic:
+                    lines.append(f"Op picture: {pic}")
+
+            hosts = s.load_hosts()
+            if hosts:
+                lines.append(f"\nHosts ({len(hosts)}):")
+                for h in hosts[:20]:
+                    ports = ",".join((h.get("open_ports") or [])[:10])
+                    lines.append(f"  {h['ip']}  hostname={h.get('hostname','')}  os={h.get('os','')}  ports={ports}")
+
+            creds = s.load_credentials()
+            if creds:
+                lines.append(f"\nCredentials ({len(creds)}):")
+                for c in creds[:20]:
+                    d = c.model_dump()
+                    lines.append(f"  {d.get('username','')}:{d.get('secret','')} type={d.get('cred_type','')} location={d.get('location','')}")
+
+            findings = s.load_findings()
+            if findings:
+                lines.append(f"\nFindings ({len(findings)}):")
+                for f in findings[:20]:
+                    d = f.model_dump()
+                    lines.append(f"  [{d.get('severity','info')}] {d.get('title','')} — {d.get('target','')}")
+
+            leads = s.load_leads()
+            if leads:
+                lines.append(f"\nOpen leads ({len(leads)}):")
+                for l in leads[:10]:
+                    lines.append(f"  [{l.get('reach_level','')}] {l.get('description','')}")
+
+        except Exception:
+            pass
+        if not lines:
+            return "No engagement state available yet."
+        return "CURRENT ENGAGEMENT STATE:\n" + "\n".join(lines)
+
     @work(thread=True)
     def _chat_llm(self, text: str) -> None:
-        """Free-form LLM chat for pentest/redteam when no engagement target is found."""
+        """Free-form LLM chat with full engagement state context."""
         from core.llm_client import LLMClient
         from core.config import get as _cfg_get, get_global_model
 
@@ -1790,7 +1837,8 @@ class PentestApp(App):
             if op:
                 context += f"  |  Active op: {op}"
 
-            system = self._CHAT_SYSTEM + f"\n\n{context}"
+            state_block = self._build_chat_state()
+            system = self._CHAT_SYSTEM + f"\n\n{context}\n\n{state_block}"
 
             with self._chat_lock:
                 self._chat_history.append({"role": "user", "content": text})
@@ -2001,6 +2049,11 @@ class PentestApp(App):
                     if not ports:
                         self._add_host_compact(h["ip"], hostname=h.get("hostname", ""),
                                                os_str=h.get("os", ""))
+
+            # Sync credentials from DB
+            if self._is_ops_persona:
+                for c in s.load_credentials():
+                    self._show_cred_in_table(c.model_dump(), source="analyst")
 
             # Sync findings from DB
             for f in s.load_findings():

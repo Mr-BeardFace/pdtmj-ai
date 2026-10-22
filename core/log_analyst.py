@@ -137,8 +137,10 @@ PERSISTENCE — changes made to targets:
 ADVISORY format (two lines per note, blank line between notes):
   <category> - <what observed and why it matters>. <specific command>
   |_ OPSEC [level] - <one sentence on detection risk>
-  ONLY emit notes where the logs contain direct evidence of something exploitable or immediately actionable.
+  ONLY emit notes where the logs contain direct evidence of something exploitable or actionable.
   NEVER emit advisory notes about local setup commands (VPN, /etc/hosts, tool installs).
+  Tone: factual and neutral. State what was observed and what could be done — never use urgency words
+  like "immediately", "critical", "must", "urgent", or "required". The operator decides priority.
   Empty string if nothing directly actionable.
 
 Scope hints from config (not exhaustive):
@@ -530,14 +532,13 @@ class LogAnalyst:
                 update = block.input
                 self._push_to_db(update, frontier, in_tok, out_tok, cost)
                 if self._store:
-                    self._write_cycle_summary(update, in_tok, out_tok, cost)
+                    self._set_status_summary(update)
                     self._surface_advisory(update)
                 break
 
         if not tool_called:
+            self._set_analyst_status("done — no state update")
             self._log("[yellow]LLM returned text only — no state update[/yellow]")
-
-        self._set_analyst_status("")
 
     def _push_to_db(self, update: dict, frontier: str,
                     in_tok: int, out_tok: int, cost: float) -> None:
@@ -650,24 +651,15 @@ class LogAnalyst:
         except Exception as e:
             self._log(f"[bold red]DB push error:[/bold red] {e}")
 
-    _ITEM_COLOR = {
-        "hosts": "blue", "beacons": "magenta", "credentials": "green",
-        "findings": "red", "leads": "yellow", "activities": "dim",
-    }
-
-    def _write_cycle_summary(self, update: dict, in_tok: int, out_tok: int, cost: float) -> None:
-        ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+    def _set_status_summary(self, update: dict) -> None:
         parts: list[str] = []
         for key, label in [("hosts", "hosts"), ("beacons", "beacons"), ("credentials", "creds"),
                            ("findings", "findings"), ("leads", "leads"), ("activities", "cmds")]:
             n = len(update.get(key) or [])
             if n:
-                c = self._ITEM_COLOR.get(key, "dim")
-                parts.append(f"[{c}]{n} {label}[/{c}]")
-        summary = ", ".join(parts) if parts else "[dim]no new items[/dim]"
-        tok_str = f"↑{in_tok} ↓{out_tok} ${cost:.4f}"
-        self._store.add_activity(
-            ts, f"[dim]{ts}[/dim]  [cyan]analyst:[/cyan] done — {summary}  [dim]{tok_str}[/dim]")
+                parts.append(f"{n} {label}")
+        summary = ", ".join(parts) if parts else "no new items"
+        self._set_analyst_status(f"done — {summary}")
 
     _OPSEC_CLR = {"low": "green", "medium": "yellow", "high": "red", "critical": "bold red"}
 
