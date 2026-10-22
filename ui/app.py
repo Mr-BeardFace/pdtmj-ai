@@ -1990,6 +1990,25 @@ class PentestApp(App):
             if totals["input_tokens"] or totals["output_tokens"]:
                 self._analyst_tokens = totals
                 self._update_status()
+
+            # Sync hosts from DB into the Hosts table
+            if self._is_ops_persona:
+                for h in s.load_hosts():
+                    ports = h.get("open_ports") or []
+                    for p in ports:
+                        self._add_host_compact(h["ip"], hostname=h.get("hostname", ""),
+                                               os_str=h.get("os", ""), port=str(p))
+                    if not ports:
+                        self._add_host_compact(h["ip"], hostname=h.get("hostname", ""),
+                                               os_str=h.get("os", ""))
+
+            # Sync findings from DB
+            for f in s.load_findings():
+                self._add_finding(f.model_dump())
+
+            # Sync leads from DB into Suggested Commands pane
+            self._open_leads = s.load_leads()
+            self._refresh_next_steps()
         except Exception:
             pass
 

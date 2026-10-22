@@ -558,6 +558,14 @@ class EngagementStore:
         )
         self._conn.commit()
 
+    def load_leads(self) -> list[dict]:
+        from core.leads import Lead
+        rows = self._conn.execute(
+            "SELECT json FROM leads WHERE engagement_id = ? ORDER BY created_at",
+            (self.engagement_id,),
+        ).fetchall()
+        return [Lead.model_validate_json(r["json"]).model_dump() for r in rows]
+
     def add_fact(self, statement: str, evidence: str = "", scope: str = "") -> None:
         from core.models import OperationalFact
         self.upsert_fact(OperationalFact(kind="target", statement=statement,
