@@ -20,7 +20,10 @@ from pathlib import Path
 from core.paths import OPS_DIR
 from core.preprocessor import parse_chunks, chunks_to_text
 
-_DEFAULT_MODEL  = "claude-haiku-4-5"
+_FALLBACK_MODELS = {
+    "bedrock":  "anthropic.claude-haiku-4-5-20251001",
+    "default":  "claude-haiku-4-5-20251001",
+}
 _MAX_CHARS      = 16_000
 _DEBOUNCE_SECS  = 15.0
 _MAX_WAIT_SECS  = 60.0
@@ -304,10 +307,14 @@ def _debounce_secs() -> float:
 
 def _analyst_model() -> str:
     try:
-        from core.config import get as _cfg
-        return _cfg("analyst_model") or _cfg("global_model") or _DEFAULT_MODEL
+        from core.config import get as _cfg, get_global_model
+        m = _cfg("analyst_model") or get_global_model()
+        if m:
+            return m
+        provider = _cfg("active_provider", "anthropic")
+        return _FALLBACK_MODELS.get(provider, _FALLBACK_MODELS["default"])
     except Exception:
-        return _DEFAULT_MODEL
+        return _FALLBACK_MODELS["default"]
 
 
 def _badge_path(op: str) -> Path:
