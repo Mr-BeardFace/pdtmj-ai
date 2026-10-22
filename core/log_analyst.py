@@ -672,25 +672,18 @@ class LogAnalyst:
         if not advisory:
             return
         ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
-        pending: list[str] = []
         for line in advisory.splitlines():
             s = line.strip()
             if not s:
-                if pending:
-                    self._store.add_activity(ts, "\n".join(pending))
-                    pending = []
                 continue
             m = self._OPSEC_RE.match(s)
             if m:
                 lvl, reason = m.group(1).lower(), m.group(2)
                 clr = self._OPSEC_CLR.get(lvl, "yellow")
-                pending.append(f"[#6e7681]└─ OPSEC [[{clr}]{lvl.upper()}[/{clr}]] — {_esc(reason)}[/#6e7681]")
-                self._store.add_activity(ts, "\n".join(pending))
-                pending = []
+                msg = f"[#6e7681]  └─ [bold]OPSEC[/bold] [[{clr}]{lvl.upper()}[/{clr}]] — {_esc(reason)}[/#6e7681]"
             else:
-                pending.append(f"[#8b949e]{_esc(s)}[/#8b949e]")
-        if pending:
-            self._store.add_activity(ts, "\n".join(pending))
+                msg = f"[dim]{ts}[/dim]  {_esc(s)}"
+            self._store.add_activity(ts, msg)
 
     def _build_state_summary(self) -> str:
         if not self._store:
