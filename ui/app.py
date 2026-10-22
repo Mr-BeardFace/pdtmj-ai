@@ -5,8 +5,8 @@ import queue
 import re
 import threading
 from collections import deque
-from datetime import datetime
-from core.timeutil import now_local
+from datetime import datetime, timezone
+from core.timeutil import now_utc
 from typing import Optional
 
 from rich.markup import escape as markup_escape
@@ -652,6 +652,8 @@ class PentestApp(App):
         self._open_leads: list[dict] = []
         # Activity store for persistence (ops persona only)
         self._activity_store = None
+        self._active_op: str = ""
+        self._analyst_tokens: dict = {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
         # Last activity_log id seen during DB poll (for incremental load)
         self._db_poll_last_activity_id: int = 0
         # Chat conversation history (pentest/redteam free-form fallback)
@@ -826,6 +828,7 @@ class PentestApp(App):
                     if op_name:
                         from core.engagement_store import EngagementStore
                         self._activity_store, _, _ = EngagementStore.open_or_create(op_name)
+                        self._active_op = op_name
                         prior = self._activity_store.get_activity_log()
                         if prior:
                             log = self.query_one("#activity-log", RichLog)
@@ -833,6 +836,7 @@ class PentestApp(App):
                                 self._activity_lines.append(entry["message"])
                             log.write(f"[dim]─── {len(prior)} events from prior session — Ctrl+L for full history ───[/dim]")
                             self._pane_at_blank = False
+                        self._db_poll_last_activity_id = self._activity_store.max_activity_id()
             except Exception:
                 pass
 
@@ -1535,11 +1539,12 @@ class PentestApp(App):
                             except Exception:
                                 pass
                         self._activity_store, _, _ = _ES.open_or_create(op_name)
+                        self._active_op = op_name
                         # Load chat history from DB for continuity across sessions
                         with self._chat_lock:
                             self._chat_history = self._activity_store.load_chat_history(limit=20)
-                        # Reset DB poll cursor so we don't replay old activity
-                        self._db_poll_last_activity_id = 0
+                        # Start poll cursor after existing rows so we only see new analyst output
+                        self._db_poll_last_activity_id = self._activity_store.max_activity_id()
                 except Exception as _e:
                     self._activity(f"[yellow]Warning: could not bind activity store: {_e}[/yellow]")
                 self._update_status()
@@ -1585,7 +1590,7 @@ class PentestApp(App):
         dlg = self.query_one("#cmd-dialogue")
         dlg.display = True
         log = self.query_one("#cmd-log", RichLog)
-        ts  = datetime.now().strftime("%H:%M:%S")
+        ts  = datetime.now(timezone.utc).strftime("%H:%M:%S")
         color = "green" if success else "yellow"
         icon  = "✓" if success else "!"
         log.write(f"[dim]{ts}[/dim]  [{color}]{icon}[/{color}]")
@@ -1840,7 +1845,7 @@ class PentestApp(App):
         # Goes to BOTH the pane and the full log (Ctrl+L). Headers, reasoning, tool
         # summaries, findings, the surfaced evidence cluster. cap=False keeps the pane
         # line uncapped (LLM reasoning — the operator wants the whole thought).
-        ts = datetime.now().strftime("%H:%M:%S")
+        ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
         shown = _pane_cap(msg) if cap else msg
         formatted = f"[dim]{ts}[/dim]  {shown}"
         self._activity_lines.append(f"[dim]{ts}[/dim]  {msg}")  # full markup → Ctrl+L
@@ -1848,7 +1853,8 @@ class PentestApp(App):
         self._pane_at_blank = False
         if self._activity_store is not None:
             try:
-                self._activity_store.add_activity(ts, formatted)
+                row_id = self._activity_store.add_activity(ts, formatted)
+                self._db_poll_last_activity_id = max(self._db_poll_last_activity_id, row_id)
             except Exception:
                 pass
 
@@ -1872,6 +1878,7 @@ class PentestApp(App):
 
     def _update_status(self) -> None:
         persona_str = f"  [dim]persona: {self._active_persona}[/dim]" if self._active_persona else ""
+        op_str = f"  [bold yellow]{self._active_op}[/bold yellow]" if self._active_op else ""
 
         # Assessment clock, shown inline in the status bar.
         elapsed = self._elapsed_seconds()
@@ -1881,17 +1888,22 @@ class PentestApp(App):
                      if (self._is_running or elapsed > 0) else "")
 
         # Token + cost — compact, inline on the left right after the timer.
+        # Merge TUI chat tokens + analyst (daemon) tokens from DB
         tok = self._total_tokens
-        if tok["input"] or tok["output"]:
+        at = self._analyst_tokens
+        total_in  = tok["input"]  + at.get("input_tokens", 0)
+        total_out = tok["output"] + at.get("output_tokens", 0)
+        total_cost = self._total_cost + at.get("cost_usd", 0.0)
+        if total_in or total_out:
             from core.config import get as _cfg_get
             free_api = _cfg_get("active_provider", "anthropic") == "openrouter"
             cost_label = (
-                f"~${self._total_cost:.4f} (free api)"
+                f"~${total_cost:.4f} (free api)"
                 if free_api else
-                f"~${self._total_cost:.4f}"
+                f"~${total_cost:.4f}"
             )
             tokens_str = (
-                f"  [dim]{self._kfmt(tok['input'])}↑ {self._kfmt(tok['output'])}↓"
+                f"  [dim]{self._kfmt(total_in)}↑ {self._kfmt(total_out)}↓"
                 + (f" {self._kfmt(tok['cache_read'])}⟳" if tok["cache_read"] else "")
                 + f"  [bold]{cost_label}[/bold][/dim]"
             )
@@ -1907,7 +1919,7 @@ class PentestApp(App):
                       else f"[green]▶ {agent_disp}[/green]")
             else:
                 st = "[dim]idle[/dim]"
-            return (f"[bold cyan]PDTMJ-AI[/bold cyan]{persona_str}  "
+            return (f"[bold cyan]PDTMJ-AI[/bold cyan]{persona_str}{op_str}  "
                     f"{st}{clock_str}{tokens_str}")
 
         width = max(self.size.width - 2, 20)   # -2 for the bar's padding
@@ -1969,16 +1981,15 @@ class PentestApp(App):
             ).fetchall()
             for r in rows:
                 self._db_poll_last_activity_id = max(self._db_poll_last_activity_id, r["id"])
-                self._activity(r["message"])
+                # Write directly — message is already formatted, don't re-wrap via _activity()
+                self.query_one("#activity-log", RichLog).write(r["message"])
+                self._activity_lines.append(r["message"])
 
-            # Sync analyst advisory to status badge if analyst_state changed
-            st = s.get_analyst_state()
-            if st:
-                adv = st.get("advisory", "")
-                if adv:
-                    # Show advisory notes in activity pane if newer than last cycle
-                    # (ponytail: simple flag — full dedup unnecessary, advisory changes rarely)
-                    pass
+            # Merge analyst token usage into status bar totals
+            totals = s.token_usage_totals()
+            if totals["input_tokens"] or totals["output_tokens"]:
+                self._analyst_tokens = totals
+                self._update_status()
         except Exception:
             pass
 
@@ -2235,7 +2246,7 @@ class PentestApp(App):
         if assessment:
             assessment.status = "interrupted"
             try:
-                assessment.end_time = now_local()
+                assessment.end_time = now_utc()
                 if self._current_assessment_path:
                     self._current_assessment_path.write_text(
                         assessment.model_dump_json(indent=2), encoding="utf-8")
@@ -2889,7 +2900,7 @@ class PentestApp(App):
     def on_pentest_app_shell(self, ev: Shell) -> None:
         try:
             bt = self.query_one("#beacons-table", DataTable)
-            ts = datetime.now().strftime("%H:%M:%S")
+            ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
             try:
                 bt.update_cell(ev.session_id, "From", ev.addr, update_width=True)
                 if ev.os_hint:
@@ -3585,7 +3596,7 @@ class PentestApp(App):
                     "[cyan]⏸ Paused.[/cyan]  Type [bold cyan]/continue[/bold cyan] to resume where it left off."))
 
             # ── finalise ─────────────────────────────────────────────────────
-            assessment.end_time = now_local()
+            assessment.end_time = now_utc()
             assessment.status = "interrupted" if (interrupted or driver.stopped) else "complete"
             try:
                 assessment_path.write_text(assessment.model_dump_json(indent=2), encoding="utf-8")
@@ -3809,7 +3820,7 @@ class PentestApp(App):
             self._rehydrate_report_state(state, assessment)
             self._current_state = state
 
-            ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
+            ts       = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
             out_dir  = adir or RESULTS_DIR
             logger   = SessionLogger(out_dir / f"resynth_report_{ts}.log")
             self._session_logger = logger

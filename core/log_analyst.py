@@ -14,6 +14,7 @@ import json
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from core.paths import OPS_DIR
@@ -400,6 +401,10 @@ class LogAnalyst:
         text = chunks_to_text(chunks)
         if not text.strip():
             return
+        n_lines = text.count("\n") + 1
+        if self._store:
+            ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+            self._store.add_activity(ts, f"[dim]{ts}[/dim]  [cyan]analyst:[/cyan] processing {n_lines} new log lines…")
         if len(text) > _MAX_CHARS:
             text = text[:_MAX_CHARS] + "\n... [truncated]"
 
@@ -458,6 +463,8 @@ class LogAnalyst:
             if getattr(block, "type", None) == "tool_use" and block.name == "update_engagement_state":
                 update = block.input
                 self._push_to_db(update, frontier, in_tok, out_tok, cost)
+                if self._store:
+                    self._write_cycle_summary(update, in_tok, out_tok, cost)
                 break
 
     def _push_to_db(self, update: dict, frontier: str,
@@ -560,6 +567,19 @@ class LogAnalyst:
 
         except Exception as e:
             print(f"log-analyst: DB push error: {e}", flush=True)
+
+    def _write_cycle_summary(self, update: dict, in_tok: int, out_tok: int, cost: float) -> None:
+        ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+        parts: list[str] = []
+        for key, label in [("hosts", "hosts"), ("beacons", "beacons"), ("credentials", "creds"),
+                           ("findings", "findings"), ("leads", "leads"), ("activities", "cmds")]:
+            n = len(update.get(key) or [])
+            if n:
+                parts.append(f"{n} {label}")
+        summary = ", ".join(parts) if parts else "no new items"
+        tok_str = f"↑{in_tok} ↓{out_tok} ${cost:.4f}"
+        self._store.add_activity(
+            ts, f"[dim]{ts}[/dim]  [cyan]analyst:[/cyan] done — {summary}  [dim]{tok_str}[/dim]")
 
     def _build_state_summary(self) -> str:
         if not self._store:

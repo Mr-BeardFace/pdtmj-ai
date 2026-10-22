@@ -394,12 +394,20 @@ class EngagementStore:
         ).fetchall()
         return [IOC.model_validate_json(r["json"]) for r in rows]
 
-    def add_activity(self, ts: str, message: str, notable: bool = False) -> None:
-        self._conn.execute(
+    def add_activity(self, ts: str, message: str, notable: bool = False) -> int:
+        cur = self._conn.execute(
             "INSERT INTO activity_log (engagement_id, ts, message, notable, created_at) VALUES (?, ?, ?, ?, ?)",
             (self.engagement_id, ts, message, int(notable), _now()),
         )
         self._conn.commit()
+        return cur.lastrowid
+
+    def max_activity_id(self) -> int:
+        row = self._conn.execute(
+            "SELECT MAX(id) as m FROM activity_log WHERE engagement_id = ?",
+            (self.engagement_id,),
+        ).fetchone()
+        return (row["m"] or 0) if row else 0
 
     def get_activity_log(self) -> list[dict]:
         rows = self._conn.execute(
