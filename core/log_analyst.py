@@ -650,6 +650,11 @@ class LogAnalyst:
         except Exception as e:
             self._log(f"[bold red]DB push error:[/bold red] {e}")
 
+    _ITEM_COLOR = {
+        "hosts": "blue", "beacons": "magenta", "credentials": "green",
+        "findings": "red", "leads": "yellow", "activities": "dim",
+    }
+
     def _write_cycle_summary(self, update: dict, in_tok: int, out_tok: int, cost: float) -> None:
         ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
         parts: list[str] = []
@@ -657,19 +662,41 @@ class LogAnalyst:
                            ("findings", "findings"), ("leads", "leads"), ("activities", "cmds")]:
             n = len(update.get(key) or [])
             if n:
-                parts.append(f"{n} {label}")
-        summary = ", ".join(parts) if parts else "no new items"
+                c = self._ITEM_COLOR.get(key, "dim")
+                parts.append(f"[{c}]{n} {label}[/{c}]")
+        summary = ", ".join(parts) if parts else "[dim]no new items[/dim]"
         tok_str = f"↑{in_tok} ↓{out_tok} ${cost:.4f}"
         self._store.add_activity(
             ts, f"[dim]{ts}[/dim]  [cyan]analyst:[/cyan] done — {summary}  [dim]{tok_str}[/dim]")
 
+    _OPSEC_CLR = {"low": "green", "medium": "yellow", "high": "red", "critical": "bold red"}
+
     def _surface_advisory(self, update: dict) -> None:
+        import re as _re
+        from rich.markup import escape as _esc
         advisory = (update.get("advisory") or "").strip()
         if not advisory:
             return
-        opsec = update.get("opsec_level", "low")
-        color = {"critical": "bold red", "high": "red", "medium": "yellow"}.get(opsec, "dim")
-        self._log(f"[{color}]advisory:[/{color}] {advisory}")
+        ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+        pending: list[str] = []
+        for line in advisory.splitlines():
+            s = line.strip()
+            if not s:
+                if pending:
+                    self._store.add_activity(ts, "\n".join(pending))
+                    pending = []
+                continue
+            m = _re.match(r"\|_\s*OPSEC\s*\[(low|medium|high|critical)\]\s*-\s*(.*)", s, _re.IGNORECASE)
+            if m:
+                lvl, reason = m.group(1).lower(), m.group(2)
+                clr = self._OPSEC_CLR.get(lvl, "yellow")
+                pending.append(f"[#6e7681]└─ OPSEC [[{clr}]{lvl.upper()}[/{clr}]][#6e7681] — {_esc(reason)}[/#6e7681]")
+                self._store.add_activity(ts, "\n".join(pending))
+                pending = []
+            else:
+                pending.append(_esc(s))
+        if pending:
+            self._store.add_activity(ts, "\n".join(pending))
 
     def _build_state_summary(self) -> str:
         if not self._store:
