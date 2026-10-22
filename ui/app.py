@@ -1674,8 +1674,9 @@ class PentestApp(App):
             # The regex parser only understands network targets. Fall back to
             # the Haiku router for everything else (file paths, RE/code audits,
             # free-form phrasing) — it runs in a worker so the UI never blocks.
-            if len(text.split()) >= 2:
-                self._activity("[dim]Classifying request…[/dim]")
+            if self._active_persona in ("pentest", "redteam") and not self._is_running:
+                self._chat_llm(text)
+            elif len(text.split()) >= 2:
                 self._classify_and_run(text)
             else:
                 self._activity(f"[red]Unrecognized:[/red] {text!r}  [dim](/ for commands, help for usage)[/dim]")
@@ -1874,7 +1875,7 @@ class PentestApp(App):
                 except Exception:
                     pass
 
-            self.post_message(PentestApp.Activity(f"[bold cyan]AI:[/bold cyan] {reply}"))
+            self._activity(f"[bold cyan]AI:[/bold cyan] {reply}", cap=False)
 
         except Exception as e:
             self.post_message(PentestApp.Activity(f"[red]Chat error:[/red] {e}"))
