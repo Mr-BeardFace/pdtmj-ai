@@ -79,9 +79,17 @@ def _pid_path(op: str) -> Path:
 
 def _daemon_running(op: str) -> bool:
     """Check if daemon is alive by reading .daemon_pid."""
+    pid_file = _pid_path(op)
     try:
-        pid = int(_pid_path(op).read_text().strip())
+        pid = int(pid_file.read_text().strip())
         os.kill(pid, 0)
+        # Guard against PID reuse: verify the process is actually our daemon
+        cmdline_path = Path(f"/proc/{pid}/cmdline")
+        if cmdline_path.exists():
+            cmdline = cmdline_path.read_bytes().replace(b"\x00", b" ").decode(errors="replace")
+            if "saddle_daemon" not in cmdline:
+                pid_file.unlink(missing_ok=True)
+                return False
         return True
     except Exception:
         return False

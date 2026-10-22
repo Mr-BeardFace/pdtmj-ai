@@ -802,21 +802,16 @@ def handle_endop(app=None) -> tuple[list[str], bool]:
 
     lines: list[str] = []
 
-    # Stop daemon via socket
+    # Stop daemon via PID file
     if op_name:
-        import json, socket as _sock
-        _sock_path = OPS_DIR / op_name / ".saddle.sock"
-        if _sock_path.exists():
-            try:
-                s = _sock.socket(_sock.AF_UNIX, _sock.SOCK_STREAM)
-                s.settimeout(3.0)
-                s.connect(str(_sock_path))
-                s.sendall(json.dumps({"type": "stop"}).encode() + b"\n")
-                s.recv(256)
-                s.close()
-                lines.append("[green]saddle:[/green] daemon stopped")
-            except Exception:
-                pass
+        import signal as _signal
+        _pid_path = OPS_DIR / op_name / ".daemon_pid"
+        try:
+            pid = int(_pid_path.read_text().strip())
+            os.kill(pid, _signal.SIGTERM)
+            lines.append("[green]saddle:[/green] daemon stopped")
+        except Exception:
+            pass
 
         # Mark engagement ended in the store
         try:
@@ -931,7 +926,6 @@ def handle_ioc(args: list[str]) -> tuple[list[str], bool]:
 
 def handle_analyst_status() -> tuple[list[str], bool]:
     """/analyst status — last advisory, opsec level, and token usage."""
-    import json
     from pathlib import Path
     from core.paths import OPS_DIR
 
@@ -953,46 +947,38 @@ def handle_analyst_status() -> tuple[list[str], bool]:
         except Exception:
             pass
 
-    # Badge from daemon socket
-    import socket as _sock
-    sock_path = OPS_DIR / op / ".saddle.sock"
-    if sock_path.exists():
+    # Badge from .badge file; daemon status from .daemon_pid
+    badge_path = OPS_DIR / op / ".badge"
+    pid_path   = OPS_DIR / op / ".daemon_pid"
+    if badge_path.exists():
         try:
-            s = _sock.socket(_sock.AF_UNIX, _sock.SOCK_STREAM)
-            s.settimeout(2.0)
-            s.connect(str(sock_path))
-            s.sendall(json.dumps({"type": "status"}).encode() + b"\n")
-            data = b""
-            while b"\n" not in data:
-                chunk = s.recv(1024)
-                if not chunk:
-                    break
-                data += chunk
-            s.close()
-            resp = json.loads(data.split(b"\n")[0])
-            badge = resp.get("badge")
-            badge_type = resp.get("badge_type", "info")
-            _colour = {"info": "dim", "warning": "yellow", "alert": "red", "critical": "bold red"}
-            c = _colour.get(badge_type, "white")
-            if badge:
-                lines.append(f"  badge          [{c}]{badge}[/{c}]")
-            else:
-                lines.append("  badge          [dim]clear[/dim]")
+            badge_lines = badge_path.read_text().splitlines()
+            if badge_lines:
+                lines.append(f"  badge          {badge_lines[0]}")
         except Exception:
-            lines.append("  daemon         [dim]not reachable[/dim]")
-    else:
+            pass
+    try:
+        pid = int(pid_path.read_text().strip())
+        os.kill(pid, 0)
+        lines.append("  daemon         [green]running[/green]")
+    except Exception:
         lines.append("  daemon         [dim]not running[/dim]")
 
-    # Last few analyst observations from the store
+    # Last analyst advisory from DB
     try:
         from core.engagement_store import EngagementStore
         store, _, _ = EngagementStore.open_or_create(op)
-        facts = [f for f in store.load_facts() if f.kind in ("opsec", "observation")]
+        st = store.get_analyst_state()
         store.close()
-        if facts:
-            lines += ["", "  Recent observations:"]
-            for f in facts[-3:]:
-                lines.append(f"    [dim]{f.scope}[/dim]  {f.statement}")
+        if st:
+            opsec = st.get("opsec_level", "low")
+            oc = {"low": "green", "medium": "yellow", "high": "red", "critical": "bold red"}.get(opsec, "white")
+            lines.append(f"  opsec          [{oc}]{opsec}[/{oc}]")
+            adv = (st.get("advisory") or "").strip()
+            if adv:
+                lines += ["", "  Advisory:"]
+                for ln in adv.splitlines()[:5]:
+                    lines.append(f"    {ln.strip()}")
     except Exception:
         pass
 
@@ -1405,15 +1391,12 @@ def handle_op_start(args: list[str]) -> tuple[list[str], bool]:
     except Exception as e:
         return [f"Could not set active op: {e}"], False
 
-    # Check if daemon already running (socket probe)
-    sock_path = OPS_DIR / op_name / ".saddle.sock"
+    # Check if daemon already running (PID file probe)
+    pid_path = OPS_DIR / op_name / ".daemon_pid"
     def _daemon_up() -> bool:
-        if not sock_path.exists():
-            return False
         try:
-            import socket as _s
-            c = _s.socket(_s.AF_UNIX, _s.SOCK_STREAM)
-            c.settimeout(1.0); c.connect(str(sock_path)); c.close()
+            pid = int(pid_path.read_text().strip())
+            os.kill(pid, 0)
             return True
         except Exception:
             return False
@@ -1436,7 +1419,7 @@ def handle_op_start(args: list[str]) -> tuple[list[str], bool]:
         return [f"Op store created but daemon failed to start: {e}",
                 f"  Op [bold]{op_name}[/bold] is active — daemon can be retried with `saddle start --op {op_name}`"], False
 
-    # Wait up to 3s for the daemon socket
+    # Wait up to 3s for the daemon to write its PID file
     for _ in range(15):
         if _daemon_up():
             label = "[dim](new)[/dim]" if is_new else "[dim](resumed)[/dim]"
@@ -1468,7 +1451,6 @@ def handle_op_list() -> tuple[list[str], bool]:
 
 
 def handle_op_status() -> tuple[list[str], bool]:
-    import socket as _sock
     from core.paths import OPS_DIR
     try:
         op = (OPS_DIR / ".active_op").read_text().strip() or None
@@ -1478,15 +1460,12 @@ def handle_op_status() -> tuple[list[str], bool]:
         return ["No active op. Use /op start <name> to create one."], False
     persona = _active_persona()
     lines = [f"Active op: [bold]{op}[/bold]  persona=[cyan]{persona}[/cyan]", ""]
-    sock_path = OPS_DIR / op / ".saddle.sock"
-    if sock_path.exists():
-        try:
-            s = _sock.socket(_sock.AF_UNIX, _sock.SOCK_STREAM)
-            s.settimeout(1.0); s.connect(str(sock_path)); s.close()
-            lines.append("  Daemon: [green]running[/green]")
-        except Exception:
-            lines.append("  Daemon: [yellow]socket exists but not responding[/yellow]")
-    else:
+    pid_path = OPS_DIR / op / ".daemon_pid"
+    try:
+        pid = int(pid_path.read_text().strip())
+        os.kill(pid, 0)
+        lines.append("  Daemon: [green]running[/green]")
+    except Exception:
         lines.append("  Daemon: [dim]not running[/dim]  (start with /op start " + op + ")")
     return lines, True
 

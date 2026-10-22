@@ -598,7 +598,7 @@ class LogAnalyst:
             lines.append(f"\nCredentials ({len(creds)}):")
             for c in creds[:20]:
                 masked = (c.secret[:2] + "***") if c.secret else "???"
-                lines.append(f"  {c.username}  [{c.cred_type}]  {masked}  service={c.service}  src={c.source_host}")
+                lines.append(f"  {c.username}  [{c.cred_type}]  {masked}  service={c.service}  src={c.source_agent}")
             if not creds:
                 lines.append("  none")
 

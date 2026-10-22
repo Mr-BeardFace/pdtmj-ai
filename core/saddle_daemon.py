@@ -44,9 +44,10 @@ def _clear_badge(op: str) -> None:
 
 class _Daemon:
     def __init__(self, op: str, persona: str) -> None:
-        self._op      = op
-        self._persona = persona
-        self._running = True
+        self._op             = op
+        self._persona        = persona
+        self._running        = True
+        self._analyst_store  = None
 
     def run(self) -> None:
         _write_pid(self._op)
@@ -55,8 +56,8 @@ class _Daemon:
         signal.signal(signal.SIGTERM, self._handle_sig)
         signal.signal(signal.SIGINT,  self._handle_sig)
 
-        analyst  = self._start_analyst()
-        c2_backends = self._start_c2()
+        analyst, watcher = self._start_analyst()
+        c2_backends = self._start_c2(self._analyst_store)
 
         while self._running:
             time.sleep(5)
@@ -65,6 +66,11 @@ class _Daemon:
         for backend in c2_backends:
             try:
                 backend.stop()
+            except Exception:
+                pass
+        if watcher:
+            try:
+                watcher.stop()
             except Exception:
                 pass
         if analyst:
@@ -79,8 +85,10 @@ class _Daemon:
         self._running = False
 
     def _start_analyst(self):
+        """Returns (analyst, watcher). Both may be None on failure or non-ops persona."""
+        self._analyst_store = None
         if self._persona not in ("pentest", "redteam"):
-            return None
+            return None, None
         try:
             from core.engagement_store import EngagementStore
             from core.log_analyst import LogAnalyst
@@ -91,18 +99,19 @@ class _Daemon:
             log_dir.mkdir(parents=True, exist_ok=True)
 
             store, _, _ = EngagementStore.open_or_create(self._op)
-            analyst     = LogAnalyst(op=self._op, store=store)
-            interval    = float(_cfg("analyst_interval", 10))
-            watcher     = LogWatcher(log_dir=log_dir, on_new_content=analyst.feed,
-                                     interval=interval)
+            self._analyst_store = store
+            analyst  = LogAnalyst(op=self._op, store=store)
+            interval = float(_cfg("analyst_interval", 10))
+            watcher  = LogWatcher(log_dir=log_dir, on_new_content=analyst.feed,
+                                  interval=interval)
             analyst.start()
             watcher.start()
-            return analyst
+            return analyst, watcher
         except Exception as e:
             print(f"saddle-daemon: analyst init failed: {e}", file=sys.stderr)
-            return None
+            return None, None
 
-    def _start_c2(self) -> list:
+    def _start_c2(self, store=None) -> list:
         try:
             from core.config import get as _cfg
             if not _cfg("c2.enabled", False):
@@ -110,10 +119,8 @@ class _Daemon:
             if self._persona not in ("pentest", "redteam"):
                 return []
 
-            from core.engagement_store import EngagementStore
             from core.c2.nighthawk import NighthawkC2
 
-            store, _, _ = EngagementStore.open_or_create(self._op)
             log_dir = _op_dir(self._op) / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
 
