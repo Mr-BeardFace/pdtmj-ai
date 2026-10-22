@@ -346,7 +346,7 @@ def _write_badge(op: str, notable_leads: int, opsec_level: str,
 
 def _write_usage(op: str, in_tok: int, out_tok: int, cost: float) -> None:
     try:
-        _usage_path(op).write_text(json.dumps({"in": in_tok, "out": out_tok, "cost": cost}))
+        _usage_path(op).write_text(f"{in_tok}\n{out_tok}\n{cost:.2f}\n")
     except Exception:
         pass
 

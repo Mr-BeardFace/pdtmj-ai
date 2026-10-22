@@ -942,8 +942,9 @@ def handle_analyst_status() -> tuple[list[str], bool]:
     usage_path = OPS_DIR / op / ".analyst_usage"
     if usage_path.exists():
         try:
-            u = json.loads(usage_path.read_text())
-            lines.append(f"  tokens in/out  {u.get('in', 0):,} / {u.get('out', 0):,}")
+            parts = usage_path.read_text().strip().splitlines()
+            _in, _out = int(parts[0]), int(parts[1])
+            lines.append(f"  tokens in/out  {_in:,} / {_out:,}")
         except Exception:
             pass
 
