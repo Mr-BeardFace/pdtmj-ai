@@ -511,7 +511,10 @@ class LogAnalyst:
 
         try:
             for h in _lst("hosts"):
-                s.upsert_host(ip=h["ip"], hostname=h.get("hostname", ""),
+                ip = h.get("ip") or h.get("host") or h.get("address", "")
+                if not ip:
+                    continue
+                s.upsert_host(ip=ip, hostname=h.get("hostname", ""),
                               os=h.get("os", ""), notes=h.get("notes", ""),
                               open_ports=h.get("open_ports"))
             for b in _lst("beacons"):
