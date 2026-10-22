@@ -99,17 +99,16 @@ def web_search(query: str, max_results: int = 6) -> dict:
 TOOL_DEFINITION = {
     "name": "web_search",
     "description": (
-        "Search the web (DuckDuckGo) for TECHNOLOGY / APPLICATION / SERVICE information the "
-        "engagement needs — a CVE's exploitation details, a product's default credentials, a "
-        "known-misconfiguration writeup, a public proof-of-concept, a protocol quirk, a tool's "
-        "usage. Returns ranked title/url/snippet results; follow up with `fetch_url` to read the "
-        "full page. "
-        "STRICT OPSEC RULE: search for GENERAL product/version/CVE/technique terms ONLY (e.g. "
-        "'Apache Tomcat 9 default manager credentials', 'CVE-2023-22515 Confluence exploit'). NEVER "
-        "put a target's IP address, hostname, internal path, username, password, or any captured "
-        "engagement data into a query — that would leak the engagement to a third party and is "
-        "refused. Use the local `searchsploit` for the offline Exploit-DB; use this for current, "
-        "detailed material that isn't in your training."
+        "Search the web (DuckDuckGo) for technology, product, CVE, and technique information. "
+        "USE THIS FREELY for general lookups: default credentials, exploit steps, protocol "
+        "behaviour, tool syntax, CVE details, misconfigurations, public PoCs. Examples of GOOD "
+        "queries: 'WinRM evil-winrm exploitation', 'RDP NLA bypass techniques', 'Apache Tomcat 9 "
+        "default manager credentials', 'CVE-2023-22515 Confluence exploit', 'Kerberoasting attack "
+        "steps'. The system scrubs queries automatically — if a query contains a target IP or "
+        "hostname it will be refused, so you do not need to self-censor general technology terms. "
+        "Returns ranked title/url/snippet results; follow up with `fetch_url` to read the full "
+        "page. The only hard rule: do not put literal target IPs, internal hostnames, captured "
+        "passwords, or engagement-specific data into a query."
     ),
     "input_schema": {
         "type": "object",
