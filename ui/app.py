@@ -1532,8 +1532,8 @@ class PentestApp(App):
                             except Exception:
                                 pass
                         self._activity_store, _, _ = _ES.open_or_create(op_name)
-                except Exception:
-                    pass
+                except Exception as _e:
+                    self._activity(f"[yellow]Warning: could not bind activity store: {_e}[/yellow]")
                 self._update_status()
             elif parsed[0] == "/persona set" and parsed[1]:
                 with self._chat_lock:

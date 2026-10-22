@@ -1415,14 +1415,14 @@ def handle_op_start(args: list[str]) -> tuple[list[str], bool]:
         return [f"Op store created but daemon failed to start: {e}",
                 f"  Op [bold]{op_name}[/bold] is active — daemon can be retried with `saddle start --op {op_name}`"], False
 
-    # Wait up to 3s for the daemon socket
-    for _ in range(15):
+    # Wait up to 6s for the daemon socket (Windows AF_UNIX can be slow to come up)
+    for _ in range(30):
         if _daemon_up():
             label = "[dim](new)[/dim]" if is_new else "[dim](resumed)[/dim]"
             return [f"Op [bold]{op_name}[/bold] started  persona=[cyan]{persona}[/cyan]  {label}"], True
         time.sleep(0.2)
 
-    return [f"Op [bold]{op_name}[/bold] set as active  (daemon socket not yet ready — it may still be starting)"], True
+    return [f"Op [bold]{op_name}[/bold] set as active  (daemon still starting — run /op status to confirm)"], True
 
 
 def handle_op_list() -> tuple[list[str], bool]:
