@@ -3624,6 +3624,15 @@ class PentestApp(App):
                 emit_activity(
                     "◎ Frontier engagement — driving the hottest lead to the objective "
                     "(serial focus). Confirm→advance, dead end→release, objective→halt.")
+            # Autonomous pentest requires a time limit — no natural "done" signal
+            # like CTF's flag capture, so without a wall-clock bound it runs forever.
+            if self._active_persona == "pentest" and not cfg_get("time_limit"):
+                emit_activity(
+                    "[red]⛔ Autonomous pentest requires a time limit.[/red] "
+                    "Set one with [bold cyan]/config time_limit 1h[/bold cyan] "
+                    "(e.g. 30m, 1h, 2h) then re-run.")
+                return
+
             driver = FrontierDriver(
                 orchestrator, all_agents, state, brief,
                 frontier_max_actions=cfg_get("frontier_actions", None),
