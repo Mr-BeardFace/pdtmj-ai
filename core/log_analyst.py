@@ -378,12 +378,113 @@ def _write_usage(op: str, in_tok: int, out_tok: int, cost: float) -> None:
         pass
 
 
+_DOMAIN_MAP = {
+    "web": {
+        "ports": {80, 443, 8080, 8443, 3000, 4443, 5000, 8000, 9000},
+        "keywords": {"http", "https", "apache", "nginx", "iis", "tomcat", "flask",
+                     "django", "php", "asp", "jsp", "express", "webserver"},
+    },
+    "active-directory": {
+        "ports": {88, 389, 636, 3268, 3269},
+        "keywords": {"ldap", "kerberos", "active directory", "domain controller",
+                     "ad", "dc", "ntlm"},
+    },
+    "database": {
+        "ports": {3306, 5432, 1433, 27017, 6379, 9200, 5984, 7474},
+        "keywords": {"mysql", "postgresql", "postgres", "mssql", "mongodb", "redis",
+                     "oracle", "elasticsearch", "cassandra", "couchdb", "database"},
+    },
+    "network": {
+        "ports": {21, 22, 23, 25, 53, 69, 110, 111, 143, 161, 445, 993, 995,
+                  2049, 3389, 5900, 5985, 5986},
+        "keywords": {"smb", "ssh", "ftp", "telnet", "snmp", "rdp", "winrm", "nfs",
+                     "rsync", "smtp", "pop3", "imap", "vnc"},
+    },
+    "cloud": {
+        "ports": set(),
+        "keywords": {"aws", "azure", "gcp", "s3", "ec2", "lambda", "iam",
+                     "cloud", "kubernetes", "k8s", "docker", "container"},
+    },
+}
+
+
+def _detect_domains(surfaces: list, facts: list) -> list[str]:
+    """Return domain names relevant to the current engagement state.
+
+    Checks surface service names, fingerprints, and notes against keywords
+    first — catches services on non-standard ports. Falls back to well-known
+    port numbers for early recon before fingerprinting has run.
+    """
+    active_ports: set[int] = set()
+    text_blob = ""
+    for sv in surfaces:
+        if hasattr(sv, "port") and sv.port:
+            try:
+                active_ports.add(int(sv.port))
+            except (ValueError, TypeError):
+                pass
+        text_blob += f" {getattr(sv, 'service', '')} {getattr(sv, 'fingerprint', '')} {getattr(sv, 'notes', '')}"
+    for f in facts:
+        text_blob += f" {getattr(f, 'statement', '') if hasattr(f, 'statement') else f.get('statement', '')}"
+    text_lower = text_blob.lower()
+
+    matched = []
+    for domain, signals in _DOMAIN_MAP.items():
+        # Keywords first — catches services on non-standard ports
+        if any(kw in text_lower for kw in signals["keywords"]):
+            matched.append(domain)
+            continue
+        # Well-known ports as fallback for early recon (before service fingerprinting)
+        if signals["ports"] & active_ports:
+            matched.append(domain)
+    return matched[:3]
+
+
+def _load_playbook_body(persona: str, domain: str) -> str | None:
+    """Load a specialist agent .md, strip frontmatter, return the knowledge body."""
+    from core.paths import AGENTS_DIR
+    path = AGENTS_DIR / persona / f"{domain}.md"
+    if not path.exists():
+        return None
+    content = path.read_text(encoding="utf-8")
+    match = __import__("re").match(r"^---\n.*?\n---\n(.*)$", content, __import__("re").DOTALL)
+    if not match:
+        return None
+    return match.group(1).strip()
+
+
+def _build_domain_knowledge(persona: str, surfaces: list, facts: list) -> str:
+    """Build domain knowledge block from specialist agents relevant to the engagement."""
+    domains = _detect_domains(surfaces, facts)
+    if not domains:
+        return ""
+
+    # pentest-ctf has no specialist agents — fall back to pentest
+    agent_persona = "pentest" if persona in ("pentest", "pentest-ctf") else persona
+
+    blocks = []
+    for domain in domains:
+        body = _load_playbook_body(agent_persona, domain)
+        if body:
+            blocks.append(f"### {domain.upper()} domain knowledge\n{body}")
+
+    if not blocks:
+        return ""
+
+    return (
+        "\n\nDOMAIN KNOWLEDGE — use this to interpret log output and assess findings. "
+        "Do NOT suggest tool execution; extract what matters from what the operator ran.\n\n"
+        + "\n\n".join(blocks)
+    )
+
+
 class LogAnalyst:
     """Full engagement analyst: watches log chunks → LLM → DB → badge."""
 
-    def __init__(self, op: str, store=None) -> None:
-        self._op    = op
-        self._store = store
+    def __init__(self, op: str, store=None, persona: str = "pentest") -> None:
+        self._op      = op
+        self._store   = store
+        self._persona = persona
         self._pending: list[dict] = []
         self._last_feed  = 0.0
         self._first_pend = 0.0
@@ -479,6 +580,13 @@ class LogAnalyst:
         phase_hint = _PHASE_HINTS.get(frontier, _PHASE_HINTS["recon"])
         scope_hints = self._build_scope_hints()
         system = _ANALYSIS_SYSTEM.format(phase_hint=phase_hint, scope_hints=scope_hints)
+
+        # Inject domain knowledge from specialist agents
+        surfaces = self._store.load_surfaces() if self._store else []
+        facts = self._store.load_facts() if self._store else []
+        domain_knowledge = _build_domain_knowledge(self._persona, surfaces, facts)
+        if domain_knowledge:
+            system += domain_knowledge
 
         try:
             client = self._get_client()

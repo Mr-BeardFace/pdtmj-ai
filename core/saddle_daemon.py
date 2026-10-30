@@ -100,7 +100,7 @@ class _Daemon:
 
             store, _, _ = EngagementStore.open_or_create(self._op)
             self._analyst_store = store
-            analyst  = LogAnalyst(op=self._op, store=store)
+            analyst  = LogAnalyst(op=self._op, store=store, persona=self._persona)
             interval = float(_cfg("analyst_interval", 10))
             watcher  = LogWatcher(log_dir=log_dir, on_new_content=analyst.feed,
                                   interval=interval,
