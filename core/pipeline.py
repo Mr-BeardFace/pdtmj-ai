@@ -19,6 +19,7 @@ implementation.
 """
 from __future__ import annotations
 
+import time
 from typing import Callable, Optional
 
 from core.models import EngagementBrief, EngagementRun, Surface
@@ -160,6 +161,10 @@ class EngagementDriver:
         self._exploit_approved_all = False
         self._ended_early = False
         self._stopped = False
+        self._time_limited = False
+        self._start_time = time.monotonic()
+        from core.config import get_time_limit_seconds
+        self._time_limit_seconds = get_time_limit_seconds()
         self._capped = False
         self._surface_cap_announced = False
         self._surface_dry_cycles: dict = {}   # surface.id → consecutive no-verified-progress cycles
@@ -240,6 +245,8 @@ class EngagementDriver:
             return "ended_early"
         if self._stopped:
             return "paused"
+        if self._time_limited:
+            return "time_limit"
         if self._capped:
             return "cycle_cap"
         return "completed"
@@ -737,7 +744,24 @@ class EngagementDriver:
     def _check_control(self) -> str:
         return self._control() if self._control else "continue"
 
+    def _time_exceeded(self) -> bool:
+        if self._time_limit_seconds is None:
+            return False
+        elapsed = time.monotonic() - self._start_time
+        return elapsed >= self._time_limit_seconds
+
+    def _check_time_limit(self) -> bool:
+        """Return True and set state if time limit exceeded."""
+        if self._time_exceeded():
+            elapsed_m = int((time.monotonic() - self._start_time) / 60)
+            self._time_limited = True
+            self._activity(f"⏱ Time limit reached ({elapsed_m}m elapsed). Wrapping up.")
+            return True
+        return False
+
     def _backstop_tripped(self) -> bool:
+        if self._check_time_limit():
+            return True
         if self.max_total_cycles and self.total_cycles >= self.max_total_cycles:
             self._activity(
                 f"⚠ Backstop: hit max_total_cycles ({self.max_total_cycles}). Stopping the loop. "

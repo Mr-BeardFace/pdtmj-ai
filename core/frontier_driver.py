@@ -528,11 +528,13 @@ class FrontierDriver(ParallelDriver):
             pass
 
     def _frontier_should_continue(self) -> bool:
-        """External stop gate for the controller — operator /stop or /end, and the
-        cycle backstop. Mirrors the coverage loop's control handling so termination
-        reasons (paused / ended_early / cycle_cap) report identically."""
+        """External stop gate for the controller — operator /stop or /end, time limit,
+        and cycle backstop. Mirrors the coverage loop's control handling so termination
+        reasons (paused / ended_early / time_limit / cycle_cap) report identically."""
         if self.state and getattr(self.state, "concluded", None):
             return True   # objective predicates handle halt; concluding isn't a stop
+        if self._check_time_limit():
+            return False
         ctrl = self._check_control()
         if ctrl == "stop":
             self._stopped = True

@@ -71,6 +71,9 @@ SETTINGS: tuple[Setting, ...] = (
             "Absolute turn ceiling = max_turns × this", minimum=1, personas=_PENTEST_CTF),
     Setting("agent_turns",         "Max turns/agent",        "Engagement", "int",
             "Per-agent turn budget (0 = unlimited)", minimum=0, personas=_PENTEST_CTF),
+    Setting("time_limit",          "Time limit",             "Engagement", "str",
+            "Wall-clock limit for autonomous runs (e.g. 30m, 1h30m, 2h). null = no limit",
+            allow_null=True, personas=_PENTEST_CTF),
     # Engagement — pentest only (ctf always-on / redteam unused)
     Setting("tool_gate",      "Tool gate",     "Engagement", "str",
             "autonomous = run freely; gated = confirm before each high-impact tool call",

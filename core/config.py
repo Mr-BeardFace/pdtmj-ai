@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -117,6 +118,10 @@ _DEFAULTS: dict[str, Any] = {
     "validation": False,
 
     # ── LLM-driven control (vs deterministic heuristics) ──────────────────────
+    # Hard wall-clock limit for an engagement. Format: "30m", "1h30m", "2h", etc.
+    # null = no limit. Applies to all automated personas (pentest, pentest-ctf, redteam).
+    "time_limit": None,
+
     # Canonical "fast" model used by every support LLM call (router, strategist,
     # intake, analyst, compactor). One string, provider transport converts as needed
     # (e.g. Bedrock prepends us.anthropic. automatically). Change with /config.
@@ -366,6 +371,31 @@ def get_fast_model() -> str:
             f"No fast_model configured for provider {provider!r} — "
             f"set it with /config fast_model <model-id>")
     return default
+
+
+_DURATION_RE = re.compile(
+    r"^(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?$", re.IGNORECASE)
+
+
+def parse_duration(value: str | None) -> int | None:
+    """Parse a human duration like '30m', '1h30m', '2h' into seconds. None if unset."""
+    if not value:
+        return None
+    value = str(value).strip()
+    if not value:
+        return None
+    m = _DURATION_RE.match(value)
+    if not m or not (m.group(1) or m.group(2)):
+        raise ValueError(
+            f"Invalid time_limit {value!r} — use format like '30m', '1h', '1h30m'")
+    hours = int(m.group(1) or 0)
+    mins = int(m.group(2) or 0)
+    return hours * 3600 + mins * 60
+
+
+def get_time_limit_seconds() -> int | None:
+    """Parsed time_limit from config, in seconds. None = no limit."""
+    return parse_duration(load_config().get("time_limit"))
 
 
 def get_temperature_for_agent(agent_name: str) -> float | None:

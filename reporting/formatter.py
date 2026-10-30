@@ -267,6 +267,9 @@ _TERMINATION = {
                              "surfaces was not pursued."),
     "paused":        (True,  "The engagement was paused by the operator before all surfaces were "
                              "exhausted. The findings below reflect the work completed up to the pause."),
+    "time_limit":    (True,  "The engagement reached its configured time limit and wrapped up. Some "
+                             "avenues may remain unexplored; extending the time limit would allow a "
+                             "deeper pass."),
     "cycle_cap":     (True,  "The engagement reached its configured cycle cap and stopped opening new "
                              "work. Some avenues may remain unexplored; raising the cap would allow a "
                              "deeper pass."),
