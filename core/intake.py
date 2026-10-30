@@ -5,8 +5,8 @@ into a structured `EngagementBrief` the driver can act on. Hybrid by design:
 
   - `brief_from_intent` converts the regex fast-path result (ui.intent) with no
     LLM call, for obvious commands like "run pentest/web on X".
-  - `classify_brief` sends free-form text to Haiku and extracts targets, scope
-    exclusions, credentials, tech context, and focus areas.
+  - `classify_brief` sends free-form text to the fast model and extracts targets,
+    scope exclusions, credentials, tech context, and focus areas.
 
 The driver/UI tries the fast path first and falls back to `classify_brief`.
 """
@@ -18,8 +18,6 @@ import re
 from core.llm_client import LLMClient
 from core.models import EngagementBrief
 
-_INTAKE_MODEL_ANTHROPIC = "claude-haiku-4-5-20251001"
-_INTAKE_MODEL_BEDROCK   = "anthropic.claude-haiku-4-5-20251001-v1:0"  # us. prepended by handler
 
 _SYSTEM = """You are the intake classifier for a penetration testing platform. The operator
 describes an engagement in free-form text — possibly terse, possibly a paragraph with
@@ -89,16 +87,9 @@ def brief_from_intent(intent: dict, text: str) -> EngagementBrief:
 
 def classify_brief(text: str) -> EngagementBrief:
     """Parse free-form engagement text into an EngagementBrief using the active provider."""
-    from core.config import get as _cfg_get, get_global_model
+    from core.config import get_fast_model
     client = LLMClient()
-    provider = _cfg_get("active_provider", "anthropic")
-    override = get_global_model()
-    # Bedrock requires cross-region inference profile IDs (contain a dot, e.g.
-    # "us.anthropic.claude-..."). Discard an Anthropic-API-format override
-    # (e.g. "claude-sonnet-4-6") so it doesn't cause a 400 on Bedrock.
-    if provider == "bedrock" and override and "." not in override:
-        override = None
-    model = override or (_INTAKE_MODEL_BEDROCK if provider == "bedrock" else _INTAKE_MODEL_ANTHROPIC)
+    model = get_fast_model()
     response = client.run(
         model=model,
         system=_SYSTEM,

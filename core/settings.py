@@ -129,11 +129,16 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("grind_nudge",  "Grind nudge",        "Nudges", "int",
             "Flag a grind after N scripts with no banked finding (0 = off)", minimum=0, personas=_PENTEST_CTF),
 
+    # Fast model — all personas
+    Setting("fast_model", "Fast model", "Models", "str",
+            "Model for all support LLM calls (null = provider default)",
+            allow_null=True),
+
     # Routing — pentest + ctf (pipeline agent routing; not relevant for redteam)
     Setting("llm_routing",  "LLM routing",  "Routing", "bool",
             "Pick specialist agents with a model vs keyword heuristics", personas=_PENTEST_CTF),
     Setting("router_model", "Router model", "Routing", "str",
-            "Model id used for routing (null = small default)", allow_null=True, personas=_PENTEST_CTF),
+            "Model for routing calls (null = fast_model)", allow_null=True, personas=_PENTEST_CTF),
 
     # Diagnostics — all personas
     Setting("debug", "Debug capture", "Diagnostics", "bool",
@@ -145,7 +150,7 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("analyst_debounce", "Analyst debounce",       "Analyst", "int",
             "Quiet seconds after last log chunk before analysis fires", minimum=0, personas=_OPS),
     Setting("analyst_model",    "Analyst model",          "Analyst", "str",
-            "Model for the background log analyst (null = small default)",
+            "Model for the background log analyst (null = fast_model)",
             allow_null=True, personas=_OPS),
 
     # Context compaction — pentest + redteam (long autonomous runs)
@@ -156,7 +161,7 @@ SETTINGS: tuple[Setting, ...] = (
             "Turn pairs always kept verbatim (short-term memory)",
             minimum=2, personas=_OPS),
     Setting("compact_model", "Compact model", "Compaction", "str",
-            "Model for the summariser LLM call (null = auto Haiku)",
+            "Model for the summariser LLM call (null = fast_model)",
             allow_null=True, personas=_OPS),
 
     # Cracking — pentest + ctf

@@ -57,7 +57,8 @@ class Strategist:
     def __init__(self, llm=None, model: Optional[str] = None, *,
                  on_event=None, enable_llm: bool = True):
         self._llm = llm
-        self._model = model or "claude-haiku-4-5-20251001"
+        from core.config import get_fast_model
+        self._model = model or get_fast_model()
         self._on_event = on_event
         self._enable_llm = enable_llm
         self._last_sig: Optional[tuple] = None

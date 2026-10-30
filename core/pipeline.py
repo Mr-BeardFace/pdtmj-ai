@@ -456,8 +456,8 @@ class EngagementDriver:
         return bool(get("llm_routing", True))
 
     def _router_model(self) -> str:
-        from core.config import get
-        return get("router_model", None) or "claude-haiku-4-5-20251001"
+        from core.config import get, get_fast_model
+        return get("router_model", None) or get_fast_model()
 
     def _surface_desc(self, surface: Surface) -> str:
         bits = [surface.label, f"service={surface.service or 'unknown'}"]

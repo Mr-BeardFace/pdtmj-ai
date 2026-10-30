@@ -2548,14 +2548,8 @@ class Orchestrator:
 
         try:
             from core.config import get as _cfg_get
-            compact_model = _cfg_get("compact_model") or None
-            if not compact_model:
-                # Use a fast model — same resolution as strategist
-                m_lower = model.lower()
-                if "opus" in m_lower or "sonnet" in m_lower:
-                    compact_model = "claude-haiku-4-5-20251001"
-                else:
-                    compact_model = model
+            from core.config import get_fast_model
+            compact_model = _cfg_get("compact_model") or get_fast_model()
 
             resp = self.llm.run(
                 model=compact_model,

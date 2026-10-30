@@ -117,9 +117,13 @@ _DEFAULTS: dict[str, Any] = {
     "validation": False,
 
     # ── LLM-driven control (vs deterministic heuristics) ──────────────────────
+    # Canonical "fast" model used by every support LLM call (router, strategist,
+    # intake, analyst, compactor). One string, provider transport converts as needed
+    # (e.g. Bedrock prepends us.anthropic. automatically). Change with /config.
+    "fast_model": None,
     # When on, a fast model picks which specialist agent handles each slot
     # (enumeration/exploitation) instead of a keyword map; the keyword map stays
-    # as the fallback. router_model null → a small default (Haiku).
+    # as the fallback. router_model null → fast_model.
     "llm_routing": True,
     "router_model": None,
     # Loop nudge: when an agent repeats an identical tool call this many times
@@ -336,6 +340,32 @@ def get_global_model() -> str | None:
     cfg = load_config()
     overrides: dict = cfg.get("agent_models", {})
     return overrides.get("global") or cfg.get("global_model")
+
+
+_PROVIDER_FAST_DEFAULTS: dict[str, str] = {
+    "anthropic": "claude-sonnet-4-6",
+    "bedrock":   "claude-sonnet-4-6",
+}
+
+
+def get_fast_model() -> str:
+    """The canonical fast model for all support LLM calls.
+
+    Resolution: explicit fast_model config → provider default → error.
+    """
+    cfg = load_config()
+    explicit = cfg.get("fast_model")
+    if explicit:
+        return explicit
+    provider = cfg.get("active_provider")
+    if not provider:
+        raise RuntimeError("No active_provider configured — set a provider first")
+    default = _PROVIDER_FAST_DEFAULTS.get(provider)
+    if not default:
+        raise RuntimeError(
+            f"No fast_model configured for provider {provider!r} — "
+            f"set it with /config fast_model <model-id>")
+    return default
 
 
 def get_temperature_for_agent(agent_name: str) -> float | None:
