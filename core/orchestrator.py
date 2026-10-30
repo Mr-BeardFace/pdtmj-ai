@@ -278,6 +278,145 @@ _RESULT_OFFLOAD_CHARS = 6000
 # the offload threshold so a single read-back can't dwarf what offloading saved.
 _ARTIFACT_VIEW_CAP    = 10000
 
+# ── Context compaction ────────────────────────────────────────────────────────
+# When the message array approaches the context window, older turn pairs are
+# summarized by a fast LLM call and replaced with a dense summary block.
+# Protected content (credentials, findings, flags, operator messages, shell
+# notices) is always preserved verbatim alongside the summary.
+_COMPACT_BATCH_SIZE      = 6       # turn pairs per summarizer call
+_COMPACT_CHARS_PER_TOKEN = 4       # rough char→token estimate
+_COMPACT_CONTEXT_WINDOWS = {       # model family → context window tokens
+    "opus": 200_000, "sonnet": 200_000, "haiku": 200_000,
+}
+_COMPACT_DEFAULT_WINDOW  = 200_000
+
+_PROTECTED_TOOLS = {
+    "annotate_finding", "record_credential", "record_flag", "record_ioc",
+    "conclude_engagement",
+}
+
+_COMPACT_SYSTEM = (
+    "You are summarizing turns from an autonomous penetration test agent run. "
+    "Produce a dense, factual summary preserving:\n"
+    "- Every credential discovered (username, secret type, where found, what service)\n"
+    "- Every finding (title, severity, target, evidence snippet)\n"
+    "- Every flag captured\n"
+    "- Attack path logic: what was tried, what worked, what was ruled out and why\n"
+    "- Shell/session state changes (connections, disconnections, session IDs)\n"
+    "- Artifact IDs referenced in tool results (so read_artifact/grep_artifact still work)\n\n"
+    "Compress: verbose tool output, enumeration lists, error details, chain-of-thought "
+    "reasoning that led to dead ends. Keep what matters for the agent's next decision.\n\n"
+    "Output format: one dense paragraph per logical phase of work. End with a bullet list "
+    "of credentials/findings/flags discovered in this batch (even if none — say 'None')."
+)
+
+
+def _estimate_message_tokens(messages: list, system: str = "") -> int:
+    """Rough token estimate from serialized char count."""
+    total = len(system)
+    for m in messages:
+        content = m.get("content", "")
+        if isinstance(content, str):
+            total += len(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    total += len(json.dumps(block, default=str))
+                else:
+                    total += len(str(block))
+        else:
+            total += len(str(content))
+    return total // _COMPACT_CHARS_PER_TOKEN
+
+
+def _context_window_for(model: str) -> int:
+    m = model.lower()
+    for prefix, window in _COMPACT_CONTEXT_WINDOWS.items():
+        if prefix in m:
+            return window
+    return _COMPACT_DEFAULT_WINDOW
+
+
+def _is_protected_message(message: dict) -> bool:
+    """Check if a message contains content that must never be summarized."""
+    content = message.get("content", "")
+    if isinstance(content, str):
+        return "[Operator]:" in content or "Reverse shell connected" in content
+    if isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            # Protected tool_use calls
+            if block.get("type") == "tool_use" and block.get("name") in _PROTECTED_TOOLS:
+                return True
+            # Protected tool_result for a protected tool (matched by content heuristic)
+            if block.get("type") == "tool_result":
+                c = block.get("content", "")
+                if isinstance(c, str) and any(k in c for k in ('"recorded"', '"flag"', '"credential"')):
+                    return True
+            # Operator interrupts and shell notices in text blocks
+            if block.get("type") == "text":
+                t = block.get("text", "")
+                if "[Operator]:" in t or "Reverse shell connected" in t:
+                    return True
+    return False
+
+
+def _extract_protected_blocks(messages: list[dict]) -> list[dict]:
+    """Extract tool_use/tool_result pairs for protected tools from a batch."""
+    protected = []
+    for msg in messages:
+        content = msg.get("content", "")
+        if not isinstance(content, list):
+            if isinstance(content, str) and ("[Operator]:" in content or "Reverse shell connected" in content):
+                protected.append(msg)
+            continue
+        kept_blocks = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use" and block.get("name") in _PROTECTED_TOOLS:
+                kept_blocks.append(block)
+            elif block.get("type") == "tool_result":
+                c = block.get("content", "")
+                if isinstance(c, str) and any(k in c for k in ('"recorded"', '"flag"', '"credential"')):
+                    kept_blocks.append(block)
+            elif block.get("type") == "text":
+                t = block.get("text", "")
+                if "[Operator]:" in t or "Reverse shell connected" in t:
+                    kept_blocks.append(block)
+        if kept_blocks:
+            protected.append({"role": msg["role"], "content": kept_blocks})
+    return protected
+
+
+def _build_batch_text(messages: list[dict]) -> str:
+    """Serialize a batch of messages into readable text for the summarizer."""
+    lines = []
+    for msg in messages:
+        role = msg.get("role", "?")
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            lines.append(f"[{role}]: {content[:3000]}")
+        elif isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type", "")
+                if btype == "tool_use":
+                    args = json.dumps(block.get("input", {}), default=str)
+                    if len(args) > 500:
+                        args = args[:500] + "..."
+                    lines.append(f"[{role}] tool_call: {block.get('name', '?')}({args})")
+                elif btype == "tool_result":
+                    c = block.get("content", "")
+                    if isinstance(c, str) and len(c) > 1000:
+                        c = c[:1000] + "..."
+                    lines.append(f"[{role}] tool_result: {c}")
+                elif btype == "text":
+                    lines.append(f"[{role}]: {block.get('text', '')[:1000]}")
+    return "\n".join(lines)
+
 FINDINGS_SCHEMA_INSTRUCTIONS = """
 
 ## Annotation
@@ -1217,6 +1356,17 @@ class Orchestrator:
                     self._print(f"[green]■ Stopping — {self.state.concluded}[/green]")
                     run.status = "concluded"
                     break
+
+                # Context compaction — summarize old turns when approaching the
+                # context window. Persona-gated: pentest/redteam only.
+                if self._active_persona in ("pentest", "redteam") and _turn > 0:
+                    threshold_pct = float(_cfg_get("compact_threshold", 50) or 50) / 100.0
+                    keep_recent = int(_cfg_get("compact_keep_recent", 8) or 8)
+                    window = _context_window_for(effective_model)
+                    est_tokens = _estimate_message_tokens(messages, system)
+                    if est_tokens > window * threshold_pct:
+                        messages = self._compact_messages(
+                            messages, system, effective_model, keep_recent)
 
                 debug_capture.log_request(agent.name, _turn, effective_model,
                                           system, messages, tool_schemas)
@@ -2351,6 +2501,110 @@ class Orchestrator:
             if isinstance(v, (int, float, bool)) or (isinstance(v, str) and len(v) < 120):
                 stub[k] = v
         return stub
+
+    def _compact_messages(self, messages: list[dict], system: str,
+                          model: str, keep_recent: int) -> list[dict]:
+        """Summarize old turns to free context space. Returns a new list."""
+        # Need at least keep_recent turn pairs + the initial user message to compact
+        # A turn pair is (assistant, user), so keep_recent pairs = keep_recent * 2 messages
+        keep_count = keep_recent * 2
+        # messages[0] is always the initial objective — never touch it
+        if len(messages) <= keep_count + 1:
+            return messages  # nothing old enough to compact
+
+        initial = messages[0]
+        compact_zone = messages[1:-(keep_count)]
+        keep_zone = messages[-(keep_count):]
+
+        if len(compact_zone) < 4:  # less than 2 turn pairs — not worth it
+            return messages
+
+        # Find the compaction watermark — how many messages are already summaries
+        watermark = 0
+        for i, m in enumerate(compact_zone):
+            if isinstance(m.get("content", ""), str) and m["content"].startswith("[Summary of turns"):
+                watermark = i + 1
+            else:
+                break
+
+        already_summarized = compact_zone[:watermark]
+        unsummarized = compact_zone[watermark:]
+
+        if len(unsummarized) < 4:  # less than 2 turn pairs
+            return messages
+
+        # Take one batch
+        batch_msgs = min(len(unsummarized), _COMPACT_BATCH_SIZE * 2)
+        batch = unsummarized[:batch_msgs]
+        remaining = unsummarized[batch_msgs:]
+
+        # Extract protected content from the batch
+        protected = _extract_protected_blocks(batch)
+
+        # Summarize the batch via LLM
+        batch_text = _build_batch_text(batch)
+        turn_start = watermark // 2 + 1
+        turn_end = turn_start + batch_msgs // 2 - 1
+
+        try:
+            from core.config import get as _cfg_get
+            compact_model = _cfg_get("compact_model") or None
+            if not compact_model:
+                # Use a fast model — same resolution as strategist
+                m_lower = model.lower()
+                if "opus" in m_lower or "sonnet" in m_lower:
+                    compact_model = "claude-haiku-4-5-20251001"
+                else:
+                    compact_model = model
+
+            resp = self.llm.run(
+                model=compact_model,
+                system=_COMPACT_SYSTEM,
+                messages=[{"role": "user", "content":
+                    f"Summarize these turns ({turn_start}-{turn_end}) from the agent's run:\n\n{batch_text}"}],
+                max_tokens=1500,
+            )
+
+            summary_text = ""
+            for block in (resp.content or []):
+                if getattr(block, "type", None) == "text":
+                    summary_text += block.text
+
+            if not summary_text.strip():
+                return messages  # summarizer produced nothing — keep originals
+
+            # Track cost
+            usage = getattr(resp, "usage", None)
+            if usage:
+                in_tok = getattr(usage, "input_tokens", 0)
+                out_tok = getattr(usage, "output_tokens", 0)
+                cache_tok = getattr(usage, "cache_read_input_tokens", 0)
+                cost = estimate_cost(compact_model, in_tok, out_tok, cache_tok, 0)
+                self._emit("compact_cost", input=in_tok, output=out_tok, cost=cost,
+                           turns_summarized=batch_msgs // 2)
+
+        except Exception as e:
+            self._print(f"[dim]compaction skipped — summarizer error: {e}[/dim]")
+            return messages  # on any failure, keep originals
+
+        summary_msg = {
+            "role": "user",
+            "content": f"[Summary of turns {turn_start}-{turn_end}]:\n{summary_text.strip()}"
+        }
+
+        self._print(f"[dim]⊘ compacted turns {turn_start}-{turn_end} "
+                     f"({batch_msgs} messages → 1 summary + {len(protected)} protected)[/dim]")
+        self._emit("context_compacted", turns=f"{turn_start}-{turn_end}",
+                   messages_removed=batch_msgs, protected_kept=len(protected))
+
+        # Reassemble: initial + already summarized + new summary + protected + remaining + keep zone
+        result = [initial]
+        result.extend(already_summarized)
+        result.append(summary_msg)
+        result.extend(protected)
+        result.extend(remaining)
+        result.extend(keep_zone)
+        return result
 
     def _handle_record_fact(self, inputs: dict) -> dict:
         if not self.state:

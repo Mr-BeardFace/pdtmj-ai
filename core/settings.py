@@ -148,6 +148,17 @@ SETTINGS: tuple[Setting, ...] = (
             "Model for the background log analyst (null = small default)",
             allow_null=True, personas=_OPS),
 
+    # Context compaction — pentest + redteam (long autonomous runs)
+    Setting("compact_threshold", "Compact threshold %", "Compaction", "int",
+            "Summarise when estimated tokens exceed this % of context window",
+            minimum=30, maximum=70, personas=_OPS),
+    Setting("compact_keep_recent", "Compact keep recent", "Compaction", "int",
+            "Turn pairs always kept verbatim (short-term memory)",
+            minimum=2, personas=_OPS),
+    Setting("compact_model", "Compact model", "Compaction", "str",
+            "Model for the summariser LLM call (null = auto Haiku)",
+            allow_null=True, personas=_OPS),
+
     # Cracking — pentest + ctf
     Setting("hashcat_wordlist", "Hashcat wordlist", "Cracking", "str",
             "Wordlist path for hashcat jobs", personas=_PENTEST_CTF),

@@ -185,6 +185,14 @@ _DEFAULTS: dict[str, Any] = {
     # Model for the background log analyst. null → falls back to the small default.
     "analyst_model": None,
 
+    # ── Context compaction (pentest/redteam only) ──────────────────────────────
+    # Trigger when estimated tokens exceed this % of the context window.
+    "compact_threshold": 50,
+    # Number of recent turn pairs always kept verbatim (short-term memory).
+    "compact_keep_recent": 8,
+    # Model for the summarizer LLM call. null → auto (Haiku for Anthropic).
+    "compact_model": None,
+
     # ── hashcat (offline cracking, runs as a background job) ──────────────────
     "hashcat_wordlist": "/usr/share/wordlists/rockyou.txt",
     "hashcat_rules": "/usr/share/hashcat/rules/OneRuleToRuleThemAll.rule",
