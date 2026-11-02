@@ -33,6 +33,13 @@ class LogWatcher:
     def stop(self) -> None:
         self._stop.set()
 
+    def _read_primary_tty(self) -> str:
+        """Read .primary_tty marker — the tty log filename to skip."""
+        try:
+            return (self._log_dir / ".primary_tty").read_text().strip()
+        except (OSError, ValueError):
+            return ""
+
     def _poll_loop(self) -> None:
         while not self._stop.wait(self._interval):
             self._poll()
@@ -40,9 +47,14 @@ class LogWatcher:
     def _poll(self) -> None:
         if not self._log_dir.exists():
             return
+        # .primary_tty contains the basename of the tty log where the TUI runs;
+        # skip it so screen repaints don't feed back into the analyst.
+        primary = self._read_primary_tty()
         for path in sorted(self._log_dir.glob("*.log")):
             name_lower = path.name.lower()
             if any(s in name_lower for s in self._SKIP_NAMES):
+                continue
+            if primary and path.name == primary:
                 continue
             try:
                 size = path.stat().st_size
