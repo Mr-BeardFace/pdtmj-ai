@@ -2131,17 +2131,11 @@ class PentestApp(App):
                 (s.engagement_id, self._db_poll_last_activity_id),
             ).fetchall()
             log = self.query_one("#activity-log", RichLog)
-            prev_was_opsec = False
             for r in rows:
                 self._db_poll_last_activity_id = max(self._db_poll_last_activity_id, r["id"])
                 msg = r["message"]
-                # Blank line between advisory observation+OPSEC groups
-                is_opsec = "└─" in msg and "OPSEC" in msg
-                if prev_was_opsec and not is_opsec and msg.strip():
-                    log.write("")
-                prev_was_opsec = is_opsec
-                # Write directly — message is already formatted, don't re-wrap via _activity()
                 log.write(msg)
+                log.write("")
                 self._activity_lines.append(msg)
 
             # Merge analyst token usage into status bar totals
