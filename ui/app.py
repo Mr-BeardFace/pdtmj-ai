@@ -1874,6 +1874,20 @@ class PentestApp(App):
                 b.text for b in response.content if hasattr(b, "text")
             ).strip()
 
+            usage = getattr(response, "usage", None)
+            if usage:
+                from core.pricing import estimate_cost
+                in_tok  = getattr(usage, "input_tokens", 0)
+                out_tok = getattr(usage, "output_tokens", 0)
+                cr_tok  = getattr(usage, "cache_read_input_tokens", 0)
+                cw_tok  = getattr(usage, "cache_creation_input_tokens", 0)
+                cost    = estimate_cost(model, in_tok, out_tok, cr_tok, cw_tok)
+                self._total_tokens["input"]      += in_tok
+                self._total_tokens["output"]     += out_tok
+                self._total_tokens["cache_read"] += cr_tok
+                self._total_cost                 += cost
+                self._update_status()
+
             with self._chat_lock:
                 self._chat_history.append({"role": "assistant", "content": reply})
             if self._activity_store is not None:
