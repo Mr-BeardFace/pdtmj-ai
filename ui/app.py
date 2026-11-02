@@ -1702,6 +1702,9 @@ class PentestApp(App):
         elif action == "report":
             self._make_report(intent["run_id"])
         elif action in ("pipeline", "run"):
+            if self._active_persona == "redteam":
+                self._chat_llm(text)
+                return
             if self._is_running:
                 self._activity("[yellow]Already running. Type without / to send instructions to the agent.[/yellow]")
                 return
@@ -1738,7 +1741,7 @@ class PentestApp(App):
             ))
             return
 
-        if not brief.primary_target:
+        if not brief.primary_target or self._active_persona == "redteam":
             if self._active_persona in ("pentest", "redteam"):
                 self._chat_llm(text)
             else:
