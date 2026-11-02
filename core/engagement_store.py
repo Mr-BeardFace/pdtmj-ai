@@ -498,8 +498,15 @@ class EngagementStore:
         self, severity: str, title: str, description: str,
         target: str = "", evidence: str = "", technique: str = "",
     ) -> None:
+        import hashlib
         from core.models import Finding
+        # Deterministic ID from title+target so the same finding upserts
+        # instead of creating duplicates across analyst cycles.
+        stable_id = hashlib.sha256(
+            f"{title.lower().strip()}|{target.lower().strip()}".encode()
+        ).hexdigest()[:8]
         f = Finding(
+            id=stable_id,
             type="vuln",
             severity=severity,
             title=title,
@@ -536,8 +543,14 @@ class EngagementStore:
         command: str = "", opsec: str = "medium",
         insight: str = "routine", notes: str = "",
     ) -> None:
+        import hashlib
         from core.leads import Lead
+        # Deterministic ID from description+target so the same lead upserts.
+        stable_id = hashlib.sha256(
+            f"{description.lower().strip()}|{target.lower().strip()}".encode()
+        ).hexdigest()[:8]
         lead = Lead(
+            id=stable_id,
             kind=technique or "vuln",
             description=description,
             technique=technique,
@@ -552,7 +565,7 @@ class EngagementStore:
             detection_risk=opsec,
         )
         self._conn.execute(
-            "INSERT OR IGNORE INTO leads (id, engagement_id, json, created_at)"
+            "INSERT OR REPLACE INTO leads (id, engagement_id, json, created_at)"
             " VALUES (?, ?, ?, ?)",
             (lead.id, self.engagement_id, lead.model_dump_json(), _now()),
         )
