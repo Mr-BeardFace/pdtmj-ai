@@ -5,6 +5,86 @@ from datetime import datetime, timezone
 
 _MAX_OUTPUT_LINES = 200
 
+# ── tool-internal / TTY noise stripping ──────────────────────────────────────
+
+# PS1 tags injected by the shell wrapper (e.g. [LEADS:42], [FACTS:12])
+_TOOL_PROMPT_TAG = re.compile(r"\[(?:LEADS|FACTS|SURFACES|FINDINGS|HOSTS):\d+\]\s*")
+
+# Webshell debug prefix (e.g. "1793663834:DEBUG:|OSMSH|")
+_WEBSHELL_DEBUG = re.compile(r"^\d+:DEBUG:\|OSMSH\|(?:/OSMSH\|%?)?")
+
+
+def _strip_tool_noise(text: str) -> str:
+    """Remove tool-internal prompt tags and webshell debug prefixes."""
+    text = _TOOL_PROMPT_TAG.sub("", text)
+    text = _WEBSHELL_DEBUG.sub("", text)
+    return text
+
+
+def _collapse_char_echo(lines: list[str]) -> list[str]:
+    """Detect and collapse character-by-character TTY echo with a repeated suffix.
+
+    When typing through a webshell/nc pipe, each keystroke echoes as its own line
+    with the previous buffer still attached:
+        +" -H "Cookie: PHPSESSID=abc"
+        /" -H "Cookie: PHPSESSID=abc"
+        -" -H "Cookie: PHPSESSID=abc"
+
+    This detects the pattern (>60% of lines sharing a suffix >30 chars) and
+    reconstructs the typed command from the prefix characters.
+    """
+    if len(lines) < 5:
+        return lines
+
+    # Find longest common suffix among lines
+    suffix = _find_common_suffix(lines)
+    if not suffix or len(suffix) < 30:
+        return lines
+
+    # Count how many lines end with this suffix
+    matching = sum(1 for l in lines if l.endswith(suffix))
+    if matching < len(lines) * 0.6:
+        return lines
+
+    # Extract prefix characters (the actual keystrokes) and non-matching lines
+    typed_chars: list[str] = []
+    other_lines: list[str] = []
+    for l in lines:
+        if l.endswith(suffix):
+            prefix = l[:-len(suffix)].rstrip('" ')
+            if prefix:
+                typed_chars.append(prefix)
+        else:
+            other_lines.append(l)
+
+    reconstructed = "".join(typed_chars)
+    result = []
+    if reconstructed:
+        result.append(f"(reconstructed from TTY echo: {reconstructed})")
+    result.extend(other_lines)
+    return result
+
+
+def _find_common_suffix(lines: list[str], min_len: int = 30) -> str:
+    """Find the longest suffix shared by the majority of lines."""
+    if len(lines) < 3:
+        return ""
+    # Use the shortest line as a candidate source
+    candidates = sorted(lines, key=len)
+    ref = candidates[len(candidates) // 2]  # median-length line
+    if len(ref) < min_len:
+        return ""
+    best = ""
+    for length in range(min_len, len(ref) + 1, 5):
+        suffix = ref[-length:]
+        count = sum(1 for l in lines if l.endswith(suffix))
+        if count >= len(lines) * 0.5:
+            best = suffix
+        else:
+            break
+    return best
+
+
 # ── ANSI / OSC stripping ──────────────────────────────────────────────────────
 _ANSI = re.compile(
     r"\x1b(?:"
@@ -233,6 +313,7 @@ class _Block:
                 "context": ctx,
             })
 
+        content = _collapse_char_echo(content)
         return self._tag({
             "timestamp": ts,
             "command": "(remote session)",
@@ -263,6 +344,7 @@ def _parse_cmd_log(lines: list[str]) -> list[dict]:
 def parse_chunks(raw: bytes) -> list[dict]:
     """Parse raw script/tty log bytes into [{timestamp, command, output, context}]."""
     text = strip_ansi(raw.decode("utf-8", errors="replace"))
+    text = _strip_tool_noise(text)
     lines = text.splitlines()
 
     # Fast path: detect cmd_YYYYMMDD.log format (every non-blank line matches _CMD_LOG_LINE)
@@ -346,6 +428,7 @@ def parse_chunks(raw: bytes) -> list[dict]:
     if not chunks:
         clean_lines = [l for l in lines if l.strip()]
         if clean_lines:
+            clean_lines = _collapse_char_echo(clean_lines)
             chunks = [{
                 "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
                 "command": "(raw session — format unrecognised)",

@@ -16,7 +16,14 @@ import time
 from pathlib import Path
 
 
-_ANSI = __import__("re").compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+_ANSI = __import__("re").compile(
+    r"\x1b(?:"
+    r"\].*?(?:\x07|\x1b\\)"   # OSC: ESC ] ... BEL | ESC \
+    r"|\[[0-9;?]*[@-~]"        # CSI: ESC [ ... final
+    r"|[@-Z\\-_]"              # Fe: ESC single-byte
+    r")"
+    r"|\r|\x07|\x08"           # bare CR, BEL, and BS
+)
 
 
 def _clean(line: str) -> str:

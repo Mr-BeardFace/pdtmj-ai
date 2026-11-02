@@ -3049,16 +3049,24 @@ class PentestApp(App):
             return gain * float(l.get("prior", 0.5)) / _COST_W.get(l.get("cost", "medium"), 3.0)
 
         from rich.markup import escape as _esc
-        sorted_leads = sorted(leads, key=_ev, reverse=True)[:15]
+        sorted_leads = sorted(leads, key=_ev, reverse=True)
+
+        # Extract command from notes field ("command:..." embedded in notes string)
+        _CMD_RE = __import__("re").compile(r"command:(.+?)(?:\n|$)")
         lines = []
         for l in sorted_leads:
-            risk = l.get("detection_risk") or "medium"
-            clr = _RISK_CLR.get(risk, "yellow")
-            lbl = risk[:4].upper()
-            tech = _esc((l.get("technique") or l.get("kind", ""))[:14])
-            desc = _esc(l.get("description", "")[:80])
-            lines.append(f"[dim]{tech:<14}[/dim]  [{clr}]{lbl}[/{clr}]  {desc}")
-        ns.update("\n".join(lines))
+            m = _CMD_RE.search(l.get("notes", ""))
+            if m:
+                cmd = m.group(1).strip()
+                if cmd and cmd not in lines:
+                    lines.append(cmd)
+            if len(lines) >= 5:
+                break
+
+        if not lines:
+            ns.update("[dim]No commands available[/dim]")
+        else:
+            ns.update("\n".join(f"[bold]{_esc(c)}[/bold]" for c in lines))
 
     # ── Event handler ─────────────────────────────────────────────────────────
 

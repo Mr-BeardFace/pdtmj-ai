@@ -777,6 +777,7 @@ class LogAnalyst:
         if not advisory:
             return
         ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+        prev_was_opsec = False
         for line in advisory.splitlines():
             s = line.strip()
             if not s:
@@ -786,8 +787,12 @@ class LogAnalyst:
                 lvl, reason = m.group(1).lower(), m.group(2)
                 clr = self._OPSEC_CLR.get(lvl, "yellow")
                 msg = f"[#6e7681]  └─ [bold]OPSEC[/bold] [[{clr}]{lvl.upper()}[/{clr}]] — {_esc(reason)}[/#6e7681]"
+                prev_was_opsec = True
             else:
+                if prev_was_opsec:
+                    self._store.add_activity(ts, "")
                 msg = f"[dim]{ts}[/dim]  {_esc(s)}"
+                prev_was_opsec = False
             self._store.add_activity(ts, msg)
 
     def _build_state_summary(self) -> str:
