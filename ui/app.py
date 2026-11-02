@@ -1827,11 +1827,57 @@ class PentestApp(App):
             return "No engagement state available yet."
         return "CURRENT ENGAGEMENT STATE:\n" + "\n".join(lines)
 
+    # Tools available to the chat LLM (redteam + pentest suggestion mode).
+    # Research + local file I/O only — no command execution, no scanning.
+    _CHAT_TOOL_NAMES = ("web_search", "fetch_url", "read_file", "write_file")
+
+    @staticmethod
+    def _chat_tools() -> tuple[list[dict], dict]:
+        """Load chat-allowed tools once, return (schemas, {name: func})."""
+        import importlib
+        schemas, funcs = [], {}
+        for mod_path, func_name in (
+            ("tools.web_search", "web_search"),
+            ("tools.fetch_url", "fetch_url"),
+            ("tools.read_file", "read_file"),
+            ("tools.write_file", "write_file"),
+        ):
+            mod = importlib.import_module(mod_path)
+            schemas.append(mod.TOOL_DEFINITION)
+            funcs[mod.TOOL_DEFINITION["name"]] = getattr(mod, func_name)
+        return schemas, funcs
+
+    def _track_chat_usage(self, response, model: str) -> None:
+        """Accumulate token usage from a chat LLM response."""
+        usage = getattr(response, "usage", None)
+        if not usage:
+            return
+        from core.pricing import estimate_cost
+        in_tok  = getattr(usage, "input_tokens", 0)
+        out_tok = getattr(usage, "output_tokens", 0)
+        cr_tok  = getattr(usage, "cache_read_input_tokens", 0)
+        cw_tok  = getattr(usage, "cache_creation_input_tokens", 0)
+        cost    = estimate_cost(model, in_tok, out_tok, cr_tok, cw_tok)
+        self._total_tokens["input"]      += in_tok
+        self._total_tokens["output"]     += out_tok
+        self._total_tokens["cache_read"] += cr_tok
+        self._total_cost                 += cost
+        if self._activity_store is not None:
+            try:
+                self._activity_store.add_token_usage(
+                    "chat", in_tok, out_tok, cr_tok, cw_tok, cost)
+            except Exception:
+                pass
+        self._update_status()
+
     @work(thread=True)
     def _chat_llm(self, text: str) -> None:
-        """Free-form LLM chat with full engagement state context."""
+        """Free-form LLM chat with tool access (research + file I/O)."""
+        import json as _json
         from core.llm_client import LLMClient
         from core.config import get as _cfg_get, get_global_model
+
+        _MAX_TOOL_ROUNDS = 10
 
         try:
             op = ""
@@ -1863,46 +1909,66 @@ class PentestApp(App):
                 else "claude-sonnet-4-6"
             )
             client = LLMClient()
-            response = client.run(
-                model=model,
-                system=system,
-                messages=messages,
-                tools=[],
-                max_tokens=4096,
-            )
+            tool_schemas, tool_funcs = self._chat_tools()
+
+            for _round in range(_MAX_TOOL_ROUNDS):
+                response = client.run(
+                    model=model,
+                    system=system,
+                    messages=messages,
+                    tools=tool_schemas,
+                    max_tokens=4096,
+                )
+                self._track_chat_usage(response, model)
+
+                tool_use_blocks = [b for b in response.content if getattr(b, "type", None) == "tool_use"]
+
+                if not tool_use_blocks:
+                    break
+
+                # Surface reasoning text alongside tool calls (mid-loop only)
+                for b in response.content:
+                    if getattr(b, "type", None) == "text" and b.text.strip():
+                        self._activity(f"[bold cyan]AI:[/bold cyan] {b.text.strip()}", cap=False)
+
+                # Execute tools and build results
+                messages.append({"role": "assistant", "content": response.content})
+                tool_results = []
+                for tb in tool_use_blocks:
+                    fn = tool_funcs.get(tb.name)
+                    if fn is None:
+                        result = {"error": f"unknown tool: {tb.name}"}
+                    else:
+                        self._activity(
+                            f"[dim]⚙ {tb.name}([/dim]"
+                            f"[dim]{_json.dumps(tb.input, default=str)[:200]}[/dim][dim])[/dim]")
+                        try:
+                            result = fn(**tb.input)
+                        except Exception as e:
+                            result = {"error": str(e)}
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tb.id,
+                        "content": _json.dumps(result, default=str),
+                    })
+                messages.append({"role": "user", "content": tool_results})
+            else:
+                self._activity("[yellow]Tool loop limit reached[/yellow]")
+
             reply = "\n".join(
-                b.text for b in response.content if hasattr(b, "text")
+                b.text for b in response.content
+                if getattr(b, "type", None) == "text" and b.text.strip()
             ).strip()
 
-            usage = getattr(response, "usage", None)
-            if usage:
-                from core.pricing import estimate_cost
-                in_tok  = getattr(usage, "input_tokens", 0)
-                out_tok = getattr(usage, "output_tokens", 0)
-                cr_tok  = getattr(usage, "cache_read_input_tokens", 0)
-                cw_tok  = getattr(usage, "cache_creation_input_tokens", 0)
-                cost    = estimate_cost(model, in_tok, out_tok, cr_tok, cw_tok)
-                self._total_tokens["input"]      += in_tok
-                self._total_tokens["output"]     += out_tok
-                self._total_tokens["cache_read"] += cr_tok
-                self._total_cost                 += cost
+            if reply:
+                self._activity(f"[bold cyan]AI:[/bold cyan] {reply}", cap=False)
+                with self._chat_lock:
+                    self._chat_history.append({"role": "assistant", "content": reply})
                 if self._activity_store is not None:
                     try:
-                        self._activity_store.add_token_usage(
-                            "chat", in_tok, out_tok, cr_tok, cw_tok, cost)
+                        self._activity_store.add_chat_message("assistant", reply)
                     except Exception:
                         pass
-                self._update_status()
-
-            with self._chat_lock:
-                self._chat_history.append({"role": "assistant", "content": reply})
-            if self._activity_store is not None:
-                try:
-                    self._activity_store.add_chat_message("assistant", reply)
-                except Exception:
-                    pass
-
-            self._activity(f"[bold cyan]AI:[/bold cyan] {reply}", cap=False)
 
         except Exception as e:
             self.post_message(PentestApp.Activity(f"[red]Chat error:[/red] {e}"))
