@@ -1558,12 +1558,14 @@ class PentestApp(App):
                         pass
                 prev = self._active_persona
                 self._active_persona = parsed[1][0].lower()
-                # Rebuild layout when crossing the ops/ctf boundary
+                # Rebuild layout when crossing the ops/ctf boundary;
+                # always clear stale display state from the previous persona.
                 prev_ops = prev in ("pentest", "redteam")
                 new_ops  = self._is_ops_persona
                 if prev_ops != new_ops:
                     self._rebuild_left_pane()
                 else:
+                    self._clear_display_state()
                     self._sync_flags_tab()
                 self._update_status()
             elif parsed[0] == "/provider set":
@@ -2650,6 +2652,24 @@ class PentestApp(App):
         except Exception:
             pass
 
+    def _clear_display_state(self) -> None:
+        """Reset panel data so stale items from a previous persona don't carry over."""
+        self._host_rows.clear(); self._host_rowkeys.clear()
+        self._host_os.clear(); self._host_name.clear()
+        self._agent_cols.clear(); self._agent_os_ips.clear()
+        self._host_rowdata.clear(); self._hosts_compact.clear()
+        self._open_leads.clear()
+        self._findings.clear(); self._findings_title_map.clear()
+        try:
+            self.query_one("#findings-list", ListView).clear()
+        except Exception:
+            pass
+        try:
+            self.query_one("#next-steps-content", Static).update(
+                "[dim]No suggested commands yet[/dim]")
+        except Exception:
+            pass
+
     @work(exclusive=True)
     async def _rebuild_left_pane(self) -> None:
         """Rebuild the left pane layout when persona switches between ops and ctf."""
@@ -2659,14 +2679,7 @@ class PentestApp(App):
             return
 
         await lp.remove_children()
-
-        # Clear display state — widgets are gone, dicts must match
-        self._host_rows.clear(); self._host_rowkeys.clear()
-        self._host_os.clear(); self._host_name.clear()
-        self._agent_cols.clear(); self._agent_os_ips.clear()
-        self._host_rowdata.clear(); self._hosts_compact.clear()
-        self._open_leads.clear()
-        self._findings.clear(); self._findings_title_map.clear()
+        self._clear_display_state()
 
         if self._is_ops_persona:
             info_tabs = TabbedContent(id="info-tabs")
