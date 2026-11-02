@@ -369,7 +369,16 @@ def _write_badge(op: str, notable_leads: int, opsec_level: str) -> None:
 
 def _write_usage(op: str, in_tok: int, out_tok: int, cost: float) -> None:
     try:
-        _usage_path(op).write_text(f"{in_tok}\n{out_tok}\n{cost:.2f}\n")
+        p = _usage_path(op)
+        prev_in = prev_out = 0
+        prev_cost = 0.0
+        if p.exists():
+            parts = p.read_text().strip().splitlines()
+            if len(parts) >= 3:
+                prev_in, prev_out = int(parts[0]), int(parts[1])
+                prev_cost = float(parts[2])
+        p.write_text(f"{prev_in + in_tok}\n{prev_out + out_tok}\n"
+                     f"{prev_cost + cost:.2f}\n")
     except Exception:
         pass
 
@@ -620,7 +629,8 @@ class LogAnalyst:
         in_tok    = getattr(usage, "input_tokens",  0) if usage else 0
         out_tok   = getattr(usage, "output_tokens", 0) if usage else 0
         cache_tok = getattr(usage, "cache_read_input_tokens", 0) if usage else 0
-        cost      = self._calc_cost(in_tok, out_tok, _analyst_model(), cache_tok)
+        from core.pricing import estimate_cost
+        cost      = estimate_cost(_analyst_model(), in_tok, out_tok, cache_tok)
         _write_usage(self._op, in_tok, out_tok, cost)
 
         if self._store:
@@ -897,17 +907,3 @@ class LogAnalyst:
                     "tool installs) is ALWAYS local, never op.")
         return ". ".join(parts)
 
-    @staticmethod
-    def _calc_cost(in_tok: int, out_tok: int, model: str, cache_read_tok: int = 0) -> float:
-        _PRICING = [
-            ("opus",   15.0, 75.0),
-            ("sonnet",  3.0, 15.0),
-            ("haiku",   0.8,  4.0),
-        ]
-        m = model.lower()
-        for prefix, inp_r, out_r in _PRICING:
-            if prefix in m:
-                billable_in = (in_tok - cache_read_tok) * inp_r + cache_read_tok * inp_r * 0.1
-                return (billable_in + out_tok * out_r) / 1_000_000
-        billable_in = (in_tok - cache_read_tok) * 3.0 + cache_read_tok * 0.3
-        return (billable_in + out_tok * 15.0) / 1_000_000
