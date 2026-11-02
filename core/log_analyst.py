@@ -650,8 +650,8 @@ class LogAnalyst:
             return
         s = self._store
 
-        def _lst(k: str) -> list:
-            return update.get(k) or []
+        def _lst(k: str) -> list[dict]:
+            return [x for x in (update.get(k) or []) if isinstance(x, dict)]
 
         try:
             for h in _lst("hosts"):
