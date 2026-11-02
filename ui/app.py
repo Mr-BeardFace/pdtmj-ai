@@ -2134,9 +2134,9 @@ class PentestApp(App):
             for r in rows:
                 self._db_poll_last_activity_id = max(self._db_poll_last_activity_id, r["id"])
                 msg = r["message"]
-                log.write(msg)
                 if "OPSEC" not in msg:
                     log.write("")
+                log.write(msg)
                 self._activity_lines.append(msg)
 
             # Merge analyst token usage into status bar totals
