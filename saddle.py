@@ -217,6 +217,24 @@ def end(op: str | None) -> None:
     _console.print(f"[green]saddle:[/green] op [bold]{op_name}[/bold] marked ended")
 
 
+@cli.command()
+@click.option("--op", default=None, help="Op name (default: active op)")
+@click.confirmation_option(prompt="This deletes ALL state for the op. Continue?")
+def reset(op: str | None) -> None:
+    """Wipe an op's state and start fresh."""
+    import shutil
+    op_name = _resolve_op(op)
+    if _daemon_running(op_name):
+        _stop_daemon(op_name)
+        time.sleep(0.5)
+    op_dir = OPS_DIR / op_name
+    if op_dir.exists():
+        shutil.rmtree(op_dir)
+    if _active_op() == op_name:
+        _clear_active_op()
+    _console.print(f"[green]saddle:[/green] op [bold]{op_name}[/bold] reset — run [cyan]saddle start --op {op_name}[/cyan] to begin fresh")
+
+
 # ── Op subcommands ────────────────────────────────────────────────────────────
 
 @cli.group()
