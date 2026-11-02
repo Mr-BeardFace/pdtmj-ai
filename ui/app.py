@@ -1911,13 +1911,14 @@ class PentestApp(App):
             client = LLMClient()
             tool_schemas, tool_funcs = self._chat_tools()
 
+            used_tools = False
             for _round in range(_MAX_TOOL_ROUNDS):
                 response = client.run(
                     model=model,
                     system=system,
                     messages=messages,
                     tools=tool_schemas,
-                    max_tokens=4096,
+                    max_tokens=8192,
                 )
                 self._track_chat_usage(response, model)
 
@@ -1926,10 +1927,14 @@ class PentestApp(App):
                 if not tool_use_blocks:
                     break
 
+                used_tools = True
                 # Surface reasoning text alongside tool calls (mid-loop only)
-                for b in response.content:
-                    if getattr(b, "type", None) == "text" and b.text.strip():
-                        self._activity(f"[bold cyan]AI:[/bold cyan] {b.text.strip()}", cap=False)
+                reasoning = "\n".join(
+                    b.text.strip() for b in response.content
+                    if getattr(b, "type", None) == "text" and b.text.strip()
+                )
+                if reasoning:
+                    self._activity(f"[bold cyan]AI:[/bold cyan] {reasoning}", cap=False)
 
                 # Execute tools and build results
                 messages.append({"role": "assistant", "content": response.content})
@@ -1955,13 +1960,17 @@ class PentestApp(App):
             else:
                 self._activity("[yellow]Tool loop limit reached[/yellow]")
 
+            # Final reply — only from the terminal response (no tools),
+            # or skip display if the loop exhausted (text already shown mid-loop).
             reply = "\n".join(
-                b.text for b in response.content
+                b.text.strip() for b in response.content
                 if getattr(b, "type", None) == "text" and b.text.strip()
-            ).strip()
-
-            if reply:
+            )
+            # Display only if we broke out of the loop (final text-only response)
+            if reply and not (used_tools and _round + 1 >= _MAX_TOOL_ROUNDS):
                 self._activity(f"[bold cyan]AI:[/bold cyan] {reply}", cap=False)
+            # Always save to chat history
+            if reply:
                 with self._chat_lock:
                     self._chat_history.append({"role": "assistant", "content": reply})
                 if self._activity_store is not None:
