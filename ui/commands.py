@@ -938,15 +938,18 @@ def handle_analyst_status() -> tuple[list[str], bool]:
 
     lines: list[str] = [f"Analyst status for [bold]{op}[/bold]", ""]
 
-    # Token usage
-    usage_path = OPS_DIR / op / ".analyst_usage"
-    if usage_path.exists():
-        try:
-            parts = usage_path.read_text().strip().splitlines()
-            _in, _out = int(parts[0]), int(parts[1])
+    # Token usage from DB
+    try:
+        from core.engagement_store import EngagementStore
+        store, _, _ = EngagementStore.open_or_create(op)
+        totals = store.token_usage_totals()
+        _in, _out = totals["input_tokens"], totals["output_tokens"]
+        if _in or _out:
             lines.append(f"  tokens in/out  {_in:,} / {_out:,}")
-        except Exception:
-            pass
+            lines.append(f"  est. cost      ${totals['cost_usd']:.4f}")
+        store.close()
+    except Exception:
+        pass
 
     # Badge from .badge file; daemon status from .daemon_pid
     badge_path = OPS_DIR / op / ".badge"

@@ -1886,6 +1886,12 @@ class PentestApp(App):
                 self._total_tokens["output"]     += out_tok
                 self._total_tokens["cache_read"] += cr_tok
                 self._total_cost                 += cost
+                if self._activity_store is not None:
+                    try:
+                        self._activity_store.add_token_usage(
+                            "chat", in_tok, out_tok, cr_tok, cw_tok, cost)
+                    except Exception:
+                        pass
                 self._update_status()
 
             with self._chat_lock:

@@ -348,12 +348,8 @@ def _badge_path(op: str) -> Path:
     return OPS_DIR / op / ".badge"
 
 
-def _usage_path(op: str) -> Path:
-    return OPS_DIR / op / ".analyst_usage"
-
-
 def _write_badge(op: str, notable_leads: int, opsec_level: str) -> None:
-    """Write zsh RPROMPT badge (LEADS/OPSEC only; tokens+cost go in .analyst_usage)."""
+    """Write zsh RPROMPT badge (LEADS/OPSEC only)."""
     parts: list[str] = []
     if notable_leads > 0:
         parts.append(f"LEADS:{notable_leads}")
@@ -366,21 +362,6 @@ def _write_badge(op: str, notable_leads: int, opsec_level: str) -> None:
     except Exception:
         pass
 
-
-def _write_usage(op: str, in_tok: int, out_tok: int, cost: float) -> None:
-    try:
-        p = _usage_path(op)
-        prev_in = prev_out = 0
-        prev_cost = 0.0
-        if p.exists():
-            parts = p.read_text().strip().splitlines()
-            if len(parts) >= 3:
-                prev_in, prev_out = int(parts[0]), int(parts[1])
-                prev_cost = float(parts[2])
-        p.write_text(f"{prev_in + in_tok}\n{prev_out + out_tok}\n"
-                     f"{prev_cost + cost:.2f}\n")
-    except Exception:
-        pass
 
 
 _DOMAIN_MAP = {
@@ -631,7 +612,6 @@ class LogAnalyst:
         cache_tok = getattr(usage, "cache_read_input_tokens", 0) if usage else 0
         from core.pricing import estimate_cost
         cost      = estimate_cost(_analyst_model(), in_tok, out_tok, cache_tok)
-        _write_usage(self._op, in_tok, out_tok, cost)
 
         if self._store:
             try:
