@@ -96,13 +96,20 @@ CREDENTIALS — critical:
 - service: what protocol it's used with (ssh, smb, http, winrm…) if known
 
 FINDINGS — security observations (STRICT):
-- findings are vulnerabilities, misconfigurations, or exploitable conditions discovered on TARGET systems.
-- A finding is something a client would see in a pentest report. If it wouldn't appear in a report, it is NOT a finding.
-- NOT findings: operator actions (running tools, uploading shells, writing files), operational status updates,
-  intermediate exploit steps, tool output summaries, or reconnaissance observations (those are facts/surfaces/leads).
-- NEVER create findings about the operator's local machine (VPN config, /etc/hosts edits, local tool installs).
-- NEVER duplicate a finding you already emitted — if the same vuln on the same target was reported before, skip it.
-- severity: "info" | "low" | "medium" | "high" | "critical"
+- A finding is a vulnerability, misconfiguration, or exploitable condition on a TARGET system that a CLIENT would see in a pentest report.
+- Ask yourself: "Would I write this in the Findings section of a report to the client?" If no, do NOT create it.
+- EMIT findings for: confirmed vulnerabilities (CVEs, default creds, misconfigs), data exposure (cleartext secrets, PII leaks),
+  missing security controls (no MFA, weak TLS, disabled CSRF), and confirmed exploitable conditions.
+- NOT findings — do NOT emit these as findings:
+  * API endpoints returning 404/500/empty (that is recon → use surfaces or facts)
+  * Operator actions (uploading shells, running exploits, writing files to target)
+  * Operational observations ("webshell deployed", "connection confirmed", "artifact accumulation")
+  * Negative results ("resource not accessible", "parameter does not bypass")
+  * Tool errors or operator mistakes ("exploit invoked without flag")
+  * Enumeration results that reveal no vulnerability (list of endpoints, response codes)
+- NEVER create findings about the operator's local machine.
+- NEVER duplicate a finding already emitted — if the same vuln on the same target was reported before, skip it.
+- severity: "low" | "medium" | "high" | "critical" (no "info" — if it's info-level, it belongs in facts, not findings)
 - evidence: a verbatim snippet from the log that proves the finding — not a paraphrase.
 - technique: short label e.g. "default-creds", "path-traversal", "kerberoasting", "pass-the-hash"
 
@@ -225,7 +232,7 @@ _ANALYZE_TOOL = {
                 "items": {
                     "type": "object",
                     "properties": {
-                        "severity":    {"type": "string", "enum": ["info", "low", "medium", "high", "critical"]},
+                        "severity":    {"type": "string", "enum": ["low", "medium", "high", "critical"]},
                         "title":       {"type": "string"},
                         "description": {"type": "string"},
                         "target":      {"type": "string"},
