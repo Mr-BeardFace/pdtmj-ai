@@ -10,7 +10,6 @@ from core.timeutil import now_utc
 from typing import Optional
 
 from rich.markup import escape as markup_escape
-from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -658,8 +657,8 @@ class PentestApp(App):
         self._hosts_compact: dict[str, dict] = {}
         # Open leads for Suggested Commands pane (list of lead dicts)
         self._open_leads: list[dict] = []
-        # Row-key → raw command string for click-to-copy in commands table
-        self._cmd_by_row: dict[str, str] = {}
+        # Command strings for click-to-copy in suggested commands list
+        self._cmd_list: list[str] = []
         # Activity store for persistence (ops persona only)
         self._activity_store = None
         self._active_op: str = ""
@@ -759,7 +758,7 @@ class PentestApp(App):
                             yield ListView(id="findings-list")
                     with Vertical(id="next-steps-container"):
                         yield Static("● SUGGESTED COMMANDS", classes="pane-header", id="next-steps-label")
-                        yield DataTable(id="next-steps-content", cursor_type="row", show_header=False)
+                        yield ListView(id="next-steps-content")
                 else:
                     yield Static("● FINDINGS", classes="pane-header")
                     yield ListView(id="findings-list")
@@ -1198,11 +1197,18 @@ class PentestApp(App):
     # ── Findings list click ───────────────────────────────────────────────────
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
-        if event.list_view.id != "findings-list":
-            return
-        idx = event.list_view.index
-        if idx is not None and 0 <= idx < len(self._findings):
-            self.push_screen(FindingDetailModal(self._findings[idx]))
+        lid = event.list_view.id
+        if lid == "findings-list":
+            idx = event.list_view.index
+            if idx is not None and 0 <= idx < len(self._findings):
+                self.push_screen(FindingDetailModal(self._findings[idx]))
+        elif lid == "next-steps-content":
+            idx = event.list_view.index
+            if idx is not None and 0 <= idx < len(self._cmd_list):
+                cmd = self._cmd_list[idx]
+                if self._copy_to_clipboard(cmd):
+                    short = cmd if len(cmd) <= 60 else cmd[:57] + "..."
+                    self._flash_status(f"Copied: {short}")
 
     # ── Creds table click (reveal) ────────────────────────────────────────────
 
@@ -1229,11 +1235,6 @@ class PentestApp(App):
             flag = str(event.row_key.value)
             if self._copy_to_clipboard(flag):
                 self._flash_status("Flag copied to clipboard")
-
-        elif tid == "next-steps-content":
-            cmd = self._cmd_by_row.get(str(event.row_key.value))
-            if cmd and self._copy_to_clipboard(cmd):
-                self._flash_status("Command copied to clipboard")
 
         elif tid == "hosts-table":
             # Copy from _host_rowdata (full values) so a grouped/blanked sibling row
@@ -2776,10 +2777,9 @@ class PentestApp(App):
             self.query_one("#findings-list", ListView).clear()
         except Exception:
             pass
-        self._cmd_by_row.clear()
+        self._cmd_list.clear()
         try:
-            ns = self.query_one("#next-steps-content", DataTable)
-            ns.clear(columns=True)
+            self.query_one("#next-steps-content", ListView).clear()
         except Exception:
             pass
 
@@ -2804,7 +2804,7 @@ class PentestApp(App):
             await info_tabs.add_pane(TabPane("Findings", ListView(id="findings-list"),                      id="tab-findings"))
             await next_steps.mount(
                 Static("● SUGGESTED COMMANDS", classes="pane-header", id="next-steps-label"),
-                DataTable(id="next-steps-content", cursor_type="row", show_header=False),
+                ListView(id="next-steps-content"),
             )
         else:
             info_tabs = TabbedContent(id="info-tabs")
@@ -3045,7 +3045,7 @@ class PentestApp(App):
 
     def _refresh_next_steps(self) -> None:
         try:
-            ns = self.query_one("#next-steps-content", DataTable)
+            ns = self.query_one("#next-steps-content", ListView)
         except Exception:
             return
         _DEAD = {"dead", "exhausted", "skipped", "confirmed", "refuted"}
@@ -3056,25 +3056,21 @@ class PentestApp(App):
 
         leads = [l for l in self._open_leads if l.get("status") not in _DEAD]
 
-        ns.clear(columns=True)
-        self._cmd_by_row.clear()
+        ns.clear()
+        self._cmd_list.clear()
 
         if not leads:
-            ns.add_column("info", key="info")
-            ns.add_row(Text("No suggested commands yet", style="dim"))
+            ns.append(ListItem(Static("[dim]No suggested commands yet[/dim]")))
             return
 
         def _ev(l: dict) -> float:
             gain = max(1, _REACH.get(l.get("reach_level", "vuln"), 2))
             return gain * float(l.get("prior", 0.5)) / _COST_W.get(l.get("cost", "medium"), 3.0)
 
+        from rich.markup import escape as _esc
         sorted_leads = sorted(leads, key=_ev, reverse=True)
 
-        ns.add_column("opsec", key="opsec", width=4)
-        ns.add_column("detail", key="detail")
-
         seen_cmds: set[str] = set()
-        idx = 0
         for l in sorted_leads:
             cmd = l.get("command", "")
             if not cmd:
@@ -3086,17 +3082,12 @@ class PentestApp(App):
             seen_cmds.add(cmd)
             why = l.get("rationale") or l.get("description", "")[:60]
             opsec = l.get("opsec", "medium")
-            style = _RISK_CLR.get(opsec, "yellow")
+            oc = _RISK_CLR.get(opsec, "yellow")
             lbl = {"low": "LOW", "medium": "MED", "high": "HIGH", "critical": "CRIT"}.get(opsec, "MED")
-            rk = f"cmd-{idx}"
-            ns.add_row(
-                Text(lbl, style=style),
-                Text.assemble((why + "\n", "dim"), (cmd, "bold")),
-                key=rk,
-            )
-            self._cmd_by_row[rk] = cmd
-            idx += 1
-            if idx >= 5:
+            markup = f"[{oc}]{lbl:4s}[/{oc}]  [dim]{_esc(why)}[/dim]\n      [bold]{_esc(cmd)}[/bold]"
+            ns.append(ListItem(Static(markup, markup=True)))
+            self._cmd_list.append(cmd)
+            if len(self._cmd_list) >= 5:
                 break
 
     # ── Event handler ─────────────────────────────────────────────────────────
