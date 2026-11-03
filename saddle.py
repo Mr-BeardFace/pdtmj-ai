@@ -437,7 +437,8 @@ def op_leads(op: str | None, show_all: bool) -> None:
     if not show_all:
         leads = [l for l in leads
                  if l.get("status", "open") in ("open", "active", "advancing")
-                 and "insight:notable" in l.get("notes", "")]
+                 and (l.get("insight") == "notable"
+                      or "insight:notable" in l.get("notes", ""))]
     if not leads:
         msg = "no notable open leads" if not show_all else "no leads"
         _console.print(f"[dim]{msg}[/dim]")
@@ -445,23 +446,26 @@ def op_leads(op: str | None, show_all: bool) -> None:
 
     _console.print(f"[dim]Frontier: {frontier}[/dim]\n")
     t = Table(box=box.SIMPLE, show_header=True, header_style="bold")
-    t.add_column("Reach",  width=10)
-    t.add_column("OPSEC",  width=8)
-    t.add_column("Description")
+    t.add_column("Reach",     width=10)
+    t.add_column("OPSEC",     width=8)
+    t.add_column("Why")
     t.add_column("Command")
     for l in leads:
-        notes   = l.get("notes", "")
-        # Extract opsec from notes field ("opsec:medium insight:notable command:...")
-        opsec   = "?"
-        command = ""
-        for part in notes.split():
-            if part.startswith("opsec:"):
-                opsec = part[6:]
-            elif part.startswith("command:"):
-                command = part[8:]
+        opsec   = l.get("opsec", "")
+        command = l.get("command", "")
+        rationale = l.get("rationale", "")
+        # Back-compat: old leads packed fields into notes
+        if not opsec or not command:
+            for part in l.get("notes", "").split():
+                if part.startswith("opsec:") and not opsec:
+                    opsec = part[6:]
+                elif part.startswith("command:") and not command:
+                    command = part[8:]
+        opsec = opsec or "?"
+        display_why = rationale or l.get("description", "")[:60]
         oc = {"low": "green", "medium": "yellow", "high": "red", "critical": "bold red"}.get(opsec, "white")
         t.add_row(l.get("reach_level", "?"), f"[{oc}]{opsec}[/{oc}]",
-                  l.get("description", ""), command[:60])
+                  display_why, command)
     _console.print(t)
     _console.print(f"[dim]{len(leads)} lead(s)[/dim]")
 

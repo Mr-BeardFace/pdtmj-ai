@@ -3054,22 +3054,30 @@ class PentestApp(App):
         from rich.markup import escape as _esc
         sorted_leads = sorted(leads, key=_ev, reverse=True)
 
-        # Extract command from notes field ("command:..." embedded in notes string)
-        _CMD_RE = __import__("re").compile(r"command:(.+?)(?:\n|$)")
-        lines = []
+        entries = []
+        seen_cmds: set[str] = set()
         for l in sorted_leads:
-            m = _CMD_RE.search(l.get("notes", ""))
-            if m:
-                cmd = m.group(1).strip()
-                if cmd and cmd not in lines:
-                    lines.append(cmd)
-            if len(lines) >= 5:
+            cmd = l.get("command", "")
+            # Back-compat: old leads packed command into notes
+            if not cmd:
+                m = __import__("re").search(r"command:(.+?)(?:\n|$)", l.get("notes", ""))
+                if m:
+                    cmd = m.group(1).strip()
+            if not cmd or cmd in seen_cmds:
+                continue
+            seen_cmds.add(cmd)
+            why = l.get("rationale") or l.get("description", "")[:60]
+            opsec = l.get("opsec", "medium")
+            oc = _RISK_CLR.get(opsec, "yellow")
+            lbl = {"low": "LOW", "medium": "MED", "high": "HIGH", "critical": "CRIT"}.get(opsec, "MED")
+            entries.append(f"[{oc}]{lbl:4s}[/{oc}]  [dim]{_esc(why)}[/dim]\n      [bold]{_esc(cmd)}[/bold]")
+            if len(entries) >= 5:
                 break
 
-        if not lines:
+        if not entries:
             ns.update("[dim]No commands available[/dim]")
         else:
-            ns.update("\n".join(f"[bold]{_esc(c)}[/bold]" for c in lines))
+            ns.update("\n".join(entries))
 
     # ── Event handler ─────────────────────────────────────────────────────────
 

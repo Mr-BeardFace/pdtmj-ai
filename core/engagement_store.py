@@ -540,12 +540,12 @@ class EngagementStore:
         self, description: str, reach_level: str = "vuln",
         prior: float = 0.5, cost: str = "medium",
         target: str = "", technique: str = "",
-        command: str = "", opsec: str = "medium",
-        insight: str = "routine", notes: str = "",
+        command: str = "", rationale: str = "",
+        opsec: str = "medium", insight: str = "routine",
+        notes: str = "",
     ) -> None:
         import hashlib
         from core.leads import Lead
-        # Deterministic ID from description+target so the same lead upserts.
         stable_id = hashlib.sha256(
             f"{description.lower().strip()}|{target.lower().strip()}".encode()
         ).hexdigest()[:8]
@@ -558,10 +558,13 @@ class EngagementStore:
             reach_level=reach_level,
             prior=prior,
             cost=cost,
+            command=command,
+            rationale=rationale,
+            opsec=opsec,
+            insight=insight,
             status="open",
             created_by="analyst",
-            notes=(f"opsec:{opsec} insight:{insight} command:{command}" +
-                   (f"\n{notes}" if notes else "")),
+            notes=notes,
             detection_risk=opsec,
         )
         self._conn.execute(
@@ -913,10 +916,12 @@ class EngagementStore:
         for r in rows:
             try:
                 d = json.loads(r["json"])
-                # leads store insight in notes field as "opsec:X insight:Y command:Z"
-                notes = d.get("notes", "")
                 status = d.get("status", "open")
-                if status in ("open", "active", "advancing") and "insight:notable" in notes:
+                insight = d.get("insight", "")
+                # Back-compat: old leads packed insight into notes
+                if not insight and "insight:notable" in d.get("notes", ""):
+                    insight = "notable"
+                if status in ("open", "active", "advancing") and insight == "notable":
                     count += 1
             except Exception:
                 pass

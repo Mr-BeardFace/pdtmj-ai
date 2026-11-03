@@ -78,6 +78,10 @@ class Lead(BaseModel):
     origin_id: str = ""             # the lead/finding this was spawned from (leads form a tree)
     created_by: str = ""            # agent/strategist that surfaced it
     attempts: int = 0
+    command: str = ""
+    rationale: str = ""             # ≤60 char summary of WHY — shown in commands pane
+    opsec: str = "medium"           # low|medium|high|critical — detection/noise risk
+    insight: str = "routine"        # routine|notable
     notes: str = ""
     detection_risk: Optional[str] = None   # redteam only: low|medium|high|certain
     timestamp: datetime = Field(default_factory=now_local)

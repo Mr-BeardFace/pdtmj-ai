@@ -237,6 +237,7 @@ LEADS — next attack actions on the kill chain:
 - prior: 0.0–1.0 estimated likelihood this advances (0.3 = unlikely, 0.5 = plausible, 0.8 = strong)
 - cost: "cheap" (< 5 min, no tooling) | "medium" | "expensive" (requires setup, risk, or time)
 - opsec: detection/noise risk of executing the command — "low" | "medium" | "high" | "critical"
+- rationale: ≤60 char summary of WHY — the evidence or reasoning behind this lead (shown in the commands pane)
 - command: a literal runnable shell command for this lead — no embedded credentials, use placeholders like <user> or <hash> where creds are required.
 - insight: "routine" | "notable"
   "notable" = the lead derives from engagement-specific evidence AND requires domain knowledge the operator may not carry.
@@ -407,9 +408,10 @@ _ANALYZE_TOOL = {
                         "prior":   {"type": "number", "minimum": 0, "maximum": 1},
                         "cost":    {"type": "string", "enum": ["cheap", "medium", "expensive"]},
                         "opsec":   {"type": "string", "enum": ["low", "medium", "high", "critical"]},
-                        "command": {"type": "string"},
-                        "insight": {"type": "string", "enum": ["routine", "notable"]},
-                        "notes":   {"type": "string"},
+                        "command":   {"type": "string"},
+                        "rationale": {"type": "string", "description": "≤60 char summary of WHY this lead matters — what evidence triggered it"},
+                        "insight":   {"type": "string", "enum": ["routine", "notable"]},
+                        "notes":     {"type": "string"},
                     },
                     "required": ["description", "reach_level"],
                 },
@@ -889,6 +891,7 @@ class LogAnalyst:
                     target=lead.get("target", ""),
                     technique=lead.get("technique", ""),
                     command=lead.get("command", ""),
+                    rationale=lead.get("rationale", ""),
                     opsec=lead.get("opsec", "medium"),
                     insight=lead.get("insight", "routine"),
                     notes=lead.get("notes", ""),
