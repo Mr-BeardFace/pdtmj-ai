@@ -571,6 +571,25 @@ class EngagementStore:
         )
         self._conn.commit()
 
+    def update_lead_status(self, lead_id: str, status: str, reason: str = "") -> bool:
+        from core.leads import Lead
+        row = self._conn.execute(
+            "SELECT json FROM leads WHERE id = ? AND engagement_id = ?",
+            (lead_id, self.engagement_id),
+        ).fetchone()
+        if not row:
+            return False
+        lead = Lead.model_validate_json(row["json"])
+        lead.status = status
+        if reason:
+            lead.notes = (lead.notes + f"\nstatus_reason:{reason}").strip()
+        self._conn.execute(
+            "UPDATE leads SET json = ? WHERE id = ? AND engagement_id = ?",
+            (lead.model_dump_json(), lead_id, self.engagement_id),
+        )
+        self._conn.commit()
+        return True
+
     def load_leads(self) -> list[dict]:
         from core.leads import Lead
         rows = self._conn.execute(
@@ -579,10 +598,20 @@ class EngagementStore:
         ).fetchall()
         return [Lead.model_validate_json(r["json"]).model_dump() for r in rows]
 
-    def add_fact(self, statement: str, evidence: str = "", scope: str = "") -> None:
+    def add_fact(self, statement: str, evidence: str = "", scope: str = "",
+                 topic: str = "", status: str = "active") -> None:
         from core.models import OperationalFact
-        self.upsert_fact(OperationalFact(kind="target", statement=statement,
-                                         evidence=evidence, scope=scope))
+        import hashlib
+        if topic:
+            stable_id = hashlib.sha256(
+                f"fact|{topic.lower().strip()}".encode()
+            ).hexdigest()[:8]
+        else:
+            stable_id = str(__import__("uuid").uuid4())[:8]
+        self.upsert_fact(OperationalFact(
+            id=stable_id, kind="target", topic=topic, statement=statement,
+            evidence=evidence, scope=scope, status=status,
+        ))
 
     def add_analyst_cycle(
         self, frontier_level: str = "", summary: str = "",

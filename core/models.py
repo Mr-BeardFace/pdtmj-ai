@@ -60,10 +60,11 @@ class OperationalFact(BaseModel):
     they only keep an engagement from re-deriving (or contradicting) what it proved."""
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
     kind: str                    # target | channel
+    topic: str = ""              # short slug for upsert dedup (e.g. "olivetin-config-paths")
     statement: str               # one-line established fact ("native DLL must be x64")
     evidence: str = ""           # command + observed line proving it (required at write)
     scope: str = ""              # host and/or principal it applies to
-    status: str = "confirmed"    # confirmed | invalidated (superseded by a correction)
+    status: str = "active"       # active | superseded | disproven
     timestamp: datetime = Field(default_factory=lambda: now_local())
 
 

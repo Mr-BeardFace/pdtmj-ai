@@ -921,8 +921,8 @@ class EngagementState(BaseModel):
     def _evict_facts(self) -> None:
         """Keep at most _FACT_CAP confirmed (oldest out first) and the most recent
         _FACT_INVAL_KEEP invalidated — bounded by construction."""
-        confirmed = [f for f in self.operational_facts if f.status == "confirmed"]
-        inval     = [f for f in self.operational_facts if f.status == "invalidated"]
+        confirmed = [f for f in self.operational_facts if f.status in ("confirmed", "active")]
+        inval     = [f for f in self.operational_facts if f.status in ("invalidated", "superseded", "disproven")]
         confirmed = confirmed[-self._FACT_CAP:]
         inval     = inval[-self._FACT_INVAL_KEEP:]
         keep = {id(f) for f in confirmed} | {id(f) for f in inval}

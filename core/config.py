@@ -126,6 +126,9 @@ _DEFAULTS: dict[str, Any] = {
     # intake, analyst, compactor). One string, provider transport converts as needed
     # (e.g. Bedrock prepends us.anthropic. automatically). Change with /config.
     "fast_model": None,
+    # Cheapest model for narrow extraction tasks (TTY log preprocessing).
+    # Resolution: explicit micro_model config → provider default → error.
+    "micro_model": None,
     # When on, a fast model picks which specialist agent handles each slot
     # (enumeration/exploitation) instead of a keyword map; the keyword map stays
     # as the fallback. router_model null → fast_model.
@@ -352,6 +355,12 @@ _PROVIDER_FAST_DEFAULTS: dict[str, str] = {
     "bedrock":   "claude-sonnet-4-6",
 }
 
+_PROVIDER_MICRO_DEFAULTS: dict[str, str] = {
+    "anthropic":     "claude-haiku-4-6",
+    "anthropic-sub": "claude-haiku-4-6",
+    "bedrock":       "claude-haiku-4-6",
+}
+
 
 def get_fast_model() -> str:
     """The canonical fast model for all support LLM calls.
@@ -370,6 +379,26 @@ def get_fast_model() -> str:
         raise RuntimeError(
             f"No fast_model configured for provider {provider!r} — "
             f"set it with /config fast_model <model-id>")
+    return default
+
+
+def get_micro_model() -> str:
+    """Cheapest model for narrow extraction tasks (TTY log preprocessing).
+
+    Resolution: explicit micro_model config → provider default → error.
+    """
+    cfg = load_config()
+    explicit = cfg.get("micro_model")
+    if explicit:
+        return explicit
+    provider = cfg.get("active_provider")
+    if not provider:
+        raise RuntimeError("No active_provider configured — set a provider first")
+    default = _PROVIDER_MICRO_DEFAULTS.get(provider)
+    if not default:
+        raise RuntimeError(
+            f"No micro_model configured for provider {provider!r} — "
+            f"set it with /config micro_model <model-id>")
     return default
 
 
