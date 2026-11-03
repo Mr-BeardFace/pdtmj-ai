@@ -188,30 +188,41 @@ _bedrock_model_cache: dict[str, str] = {}
 
 
 def _bedrock_resolve_model(session, region: str, model: str) -> str:
-    """Resolve a bare model name to a full Bedrock model ID.
+    """Resolve a model name to a cross-region Bedrock inference profile ID.
 
-    If the model already contains a dot (e.g. anthropic.claude-...) it's
-    assumed to be a full Bedrock ID and returned as-is. Otherwise, queries
-    list_foundation_models and returns the first ID that starts with the
-    bare name. Results are cached for the session.
+    Newer Bedrock models require an inference profile ID (e.g.
+    ``us.anthropic.claude-sonnet-4-6-20250514-v1:0``) instead of a bare
+    foundation model ID.  This function:
+    1. Looks up the foundation model ID via list_foundation_models
+    2. Prepends the regional prefix (``us.``, ``eu.``, ``ap.``, …)
+
+    Already-resolved inference profile IDs and ARNs pass through unchanged.
     """
-    if "." in model or ":" in model:
+    # Full inference profile ID or ARN — return as-is
+    if model.startswith("arn:") or (model.count(".") >= 2 and ":" in model):
         return model
     if model in _bedrock_model_cache:
         return _bedrock_model_cache[model]
+
+    resolved = model
     try:
         br = session.client("bedrock", region_name=region)
         summaries = br.list_foundation_models().get("modelSummaries", [])
         for m in summaries:
             mid = m.get("modelId", "")
-            # Match: modelId contains the bare name (e.g. "claude-haiku-4-5" in
-            # "anthropic.claude-haiku-4-5-20251001-v1:0")
             if model in mid:
-                _bedrock_model_cache[model] = mid
-                return mid
+                resolved = mid
+                break
     except Exception:
         pass
-    return model
+
+    # Prepend regional prefix for cross-region inference profile
+    prefix = region.split("-")[0]
+    if not resolved.startswith(f"{prefix}."):
+        resolved = f"{prefix}.{resolved}"
+
+    _bedrock_model_cache[model] = resolved
+    return resolved
 
 
 def _bedrock_request_handler(client, model, system, messages, tools, max_tokens, temperature):
