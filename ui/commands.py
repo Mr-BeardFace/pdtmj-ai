@@ -1327,9 +1327,7 @@ def handle_provider_set(args: list[str]) -> tuple[list[str], bool]:
         if not get_global_model():
             out.append(f"  Note: set a global model — /agent set model global <model-id>")
             out.append(f"    List models: /models list bedrock {vendor.title()}")
-        out.append(f"  Bedrock model IDs are version-specific — also set:")
-        out.append(f"    /config fast_model <model-id>")
-        out.append(f"    /config micro_model <model-id>  (for TTY log extraction)")
+        out.append(f"  Bare model names (e.g. claude-haiku-4-5) auto-resolve to full Bedrock IDs.")
         return out, True
 
     set_value("active_provider", provider)

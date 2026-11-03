@@ -352,15 +352,16 @@ def get_global_model() -> str | None:
 
 _PROVIDER_FAST_DEFAULTS: dict[str, str] = {
     "anthropic":           "claude-sonnet-4-6",
+    "bedrock.anthropic":   "claude-sonnet-4-6",
 }
 
 _PROVIDER_MICRO_DEFAULTS: dict[str, str] = {
     "anthropic":           "claude-haiku-5-5",
     "anthropic-sub":       "claude-haiku-5-5",
+    "bedrock.anthropic":   "claude-haiku-4-5",
 }
-# Bedrock model IDs are version-specific (e.g. anthropic.claude-haiku-4-5-20251001-v1:0)
-# and vary by region — no sensible default. Operator must set explicitly via
-# /config fast_model and /config micro_model.
+# Bedrock bare names (e.g. claude-haiku-4-5) are resolved to full model IDs
+# at request time via list_foundation_models — see _bedrock_resolve_model.
 
 
 def get_fast_model() -> str:

@@ -184,6 +184,36 @@ def _bedrock_converse_response(resp: dict) -> "_Message":
     return _Message(stop_reason=stop_reason, content=content, usage=usage)
 
 
+_bedrock_model_cache: dict[str, str] = {}
+
+
+def _bedrock_resolve_model(session, region: str, model: str) -> str:
+    """Resolve a bare model name to a full Bedrock model ID.
+
+    If the model already contains a dot (e.g. anthropic.claude-...) it's
+    assumed to be a full Bedrock ID and returned as-is. Otherwise, queries
+    list_foundation_models and returns the first ID that starts with the
+    bare name. Results are cached for the session.
+    """
+    if "." in model or ":" in model:
+        return model
+    if model in _bedrock_model_cache:
+        return _bedrock_model_cache[model]
+    try:
+        br = session.client("bedrock", region_name=region)
+        summaries = br.list_foundation_models().get("modelSummaries", [])
+        for m in summaries:
+            mid = m.get("modelId", "")
+            # Match: modelId contains the bare name (e.g. "claude-haiku-4-5" in
+            # "anthropic.claude-haiku-4-5-20251001-v1:0")
+            if model in mid:
+                _bedrock_model_cache[model] = mid
+                return mid
+    except Exception:
+        pass
+    return model
+
+
 def _bedrock_request_handler(client, model, system, messages, tools, max_tokens, temperature):
     """Transport for AWS Bedrock — uses boto3 Converse API (provider-agnostic)."""
     import boto3
@@ -201,7 +231,9 @@ def _bedrock_request_handler(client, model, system, messages, tools, max_tokens,
 
     try:
         session = boto3.Session(**session_kwargs)
-        br = session.client("bedrock-runtime", region_name=get("bedrock.region", "us-east-1"))
+        region = get("bedrock.region", "us-east-1")
+        model = _bedrock_resolve_model(session, region, model)
+        br = session.client("bedrock-runtime", region_name=region)
 
         kwargs: dict = {
             "modelId": model,
