@@ -74,13 +74,12 @@ def _extract_raw_chunks(chunks: list[dict], log_fn=None) -> list[dict]:
     try:
         from core.config import get_micro_model
         model = get_micro_model()
-    except RuntimeError as e:
+        from core.llm_client import LLMClient
+        client = LLMClient()
+    except Exception as e:
         if log_fn:
-            log_fn(f"micro-model not configured, skipping extraction: {e}")
+            log_fn(f"micro-model setup failed, skipping extraction: {e}")
         return chunks
-
-    from core.llm_client import LLMClient
-    client = LLMClient()
 
     result = list(chunks)
     for idx in raw_indices:
@@ -681,7 +680,6 @@ class LogAnalyst:
         chunks = parse_chunks(raw)
         if not chunks:
             return
-        chunks = _extract_raw_chunks(chunks, log_fn=self._log)
         if self._store:
             try:
                 self._store.add_chunks(chunks)
@@ -739,6 +737,10 @@ class LogAnalyst:
         self._log(f"[dim]retry #{attempt} in {wait:.0f}s — {reason}[/dim]")
 
     def _analyse(self, chunks: list[dict]) -> None:
+        try:
+            chunks = _extract_raw_chunks(chunks, log_fn=self._log)
+        except Exception as e:
+            self._log(f"extraction error (continuing with raw chunks): {e}")
         text = chunks_to_text(chunks)
         if not text.strip():
             return

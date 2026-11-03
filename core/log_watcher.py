@@ -100,5 +100,5 @@ class LogWatcher:
                 else:
                     # Incomplete — buffer until next poll brings a prompt
                     self._buffers[key] = data
-            except OSError:
+            except Exception:
                 pass
