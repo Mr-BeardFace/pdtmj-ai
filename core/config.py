@@ -356,9 +356,9 @@ _PROVIDER_FAST_DEFAULTS: dict[str, str] = {
 }
 
 _PROVIDER_MICRO_DEFAULTS: dict[str, str] = {
-    "anthropic":     "claude-haiku-4-6",
-    "anthropic-sub": "claude-haiku-4-6",
-    "bedrock":       "claude-haiku-4-6",
+    "anthropic":     "claude-haiku-5-5",
+    "anthropic-sub": "claude-haiku-5-5",
+    "bedrock":       "claude-haiku-5-5",
 }
 
 

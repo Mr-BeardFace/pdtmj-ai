@@ -18,6 +18,10 @@ _ANTHROPIC_PER_MTOK: dict[str, dict[str, float]] = {
         "input": 3.00, "output": 15.00,
         "cache_read": 0.30, "cache_write": 3.75,
     },
+    "claude-haiku-5-5": {
+        "input": 0.10, "output": 0.50,
+        "cache_read": 0.01, "cache_write": 0.0125,
+    },
     "claude-haiku-4-5-20251001": {
         "input": 0.80, "output": 4.00,
         "cache_read": 0.08, "cache_write": 1.00,
