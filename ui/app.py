@@ -1793,7 +1793,14 @@ class PentestApp(App):
         "Answer concisely and tactically. "
         "NEVER use web search with target IPs, hostnames, discovered credentials, "
         "or anything that could reveal the operation to external services. "
-        "Public CVEs, tool usage, and general techniques only."
+        "Public CVEs, tool usage, and general techniques only.\n\n"
+        "WEB SEARCH DISCIPLINE: Stay focused on the specific question asked. "
+        "Do not branch into tangential topics, background reading, or "
+        "'while we're at it' searches. One query per discrete fact needed. "
+        "Stop searching as soon as you have enough to answer — do not "
+        "corroborate across multiple sources unless accuracy is critical. "
+        "Summarize findings immediately; do not queue more searches to "
+        "'round out' an answer that is already sufficient."
     )
 
     def _build_chat_state(self) -> str:
@@ -1893,7 +1900,7 @@ class PentestApp(App):
         from core.llm_client import LLMClient
         from core.config import get as _cfg_get, get_global_model
 
-        _MAX_TOOL_ROUNDS = 10
+        _MAX_TOOL_ROUNDS = 30
 
         try:
             op = ""
@@ -1956,9 +1963,13 @@ class PentestApp(App):
                     if fn is None:
                         result = {"error": f"unknown tool: {tb.name}"}
                     else:
-                        self._activity(
-                            f"[dim]⚙ {tb.name}([/dim]"
-                            f"[dim]{_json.dumps(tb.input, default=str)[:200]}[/dim][dim])[/dim]")
+                        if tb.name == "web_search":
+                            q = tb.input.get("query", "")
+                            self._activity(f"[dim]🔍 Searching web for:[/dim] {q}")
+                        elif tb.name == "fetch_url":
+                            self._activity(f"[dim]🌐 Fetching:[/dim] {tb.input.get('url', '')[:120]}")
+                        else:
+                            self._activity(f"[dim]⚙ {tb.name}({_json.dumps(tb.input, default=str)[:200]})[/dim]")
                         try:
                             result = fn(**tb.input)
                         except Exception as e:
