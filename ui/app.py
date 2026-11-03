@@ -238,6 +238,13 @@ DataTable > .datatable--cursor {
     padding: 0 1;
 }
 
+#next-steps-content {
+    height: 1fr;
+    background: #0d1117;
+    scrollbar-color: #30363d #0d1117;
+    padding: 0 1;
+}
+
 /* ── Shared ────────────────────────────────────── */
 
 .pane-header {
@@ -749,7 +756,7 @@ class PentestApp(App):
                             yield ListView(id="findings-list")
                     with Vertical(id="next-steps-container"):
                         yield Static("● SUGGESTED COMMANDS", classes="pane-header", id="next-steps-label")
-                        yield Static("[dim]No suggested commands yet[/dim]", id="next-steps-content")
+                        yield RichLog(markup=True, highlight=False, wrap=False, auto_scroll=False, id="next-steps-content")
                 else:
                     yield Static("● FINDINGS", classes="pane-header")
                     yield ListView(id="findings-list")
@@ -2766,8 +2773,9 @@ class PentestApp(App):
         except Exception:
             pass
         try:
-            self.query_one("#next-steps-content", Static).update(
-                "[dim]No suggested commands yet[/dim]")
+            ns = self.query_one("#next-steps-content", RichLog)
+            ns.clear()
+            ns.write("[dim]No suggested commands yet[/dim]")
         except Exception:
             pass
 
@@ -2792,7 +2800,7 @@ class PentestApp(App):
             await info_tabs.add_pane(TabPane("Findings", ListView(id="findings-list"),                      id="tab-findings"))
             await next_steps.mount(
                 Static("● SUGGESTED COMMANDS", classes="pane-header", id="next-steps-label"),
-                Static("[dim]No suggested commands yet[/dim]", id="next-steps-content"),
+                RichLog(markup=True, highlight=False, wrap=False, auto_scroll=False, id="next-steps-content"),
             )
         else:
             info_tabs = TabbedContent(id="info-tabs")
@@ -3033,7 +3041,7 @@ class PentestApp(App):
 
     def _refresh_next_steps(self) -> None:
         try:
-            ns = self.query_one("#next-steps-content", Static)
+            ns = self.query_one("#next-steps-content", RichLog)
         except Exception:
             return
         _DEAD = {"dead", "exhausted", "skipped", "confirmed", "refuted"}
@@ -3074,10 +3082,12 @@ class PentestApp(App):
             if len(entries) >= 5:
                 break
 
+        ns.clear()
         if not entries:
-            ns.update("[dim]No commands available[/dim]")
+            ns.write("[dim]No commands available[/dim]")
         else:
-            ns.update("\n".join(entries))
+            for entry in entries:
+                ns.write(entry)
 
     # ── Event handler ─────────────────────────────────────────────────────────
 
