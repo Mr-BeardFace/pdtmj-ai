@@ -475,11 +475,13 @@ def _fetch_models_raw(provider: str = "") -> tuple[list[dict], str]:
     from core.config import get
     from core.llm_client import models_url_for
     provider = (provider or get("active_provider", "anthropic")).lower()
-    spec = PROVIDERS.get(provider)
+    base_provider = provider.split(".")[0]
+    from core.llm_client import get_provider as _get_provider
+    spec = _get_provider(provider)
     if spec is None:
         return [], f"Unknown provider: {provider!r}  (supported: {', '.join(_PROVIDER_NAMES)})"
     # Bedrock uses boto3, not an HTTP models endpoint
-    if provider == "bedrock":
+    if base_provider == "bedrock":
         summaries, err = _bedrock_fetch()
         if err:
             return [], f"Bedrock list_foundation_models failed: {err}"
@@ -1265,7 +1267,8 @@ def handle_persona_set(args: list[str]) -> tuple[list[str], bool]:
 
 def handle_provider_list() -> tuple[list[str], bool]:
     from core.config import get
-    lines = [f"Active provider: {get('active_provider', 'anthropic')}", ""]
+    active = get("active_provider", "anthropic")
+    lines = [f"Active provider: {active}", ""]
     for spec in PROVIDERS.values():
         ak = resolve_provider_key(spec)
         if spec.name == "bedrock":
@@ -1277,14 +1280,16 @@ def handle_provider_list() -> tuple[list[str], bool]:
         else:
             status = "not set"
         lines.append(f"  {spec.label:<22} {status}")
-    lines += ["", f"  Switch with: /provider set <{'|'.join(_PROVIDER_NAMES)}>"]
+    lines += ["", f"  Switch with: /provider set <{'|'.join(_PROVIDER_NAMES)}>",
+              "  Bedrock: /provider set bedrock <vendor>  (e.g. anthropic, meta)"]
     return lines, True
 
 
 def handle_provider_set(args: list[str]) -> tuple[list[str], bool]:
     if not args:
         return [f"Usage: /provider set <{'|'.join(_PROVIDER_NAMES)}>  "
-                f"(local also takes a base URL: /provider set local <http://host:port/v1>)"], False
+                f"(local also takes a base URL: /provider set local <http://host:port/v1>)",
+                "  Bedrock takes a vendor: /provider set bedrock <vendor>  (e.g. anthropic, meta)"], False
     provider = args[0].lower()
     spec = PROVIDERS.get(provider)
     if spec is None:
@@ -1306,6 +1311,24 @@ def handle_provider_set(args: list[str]) -> tuple[list[str], bool]:
                 f"       /provider set {provider} http://localhost:1234/v1    (LM Studio)",
             ], False
 
+    # Bedrock requires a vendor name (anthropic, meta, etc.)
+    if provider == "bedrock":
+        vendor = args[1].lower() if len(args) > 1 else ""
+        if not vendor:
+            return [
+                "Bedrock requires a model vendor.",
+                "  Usage: /provider set bedrock <vendor>",
+                "  Example: /provider set bedrock anthropic",
+                "  List vendors: /models providers",
+            ], False
+        active = f"bedrock.{vendor}"
+        set_value("active_provider", active)
+        out = [f"Provider set to: {active}"]
+        if not get_global_model():
+            out.append(f"  Note: set a global model — /agent set model global <model-id>")
+            out.append(f"    List models: /models list bedrock {vendor.title()}")
+        return out, True
+
     set_value("active_provider", provider)
     out = [f"Provider set to: {provider}"]
     if spec.base_url_config:
@@ -1321,11 +1344,6 @@ def handle_provider_set(args: list[str]) -> tuple[list[str], bool]:
     if not spec.native and not get_global_model():
         out.append(f"  Note: set a model for this provider — /agent set model global <id>"
                    f"  (list them with /models list {provider}).")
-    # Bedrock auto-prepends "us." to model IDs, but the provider segment still needs
-    # to be present (e.g. anthropic.claude-sonnet-4-6, not just claude-sonnet-4-6).
-    if provider == "bedrock" and not get_global_model():
-        out.append(f"  Note: set a global model — /agent set model global anthropic.claude-sonnet-4-6")
-        out.append(f"    or run /models list bedrock Anthropic to see available IDs.")
     return out, True
 
 
@@ -1620,7 +1638,7 @@ def dispatch(text: str) -> tuple[list[str], bool] | None:
             outer = args[0].lower()
             bp    = args[1] if len(args) > 1 else None
         else:
-            outer = active
+            outer = active.split(".")[0]
             bp    = args[0] if args else None
         if outer == "bedrock" and bp:
             summaries, err = _bedrock_fetch(bp)

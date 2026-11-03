@@ -103,33 +103,125 @@ class ProviderSpec:
                 f"then /provider set {self.name}")
 
 
-def _bedrock_model_id(model: str) -> str:
-    """Normalize to Bedrock cross-region inference profile: us.anthropic.<model>."""
-    if model.startswith("us."):
-        return model
-    if not model.startswith("anthropic."):
-        model = "anthropic." + model
-    return "us." + model
+def _bedrock_converse_messages(messages: list[dict]) -> list[dict]:
+    """Convert Anthropic-format messages to Bedrock Converse format."""
+    result: list[dict] = []
+    for msg in messages:
+        role = msg["role"]
+        content = msg["content"]
+        blocks: list[dict] = []
+
+        if isinstance(content, str):
+            blocks.append({"text": content})
+            result.append({"role": role, "content": blocks})
+            continue
+
+        for raw in content:
+            b = _block_as_dict(raw) if not isinstance(raw, dict) else raw
+            btype = b.get("type", "")
+            if btype == "text" and b.get("text"):
+                blocks.append({"text": b["text"]})
+            elif btype == "tool_use":
+                blocks.append({"toolUse": {
+                    "toolUseId": b.get("id", ""),
+                    "name": b.get("name", ""),
+                    "input": b.get("input", {}),
+                }})
+            elif btype == "tool_result":
+                body = b.get("content", "")
+                if isinstance(body, list):
+                    body = " ".join(
+                        (_block_as_dict(x).get("text", "")) for x in body
+                    )
+                status = "error" if b.get("is_error") else "success"
+                blocks.append({"toolResult": {
+                    "toolUseId": b.get("tool_use_id", ""),
+                    "content": [{"text": str(body)}],
+                    "status": status,
+                }})
+
+        if blocks:
+            result.append({"role": role, "content": blocks})
+    return result
+
+
+def _bedrock_converse_tools(tools: list[dict]) -> dict:
+    """Convert Anthropic tool schemas to Bedrock Converse toolConfig."""
+    specs = []
+    for tool in tools:
+        schema = dict(tool.get("input_schema", {}))
+        schema.pop("cache_control", None)
+        specs.append({"toolSpec": {
+            "name": tool["name"],
+            "description": tool.get("description", ""),
+            "inputSchema": {"json": schema},
+        }})
+    return {"tools": specs}
+
+
+def _bedrock_converse_response(resp: dict) -> "_Message":
+    """Convert Bedrock Converse response to our internal _Message format."""
+    content: list = []
+    output_msg = resp.get("output", {}).get("message", {})
+    for block in output_msg.get("content", []):
+        if "text" in block:
+            content.append(_TextBlock(type="text", text=block["text"]))
+        elif "toolUse" in block:
+            tu = block["toolUse"]
+            content.append(_ToolUseBlock(
+                type="tool_use",
+                id=tu.get("toolUseId", ""),
+                name=tu.get("name", ""),
+                input=tu.get("input", {}),
+            ))
+
+    stop_reason = resp.get("stopReason", "end_turn")
+    usage_data = resp.get("usage", {})
+    usage = _Usage(
+        input_tokens=usage_data.get("inputTokens", 0),
+        output_tokens=usage_data.get("outputTokens", 0),
+    )
+    return _Message(stop_reason=stop_reason, content=content, usage=usage)
 
 
 def _bedrock_request_handler(client, model, system, messages, tools, max_tokens, temperature):
-    """Transport for AWS Bedrock — uses AnthropicBedrock SDK with API key or IAM profile."""
-    import anthropic as _anth
+    """Transport for AWS Bedrock — uses boto3 Converse API (provider-agnostic)."""
+    import boto3
     from core.config import get
     spec = PROVIDERS.get("bedrock")
-    ak   = resolve_provider_key(spec) if spec else None
-    bc   = _anth.AnthropicBedrock(
-        api_key=ak or None,
-        aws_profile=None if ak else get("bedrock.profile", "default"),
-        aws_region=get("bedrock.region", "us-east-1"),
-    )
-    kwargs: dict = dict(model=_bedrock_model_id(model), max_tokens=max_tokens,
-                        system=system, messages=messages)
-    if tools:
-        kwargs["tools"] = tools
-    if temperature is not None:
-        kwargs["temperature"] = temperature
-    return bc.messages.create(**kwargs)
+    ak = resolve_provider_key(spec) if spec else None
+
+    session_kwargs: dict = {}
+    if ak:
+        import os
+        prev = os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
+        os.environ["AWS_BEARER_TOKEN_BEDROCK"] = ak
+    else:
+        session_kwargs["profile_name"] = get("bedrock.profile", "default")
+
+    try:
+        session = boto3.Session(**session_kwargs)
+        br = session.client("bedrock-runtime", region_name=get("bedrock.region", "us-east-1"))
+
+        kwargs: dict = {
+            "modelId": model,
+            "messages": _bedrock_converse_messages(messages),
+            "system": [{"text": system}] if system else [],
+            "inferenceConfig": {"maxTokens": max_tokens},
+        }
+        if temperature is not None:
+            kwargs["inferenceConfig"]["temperature"] = temperature
+        if tools:
+            kwargs["toolConfig"] = _bedrock_converse_tools(tools)
+
+        resp = br.converse(**kwargs)
+        return _bedrock_converse_response(resp)
+    finally:
+        if ak:
+            if prev is None:
+                os.environ.pop("AWS_BEARER_TOKEN_BEDROCK", None)
+            else:
+                os.environ["AWS_BEARER_TOKEN_BEDROCK"] = prev
 
 
 PROVIDERS: dict[str, ProviderSpec] = {
@@ -199,8 +291,16 @@ def models_url_for(spec: ProviderSpec) -> str:
 
 
 def get_provider(name: str | None) -> ProviderSpec:
-    """The spec for a provider name, defaulting to Anthropic for an unknown name."""
-    return PROVIDERS.get((name or "").lower(), PROVIDERS["anthropic"])
+    """The spec for a provider name, defaulting to Anthropic for an unknown name.
+
+    Handles compound names like 'bedrock.anthropic' — matches on the base
+    provider ('bedrock') so the same ProviderSpec covers all vendors.
+    """
+    key = (name or "").lower()
+    if key in PROVIDERS:
+        return PROVIDERS[key]
+    base = key.split(".")[0]
+    return PROVIDERS.get(base, PROVIDERS["anthropic"])
 
 
 # keyring_key -> resolved secret (or None). The OS keyring is read at most ONCE per

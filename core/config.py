@@ -124,7 +124,7 @@ _DEFAULTS: dict[str, Any] = {
 
     # Canonical "fast" model used by every support LLM call (router, strategist,
     # intake, analyst, compactor). One string, provider transport converts as needed
-    # (e.g. Bedrock prepends us.anthropic. automatically). Change with /config.
+    # (e.g. Bedrock model IDs include the provider prefix). Change with /config.
     "fast_model": None,
     # Cheapest model for narrow extraction tasks (TTY log preprocessing).
     # Resolution: explicit micro_model config → provider default → error.
@@ -351,14 +351,14 @@ def get_global_model() -> str | None:
 
 
 _PROVIDER_FAST_DEFAULTS: dict[str, str] = {
-    "anthropic": "claude-sonnet-4-6",
-    "bedrock":   "claude-sonnet-4-6",
+    "anthropic":           "claude-sonnet-4-6",
+    "bedrock.anthropic":   "claude-sonnet-4-6",
 }
 
 _PROVIDER_MICRO_DEFAULTS: dict[str, str] = {
-    "anthropic":     "claude-haiku-5-5",
-    "anthropic-sub": "claude-haiku-5-5",
-    "bedrock":       "claude-haiku-5-5",
+    "anthropic":           "claude-haiku-5-5",
+    "anthropic-sub":       "claude-haiku-5-5",
+    "bedrock.anthropic":   "claude-haiku-5-5",
 }
 
 

@@ -1910,11 +1910,7 @@ class PentestApp(App):
                 except Exception:
                     pass
 
-            provider = _cfg_get("active_provider", "anthropic")
-            model = get_global_model() or (
-                "anthropic.claude-sonnet-4-6" if provider == "bedrock"
-                else "claude-sonnet-4-6"
-            )
+            model = get_global_model() or "claude-sonnet-4-6"
             client = LLMClient()
             tool_schemas, tool_funcs = self._chat_tools()
 

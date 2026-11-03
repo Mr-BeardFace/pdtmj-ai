@@ -798,8 +798,10 @@ def provider_list() -> None:
 
 @provider.command("set")
 @click.argument("name")
-def provider_set(name: str) -> None:
-    _tui(f"/provider set {name}")
+@click.argument("vendor", default="")
+def provider_set(name: str, vendor: str) -> None:
+    parts = [p for p in (name, vendor) if p]
+    _tui(f"/provider set {' '.join(parts)}")
 
 
 @cli.group()

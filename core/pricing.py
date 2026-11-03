@@ -162,7 +162,7 @@ def _get_rates(model: str) -> dict[str, float]:
     from core.config import load_config
     provider = load_config().get("active_provider", "anthropic")
 
-    if provider == "bedrock":
+    if provider.startswith("bedrock"):
         return _get_bedrock_rates(model)
 
     # Anthropic direct, anthropic-sub, or unknown — use the static table
