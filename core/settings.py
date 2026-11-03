@@ -155,6 +155,9 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("analyst_model",    "Analyst model",          "Analyst", "str",
             "Model for the background log analyst (null = fast_model)",
             allow_null=True, personas=_OPS),
+    Setting("micro_model",      "Micro model",            "Analyst", "str",
+            "Cheapest model for TTY log extraction (null = provider default, e.g. haiku)",
+            allow_null=True, personas=_OPS),
 
     # Context compaction — pentest + redteam (long autonomous runs)
     Setting("compact_threshold", "Compact threshold %", "Compaction", "int",

@@ -290,7 +290,8 @@ def op_status(op: str | None) -> None:
         _console.print(f"hosts:     {len(store.load_hosts())}")
         _console.print(f"beacons:   {len(store.load_beacons())}")
         if totals["cost_usd"]:
-            _console.print(f"cost:      [dim]↑{totals['input_tokens']} ↓{totals['output_tokens']} ${totals['cost_usd']:.2f}[/dim]")
+            cache = f" {totals.get('cache_read', 0):,}⚡" if totals.get("cache_read") else ""
+            _console.print(f"cost:      [dim]↑{totals['input_tokens']:,} ↓{totals['output_tokens']:,}{cache} ${totals['cost_usd']:.2f}[/dim]")
     finally:
         store.close()
 
@@ -298,7 +299,7 @@ def op_status(op: str | None) -> None:
 @op.command("findings")
 @click.option("--op", default=None)
 @click.option("--severity", default=None,
-              type=click.Choice(("info", "low", "medium", "high", "critical")))
+              type=click.Choice(("low", "medium", "high", "critical")))
 def op_findings(op: str | None, severity: str | None) -> None:
     """List findings."""
     store, _ = _open_store(op)
@@ -342,10 +343,12 @@ def op_creds(op: str | None, reveal: bool) -> None:
     t.add_column("Secret")
     t.add_column("Service", width=8)
     t.add_column("Source",  width=14)
+    t.add_column("V", width=1)
     for r in rows:
         secret  = r.secret or ""
         display = secret if reveal else (secret[:2] + "***" if len(secret) > 3 else secret)
-        t.add_row(r.cred_type, r.username or "", display, r.service or "", r.location or "")
+        verified = "[green]✓[/green]" if getattr(r, "verified", False) else ""
+        t.add_row(r.cred_type, r.username or "", display, r.service or "", r.location or "", verified)
     _console.print(t)
     _console.print(f"[dim]{len(rows)} credential(s)[/dim]")
 
@@ -374,19 +377,31 @@ def op_surfaces(op: str | None) -> None:
 
 @op.command("facts")
 @click.option("--op", default=None)
-def op_facts(op: str | None) -> None:
-    """List confirmed operational facts."""
+@click.option("--all", "show_all", is_flag=True, default=False,
+              help="Include superseded/disproven facts")
+def op_facts(op: str | None, show_all: bool) -> None:
+    """List operational facts."""
     store, _ = _open_store(op)
     try:
         rows = store.load_facts()
     finally:
         store.close()
+    if not show_all:
+        rows = [r for r in rows if getattr(r, "status", "active") in ("active", "confirmed")]
     if not rows:
         _console.print("[dim]no facts[/dim]")
         return
     for r in rows:
-        scope = f"  [dim][{r.scope}][/dim]" if r.scope else ""
-        _console.print(f"  {r.statement}{scope}")
+        parts = []
+        if getattr(r, "topic", ""):
+            parts.append(f"[cyan]{r.topic}[/cyan]")
+        if r.scope:
+            parts.append(f"[dim][{r.scope}][/dim]")
+        status = getattr(r, "status", "active")
+        if status not in ("active", "confirmed"):
+            parts.append(f"[yellow]{status}[/yellow]")
+        tag = "  ".join(parts)
+        _console.print(f"  {r.statement}  {tag}" if tag else f"  {r.statement}")
         if r.evidence:
             _console.print(f"    [dim]{r.evidence[:120]}[/dim]")
 
@@ -426,14 +441,9 @@ def op_leads(op: str | None, show_all: bool) -> None:
     try:
         st = store.get_analyst_state()
         frontier = st.get("frontier", "recon") if st else "recon"
-        rows = store._conn.execute(
-            "SELECT json FROM leads WHERE engagement_id = ? ORDER BY created_at DESC",
-            (store.engagement_id,),
-        ).fetchall()
+        leads = store.load_leads()
     finally:
         store.close()
-
-    leads = [json.loads(r["json"]) for r in rows]
     if not show_all:
         leads = [l for l in leads
                  if l.get("status", "open") in ("open", "active", "advancing")
