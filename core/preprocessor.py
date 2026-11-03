@@ -3,7 +3,7 @@ import re
 from pathlib import Path
 from datetime import datetime, timezone
 
-_MAX_OUTPUT_LINES = 200
+_MAX_OUTPUT_LINES = 500
 
 # ── tool-internal / TTY noise stripping ──────────────────────────────────────
 

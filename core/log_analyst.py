@@ -20,7 +20,7 @@ from pathlib import Path
 from core.paths import OPS_DIR
 from core.preprocessor import parse_chunks, chunks_to_text
 
-_MAX_CHARS      = 16_000
+_MAX_CHARS      = 32_000
 _DEBOUNCE_SECS  = 15.0
 _MAX_WAIT_SECS  = 60.0
 
