@@ -352,14 +352,15 @@ def get_global_model() -> str | None:
 
 _PROVIDER_FAST_DEFAULTS: dict[str, str] = {
     "anthropic":           "claude-sonnet-4-6",
-    "bedrock.anthropic":   "claude-sonnet-4-6",
 }
 
 _PROVIDER_MICRO_DEFAULTS: dict[str, str] = {
     "anthropic":           "claude-haiku-5-5",
     "anthropic-sub":       "claude-haiku-5-5",
-    "bedrock.anthropic":   "claude-haiku-5-5",
 }
+# Bedrock model IDs are version-specific (e.g. anthropic.claude-haiku-4-5-20251001-v1:0)
+# and vary by region — no sensible default. Operator must set explicitly via
+# /config fast_model and /config micro_model.
 
 
 def get_fast_model() -> str:
@@ -376,9 +377,11 @@ def get_fast_model() -> str:
         raise RuntimeError("No active_provider configured — set a provider first")
     default = _PROVIDER_FAST_DEFAULTS.get(provider)
     if not default:
+        hint = " (use the full Bedrock model ID, e.g. from /models list)" \
+            if provider.startswith("bedrock") else ""
         raise RuntimeError(
             f"No fast_model configured for provider {provider!r} — "
-            f"set it with /config fast_model <model-id>")
+            f"set it with /config fast_model <model-id>{hint}")
     return default
 
 
@@ -396,9 +399,11 @@ def get_micro_model() -> str:
         raise RuntimeError("No active_provider configured — set a provider first")
     default = _PROVIDER_MICRO_DEFAULTS.get(provider)
     if not default:
+        hint = " (use the full Bedrock model ID, e.g. from /models list)" \
+            if provider.startswith("bedrock") else ""
         raise RuntimeError(
             f"No micro_model configured for provider {provider!r} — "
-            f"set it with /config micro_model <model-id>")
+            f"set it with /config micro_model <model-id>{hint}")
     return default
 
 
