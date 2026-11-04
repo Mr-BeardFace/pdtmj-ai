@@ -238,7 +238,9 @@ def _bedrock_request_handler(client, model, system, messages, tools, max_tokens,
         prev = os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
         os.environ["AWS_BEARER_TOKEN_BEDROCK"] = ak
     else:
-        session_kwargs["profile_name"] = get("bedrock.profile", "default")
+        profile = get("bedrock.profile", "")
+        if profile:
+            session_kwargs["profile_name"] = profile
 
     try:
         session = boto3.Session(**session_kwargs)
