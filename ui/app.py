@@ -243,6 +243,11 @@ DataTable > .datatable--cursor {
     background: #0d1117;
     scrollbar-color: #30363d #0d1117;
     padding: 0 1;
+    overflow-x: auto;
+}
+
+#next-steps-content Static {
+    width: auto;
 }
 
 /* ── Shared ────────────────────────────────────── */
@@ -3098,7 +3103,7 @@ class PentestApp(App):
             markup = f"[{oc}]{lbl:4s}[/{oc}]  [dim]{_esc(why)}[/dim]\n      [bold]{_esc(cmd)}[/bold]"
             ns.append(ListItem(Static(markup, markup=True)))
             self._cmd_list.append(cmd)
-            if len(self._cmd_list) >= 5:
+            if len(self._cmd_list) >= 8:
                 break
 
     # ── Event handler ─────────────────────────────────────────────────────────
