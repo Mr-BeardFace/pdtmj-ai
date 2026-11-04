@@ -248,6 +248,11 @@ LEADS — next attack actions on the kill chain:
   "superseded" = a newer lead replaces this one.
   Reference leads by their [ID] shown in the state summary. This is critical — always close leads that the logs show were attempted.
 
+LEAD QUALITY RULES:
+1. Close on answer, not exact command — if a command's output answers the question a lead was asking, update it. Example: `ls /opt/` showing no backupScript.sh satisfies a lead for `ls /opt/backupScript.sh`.
+2. One lead per purpose — before emitting a new lead, check if an existing lead covers the same intent (same technique + same user context = same lead, regardless of command syntax, IP vs hostname, or path specifics). If so, widen the existing lead's description via lead_updates instead.
+3. Supersede on stage change — when the operator gains meaningfully better access (new user shell, lateral movement, privesc), mark prior-stage leads that are now redundant as superseded.
+
 SURFACES — attack surface map:
 - A surface is a (host, service, port) unit. Emit one when a new service/port is discovered.
 - fingerprint: product/version banner if visible in logs.
@@ -784,9 +789,10 @@ class LogAnalyst:
                         "- hosts: only add hosts for target IPs seen in op-tagged commands with output confirming they exist.\n"
                         "- credentials: only add credentials whose secret is NOT already listed above. Same username+hash = skip.\n"
                         "- findings: only add findings NOT already listed above (match on title+target). ONLY from op-tagged commands.\n"
-                        "- leads: only add NEW leads not already covered above. ONLY from evidence in op-tagged commands.\n"
-                        "- lead_updates: update status of existing leads shown above when evidence warrants it. "
-                        "Reference by [ID]. Mark completed/dead-end/superseded as appropriate. THIS IS CRITICAL — always close leads the operator already executed or that failed.\n"
+                        "- leads: only add NEW leads whose purpose isn't already covered by an existing lead. Same intent = update the existing lead, don't duplicate. ONLY from evidence in op-tagged commands.\n"
+                        "- lead_updates: update status of existing leads when evidence warrants it. "
+                        "Reference by [ID]. Close leads whose PURPOSE was answered by log output, even if the exact command differs. "
+                        "Mark completed/dead-end/superseded. Supersede prior-stage leads when the operator advances access.\n"
                         "- auth_attempts: add every auth event seen in the new logs.\n"
                         "- version_lookups: when you see a service product+version in the logs, emit it here. Only for NEW versions not already in facts as cve-* topics.\n"
                         "- facts: use topic slugs to consolidate. Same topic = update in place, don't create duplicates. Mark superseded/disproven when invalidated.\n"
