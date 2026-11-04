@@ -23,10 +23,10 @@ _ANSI_BYTES = re.compile(
 # Prompt patterns that signal "command finished, shell is waiting for input"
 _PROMPT_BOUNDARY = re.compile(
     rb"(?:"
-    rb"[$#>]\s*$"                       # generic prompt ending
+    rb"[$#>]\s*(?:\[.*?\]\s*)*$"        # prompt ending (tolerates rprompt badges)
     rb"|Password:\s*$"                  # password prompt (su, sudo, ssh)
-    rb"|\$ $"                           # bare dollar prompt
-    rb")"
+    rb")",
+    re.MULTILINE,
 )
 
 
