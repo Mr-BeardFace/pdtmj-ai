@@ -243,6 +243,9 @@ DataTable > .datatable--cursor {
     background: #0d1117;
     scrollbar-color: #30363d #0d1117;
     padding: 0 1;
+}
+
+#next-steps-content > ListItem {
     overflow-x: auto;
 }
 
