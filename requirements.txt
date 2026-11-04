@@ -11,6 +11,7 @@ cryptography>=42.0.0
 textual>=0.47.0
 paramiko>=3.4.0
 keyring>=24.0.0
+pyte>=0.8.0
 
 # OCR for the captcha_solve tool (needs the system `tesseract-ocr` binary too)
 pytesseract>=0.3.10

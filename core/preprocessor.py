@@ -124,6 +124,19 @@ _REMOTE_PROMPT = re.compile(
     r"[$#>]\s*$"
 )
 
+_REMOTE_PROMPT_CMD = re.compile(
+    r"^"
+    r"(?:[0-9];[^\[]*)?+"
+    r"(?:"
+    r"\[[\w\-\.]+@[\w\-\.][^\]]*\]"
+    r"|[\w\-\.]+@[\w\-\.]+[:/~]"
+    r"|[\w\-\.]+:[/~]"
+    r")"
+    r"[^\n]{0,60}?"
+    r"[$#>]\s+"
+    r"(\S.*)$"
+)
+
 _SHELL_IDLE_OSC = re.compile(
     r"^2;[\w\-\.]+@[\w\-\.]+[:/]"
 )
@@ -187,7 +200,7 @@ def _reconstruct_pty_echo(lines: list[str]) -> tuple[str, list[str]]:
     return "".join(cmd_parts), []
 
 
-_PROMPT_ID = re.compile(r"([\w\-\.]+)@([\w\-\.]+).*?([$#])\s*$")
+_PROMPT_ID = re.compile(r"([\w\-\.]+)@([\w\-\.]+).*?([$#])\s*")
 
 def _prompt_identity(prompt: str) -> tuple[str, str, str] | None:
     m = _PROMPT_ID.search(prompt)
@@ -238,6 +251,7 @@ class _Block:
         self.context = context
         self.identity = identity
         self.command_title: str | None = None
+        self.known_command: str | None = None
         self.lines: list[str] = []
         self.extra_output: list[str] = []
         self._title_at: int = -1
@@ -261,10 +275,18 @@ class _Block:
 
     def finalize(self) -> dict | None:
         content = [l for l in self.lines if l.strip() and not _OSC_REMNANT.match(l)]
-        if not content and not self.command_title and not self.extra_output:
+        if not content and not self.command_title and not self.extra_output and not self.known_command:
             return None
 
         ts = self.timestamp or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+        if self.known_command:
+            return self._tag({
+                "timestamp": ts,
+                "command": self.known_command,
+                "output": "\n".join(content[:_MAX_OUTPUT_LINES]).strip(),
+                "context": self.context,
+            })
 
         if self.command_title:
             if self._title_at >= 0:
@@ -354,7 +376,6 @@ def parse_chunks(raw: bytes) -> list[dict]:
 
     chunks: list[dict] = []
     current: _Block | None = None
-    learned_prompt: str | None = None
     learned_id: tuple[str, str, str] | None = None
 
     for line in lines:
@@ -392,14 +413,21 @@ def parse_chunks(raw: bytes) -> list[dict]:
                 if chunk:
                     chunks.append(chunk)
             current = _Block(timestamp=m.group(1), context="local")
+            rest = stripped[m.end():].strip()
+            if rest:
+                current.known_command = rest
             continue
 
-        is_remote = stripped == learned_prompt
-        if not is_remote and _REMOTE_PROMPT.match(stripped):
+        remote_cmd_rest = ""
+        is_remote = False
+        rm = _REMOTE_PROMPT.match(stripped) or _REMOTE_PROMPT_CMD.match(stripped)
+        if rm:
             is_remote = True
+            if rm.lastindex:
+                remote_cmd_rest = rm.group(1)
             new_id = _prompt_identity(stripped)
-            if learned_prompt is None:
-                learned_prompt, learned_id = stripped, new_id
+            if learned_id is None:
+                learned_id = new_id
             elif new_id and learned_id and new_id != learned_id:
                 if current is not None:
                     chunk = current.finalize()
@@ -407,7 +435,7 @@ def parse_chunks(raw: bytes) -> list[dict]:
                         chunks.append(chunk)
                     current = None
                 chunks.append(_make_session_event(learned_id, new_id))
-                learned_prompt, learned_id = stripped, new_id
+                learned_id = new_id
 
         if is_remote:
             if current is not None:
@@ -415,6 +443,8 @@ def parse_chunks(raw: bytes) -> list[dict]:
                 if chunk:
                     chunks.append(chunk)
             current = _Block(timestamp=None, context="remote", identity=learned_id)
+            if remote_cmd_rest:
+                current.known_command = remote_cmd_rest
             continue
 
         if current is not None:
