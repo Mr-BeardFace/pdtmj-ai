@@ -542,16 +542,41 @@ class EngagementStore:
         target: str = "", technique: str = "",
         command: str = "", rationale: str = "",
         opsec: str = "medium", insight: str = "routine",
-        notes: str = "",
+        notes: str = "", intent: str = "",
     ) -> None:
-        import hashlib
+        import hashlib, json as _json
         from core.leads import Lead
+
+        # Intent-based dedup: if an open lead with the same intent exists, update it
+        if intent:
+            rows = self._conn.execute(
+                "SELECT id, json FROM leads WHERE engagement_id = ?",
+                (self.engagement_id,),
+            ).fetchall()
+            for row in rows:
+                existing = _json.loads(row["json"])
+                if existing.get("intent") == intent and existing.get("status") in ("open", "active", "advancing"):
+                    existing["description"] = description
+                    if command:
+                        existing["command"] = command
+                    if rationale:
+                        existing["rationale"] = rationale
+                    if prior:
+                        existing["prior"] = prior
+                    self._conn.execute(
+                        "UPDATE leads SET json = ? WHERE id = ? AND engagement_id = ?",
+                        (_json.dumps(existing), row["id"], self.engagement_id),
+                    )
+                    self._conn.commit()
+                    return
+
         stable_id = hashlib.sha256(
-            f"{description.lower().strip()}|{target.lower().strip()}".encode()
+            f"{(intent or description).lower().strip()}|{target.lower().strip()}".encode()
         ).hexdigest()[:8]
         lead = Lead(
             id=stable_id,
             kind=technique or "vuln",
+            intent=intent,
             description=description,
             technique=technique,
             target=target,

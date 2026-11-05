@@ -232,6 +232,8 @@ FINDINGS — security observations (STRICT):
 LEADS — next attack actions on the kill chain:
 - leads are concrete next steps ranked by their potential kill-chain advancement.
 - ONLY emit leads based on evidence from op-tagged commands with actual output. No leads from local setup commands.
+- intent: REQUIRED short kebab-case slug identifying this lead's purpose (e.g. "imaps-login-kevin", "pwnkit-pkexec-check", "backupscript-write-olivetin-root"). This is the dedup key — same intent = same lead.
+- description: ≤80 chars. WHAT to do and TO WHAT — not how (that's in command) or why (that's in rationale).
 - reach_level: what level the lead REACHES if successful — "recon"|"service"|"vuln"|"exploited"|"foothold"|"user"|"privesc"|"root"
 - prior: 0.0–1.0 estimated likelihood this advances (0.3 = unlikely, 0.5 = plausible, 0.8 = strong)
 - cost: "cheap" (< 5 min, no tooling) | "medium" | "expensive" (requires setup, risk, or time)
@@ -250,8 +252,9 @@ LEADS — next attack actions on the kill chain:
 
 LEAD QUALITY RULES:
 1. Close on answer, not exact command — if a command's output answers the question a lead was asking, update it. Example: `ls /opt/` showing no backupScript.sh satisfies a lead for `ls /opt/backupScript.sh`.
-2. One lead per purpose — before emitting a new lead, check if an existing lead covers the same intent (same technique + same user context = same lead, regardless of command syntax, IP vs hostname, or path specifics). If so, widen the existing lead's description via lead_updates instead.
+2. One intent, one lead — before emitting a lead, check the open leads list for a matching intent slug. If one exists, do NOT emit a new lead — use lead_updates to update the existing one, or skip it entirely. Two leads with the same intent is always wrong.
 3. Supersede on stage change — when the operator gains meaningfully better access (new user shell, lateral movement, privesc), mark prior-stage leads that are now redundant as superseded.
+4. Dead intents stay dead — if an intent appears in the dead-end list, do NOT emit a new lead with the same intent unless the approach is fundamentally different (different user context, different vulnerability, different access path). Rename the intent if the approach genuinely differs.
 
 SURFACES — attack surface map:
 - A surface is a (host, service, port) unit. Emit one when a new service/port is discovered.
@@ -305,6 +308,8 @@ ADVISORY format (two lines per note, blank line between notes):
   Advisory is FORWARD-LOOKING ONLY — suggest what the operator should do next based on what the logs revealed.
   NEVER narrate, summarize, or comment on actions the operator already performed. They know what they did.
   NEVER emit advisory notes about local setup commands (VPN, /etc/hosts, tool installs).
+  NEVER re-suggest an action already in the recent advisories below unless NEW evidence changes the approach.
+  If the primary path hasn't changed since the last advisory, emit an empty string — silence is fine.
   Tone: factual and neutral. The operator decides priority — never use urgency words
   like "immediately", "critical", "must", "urgent", or "required".
   Empty string if nothing new to suggest.
@@ -403,7 +408,8 @@ _ANALYZE_TOOL = {
                 "items": {
                     "type": "object",
                     "properties": {
-                        "description": {"type": "string"},
+                        "intent":      {"type": "string", "description": "Short kebab-case slug for this lead's purpose (e.g. 'imaps-login-kevin', 'backupscript-write-olivetin-root'). Dedup key — same intent = same lead, never duplicate."},
+                        "description": {"type": "string", "description": "≤80 chars. WHAT to do and TO WHAT. Not how (use command) or why (use rationale)."},
                         "target":      {"type": "string"},
                         "technique":   {"type": "string"},
                         "reach_level": {
@@ -418,7 +424,7 @@ _ANALYZE_TOOL = {
                         "insight":   {"type": "string", "enum": ["routine", "notable"]},
                         "notes":     {"type": "string"},
                     },
-                    "required": ["description", "reach_level"],
+                    "required": ["intent", "description", "reach_level"],
                 },
             },
             "auth_attempts": {
@@ -790,7 +796,7 @@ class LogAnalyst:
                         "- hosts: only add hosts for target IPs seen in op-tagged commands with output confirming they exist.\n"
                         "- credentials: only add credentials whose secret is NOT already listed above. Same username+hash = skip.\n"
                         "- findings: only add findings NOT already listed above (match on title+target). ONLY from op-tagged commands.\n"
-                        "- leads: only add NEW leads whose purpose isn't already covered by an existing lead. Same intent = update the existing lead, don't duplicate. ONLY from evidence in op-tagged commands.\n"
+                        "- leads: check the open leads list for matching intent slugs FIRST. If an open lead with the same intent exists, do NOT emit a new one. Same intent = same lead. ONLY from evidence in op-tagged commands.\n"
                         "- lead_updates: update status of existing leads when evidence warrants it. "
                         "Reference by [ID]. Close leads whose PURPOSE was answered by log output, even if the exact command differs. "
                         "Mark completed/dead-end/superseded. Supersede prior-stage leads when the operator advances access.\n"
@@ -893,6 +899,7 @@ class LogAnalyst:
                 if not lead.get("description"):
                     continue
                 s.add_lead_from_analyst(
+                    intent=lead.get("intent", ""),
                     description=lead["description"],
                     reach_level=lead.get("reach_level", "vuln"),
                     prior=float(lead.get("prior", 0.5)),
@@ -954,7 +961,7 @@ class LogAnalyst:
                                    advisory=advisory, opsec_level=opsec_level)
             s.add_analyst_cycle(frontier_level=new_frontier, summary=op_picture,
                                 op_picture=op_picture, advisory=advisory,
-                                next_steps=[l["description"] for l in _lst("leads")[:5]])
+                                next_steps=[l.get("intent") or l["description"] for l in _lst("leads")[:5]])
 
             totals    = s.get_token_summary()
             n_notable = s.count_notable_open_leads()
@@ -1070,29 +1077,43 @@ class LogAnalyst:
                 lines.append("  none")
 
             leads_rows = s._conn.execute(
-                "SELECT json FROM leads WHERE engagement_id = ? ORDER BY created_at",
+                "SELECT json, created_at FROM leads WHERE engagement_id = ? ORDER BY created_at",
                 (s.engagement_id,),
             ).fetchall()
-            leads = [json.loads(r["json"]) for r in leads_rows]
-            open_leads = [l for l in leads if l.get("status", "open") in ("open", "active", "advancing")]
-            closed_leads = [l for l in leads if l.get("status", "open") not in ("open", "active", "advancing")]
-            lines.append(f"\nOpen leads ({len(open_leads)}, {len(closed_leads)} closed):")
-            for l in open_leads:
-                notes = l.get("notes", "")
-                lines.append(f"  [{l['id']}] [{l.get('reach_level','?')}] {l['description']}  {notes}")
+            now_ts = datetime.now(timezone.utc)
+            leads = [(json.loads(r["json"]), r["created_at"]) for r in leads_rows]
+            open_leads = [(l, ts) for l, ts in leads if l.get("status", "open") in ("open", "active", "advancing")]
+            closed_leads = [(l, ts) for l, ts in leads if l.get("status", "open") not in ("open", "active", "advancing")]
+            lines.append(f"\nOpen leads ({len(open_leads)}, {len([l for l,_ in closed_leads])} closed):")
+            for l, ts in open_leads:
+                try:
+                    created = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    age_min = int((now_ts - created).total_seconds() / 60)
+                    age_str = f"{age_min}m" if age_min < 120 else f"{age_min // 60}h"
+                except Exception:
+                    age_str = "?"
+                intent_tag = l.get("intent", "")
+                if intent_tag:
+                    lines.append(f"  [{l['id']}] [{l.get('reach_level','?')}] {intent_tag}  prior={l.get('prior','?')}  ({age_str} old)  {l['description'][:80]}")
+                else:
+                    lines.append(f"  [{l['id']}] [{l.get('reach_level','?')}] {l['description'][:80]}  prior={l.get('prior','?')}  ({age_str} old)")
             if not open_leads:
                 lines.append("  none")
 
-            # Show recent dead-ends so analyst doesn't re-suggest them
-            dead_ends = [l for l in closed_leads if l.get("status") in ("dead-end", "exhausted", "refuted")]
+            # Show dead-end intents so analyst doesn't re-suggest them
+            dead_ends = [(l, ts) for l, ts in closed_leads if l.get("status") in ("dead-end", "exhausted", "refuted")]
             if dead_ends:
-                lines.append(f"\nDead-end leads ({len(dead_ends)}) — do NOT re-suggest these:")
-                for l in dead_ends[-10:]:
+                lines.append(f"\nDead-end intents ({len(dead_ends)}) — do NOT re-suggest ANY variant:")
+                for l, _ in dead_ends[-15:]:
                     reason = ""
                     for line in (l.get("notes") or "").splitlines():
                         if line.startswith("status_reason:"):
                             reason = line.split(":", 1)[1].strip()
-                    lines.append(f"  ✗ {l['description']}" + (f"  ({reason})" if reason else ""))
+                    intent_tag = l.get("intent", "")
+                    if intent_tag:
+                        lines.append(f"  x {intent_tag}" + (f" — {reason[:100]}" if reason else ""))
+                    else:
+                        lines.append(f"  x {l['description'][:80]}" + (f" — {reason[:100]}" if reason else ""))
 
             recent_adv = s._conn.execute(
                 "SELECT advisory FROM analyst_cycles WHERE engagement_id = ? AND advisory != ''"

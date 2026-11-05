@@ -68,7 +68,8 @@ def level_of(name: str) -> int:
 class Lead(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
     kind: str                       # surface|vuln|cred|foothold|misconfig|pivot|escalation|recon
-    description: str                # the concrete next action to attempt
+    intent: str = ""                # short kebab-case slug for dedup (e.g. "imaps-login-kevin")
+    description: str                # ≤80 char summary — what and to what, not how or why
     technique: str = ""
     target: str = ""                # host/surface/url this pertains to
     reach_level: str = "vuln"       # the kill-chain rung this lead reaches IF it succeeds
