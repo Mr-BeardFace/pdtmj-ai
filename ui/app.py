@@ -20,6 +20,7 @@ from textual.widgets import (
 )
 from textual import events, work
 from textual.message import Message
+from textual.suggester import Suggester
 
 from ui.commands import (
     dispatch as cmd_dispatch,
@@ -57,29 +58,32 @@ _DEFAULT_MODEL_IDS = [
 ]
 
 
-class CmdInput(TextArea):
-    """TextArea that submits on Enter, inserts newline on Shift+Enter."""
+class CmdInput(Input):
+    """Input that preserves newlines from pasted text."""
 
-    class Submitted(Message):
-        def __init__(self, text: str) -> None:
-            super().__init__()
-            self.text = text
+    def _on_paste(self, event: events.Paste) -> None:
+        event.prevent_default()
+        event.stop()
+        self.insert_text_at_cursor(event.text)
 
-    def _on_key(self, event: events.Key) -> None:
-        if event.key == "shift+enter":
-            event.prevent_default()
-            event.stop()
-            self.insert("\n")
-            return
-        if event.key == "enter":
-            event.prevent_default()
-            event.stop()
-            text = self.text.strip()
-            self.clear()
-            if text:
-                self.post_message(self.Submitted(text))
-            return
-        super()._on_key(event)
+    def insert_text_at_cursor(self, text: str) -> None:
+        # ponytail: Input.insert_text_at_cursor strips \n; we keep them
+        cur = self.cursor_position
+        before = self.value[:cur]
+        after = self.value[cur:]
+        self.value = before + text + after
+        self.cursor_position = cur + len(text)
+
+
+class DynamicSuggester(Suggester):
+    """Input ghost-text suggester driven by the app's live candidate pools."""
+
+    def __init__(self, app: "PentestApp") -> None:
+        super().__init__(use_cache=False, case_sensitive=False)
+        self._app = app
+
+    async def get_suggestion(self, value: str) -> str | None:
+        return self._app._current_suggestion(value)
 
 
 _SEV_COLOR = {
@@ -301,19 +305,6 @@ Input {
 }
 
 Input:focus {
-    border: tall #58a6ff;
-}
-
-#cmd-input {
-    height: 3;
-    background: #0d1117;
-    border: tall #30363d;
-    border-top: tall #58a6ff;
-    color: #e6edf3;
-    padding: 0 1;
-}
-
-#cmd-input:focus {
     border: tall #58a6ff;
 }
 
@@ -819,7 +810,11 @@ class PentestApp(App):
                     )
                     yield RichLog(id="cmd-log", markup=True, highlight=False, auto_scroll=True,
                                   max_lines=_CMD_LOG_MAX)
-        yield CmdInput("", id="cmd-input", language=None)
+        yield CmdInput(
+            placeholder="PDTMJ-AI ›  (/ for commands · Tab to complete)",
+            id="cmd-input",
+            suggester=DynamicSuggester(self),
+        )
 
     def on_mount(self) -> None:
         # Set up creds table columns — explicit keys, because add_columns()
@@ -921,10 +916,10 @@ class PentestApp(App):
         except Exception:
             inp = None
         if inp is not None and self.focused is inp:
-            sugg = self._current_suggestion(inp.text)
-            if sugg and sugg != inp.text:
-                inp.clear()
-                inp.insert(sugg)
+            sugg = self._current_suggestion(inp.value)
+            if sugg and sugg != inp.value:
+                inp.value = sugg
+                inp.cursor_position = len(inp.value)
                 return
         # No suggestion (or input not focused) — preserve default Tab navigation
         try:
@@ -971,10 +966,12 @@ class PentestApp(App):
 
     # ── Input handling ────────────────────────────────────────────────────────
 
-    def on_cmd_input_submitted(self, event: CmdInput.Submitted) -> None:
-        """Handle Enter in the command input."""
-        text = event.text
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        text = event.value.strip()
+        event.input.value = ""
         self._hist_idx = -1
+        if not text:
+            return
         # Keep secrets out of ↑-recallable history
         lower = text.lower()
         sensitive = lower.startswith("/key set ") or lower.startswith("/cred add ")
@@ -1009,8 +1006,8 @@ class PentestApp(App):
             self._hist_idx = len(self._cmd_history) - 1
         elif self._hist_idx > 0:
             self._hist_idx -= 1
-        inp.clear()
-        inp.insert(self._cmd_history[self._hist_idx])
+        inp.value = self._cmd_history[self._hist_idx]
+        inp.cursor_position = len(inp.value)
 
     def action_history_next(self) -> None:
         if not self._cmd_history or self._hist_idx == -1:
@@ -1018,11 +1015,11 @@ class PentestApp(App):
         inp = self.query_one("#cmd-input", CmdInput)
         if self._hist_idx < len(self._cmd_history) - 1:
             self._hist_idx += 1
-            inp.clear()
-            inp.insert(self._cmd_history[self._hist_idx])
+            inp.value = self._cmd_history[self._hist_idx]
         else:
             self._hist_idx = -1
-            inp.clear()
+            inp.value = ""
+        inp.cursor_position = len(inp.value)
 
     def action_request_quit(self) -> None:
         # Ctrl+C copies the current text selection (Textual convention) when there
@@ -2272,6 +2269,11 @@ class PentestApp(App):
             self._run_accum += time.monotonic() - self._run_start
             self._run_start = None
         self._is_running = value
+        inp = self.query_one("#cmd-input", CmdInput)
+        inp.placeholder = (
+            "⚡ send instruction to agent  (/ still works)" if value
+            else "PDTMJ-AI ›  (/ for commands)"
+        )
         self._update_status()
 
     def _welcome(self) -> None:
