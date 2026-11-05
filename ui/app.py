@@ -1583,6 +1583,7 @@ class PentestApp(App):
                                 pass
                         self._activity_store, _, _ = _ES.open_or_create(op_name)
                         self._active_op = op_name
+                        self._db_initial_load_done = False
                         # Load chat history from DB for continuity across sessions
                         with self._chat_lock:
                             self._chat_history = self._activity_store.load_chat_history(limit=20)
@@ -2168,6 +2169,8 @@ class PentestApp(App):
         if self._is_running:
             self._update_status()
 
+    _db_initial_load_done: bool = False
+
     def _poll_db(self) -> None:
         """Check for analyst DB changes and refresh only affected panes."""
         if self._activity_store is None:
@@ -2178,6 +2181,11 @@ class PentestApp(App):
         if self._active_op:
             from core.log_analyst import read_and_clear_changes
             changed = read_and_clear_changes(self._active_op)
+
+        # First poll after store is set: full load of all categories
+        if not self._db_initial_load_done:
+            self._db_initial_load_done = True
+            changed = {"activity", "hosts", "creds", "findings", "leads"}
 
         if not changed:
             self._poll_analyst_status()
