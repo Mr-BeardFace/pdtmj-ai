@@ -886,7 +886,7 @@ class PentestApp(App):
 
         self._update_status()
         self.set_interval(1.0,  self._tick_clock)  # live assessment clock
-        self.set_interval(2.0, self._poll_db)      # check for analyst changes (lightweight file check)
+        self.set_interval(10.0, self._poll_db)     # pull new analyst data from DB
         self._welcome()
 
     # ── completion ────────────────────────────────────────────────────────────
@@ -1583,7 +1583,6 @@ class PentestApp(App):
                                 pass
                         self._activity_store, _, _ = _ES.open_or_create(op_name)
                         self._active_op = op_name
-                        self._db_initial_load_done = False
                         # Load chat history from DB for continuity across sessions
                         with self._chat_lock:
                             self._chat_history = self._activity_store.load_chat_history(limit=20)
@@ -2169,52 +2168,35 @@ class PentestApp(App):
         if self._is_running:
             self._update_status()
 
-    _db_initial_load_done: bool = False
-
     def _poll_db(self) -> None:
-        """Check for analyst DB changes and refresh only affected panes."""
+        """Pull new analyst findings from DB into the activity pane (~10s interval)."""
         if self._activity_store is None:
             return
-
-        # Check what changed via lightweight file signal
-        changed: set[str] = set()
-        if self._active_op:
-            from core.log_analyst import read_and_clear_changes
-            changed = read_and_clear_changes(self._active_op)
-
-        # First poll after store is set: full load of all categories
-        if not self._db_initial_load_done:
-            self._db_initial_load_done = True
-            changed = {"activity", "hosts", "creds", "findings", "leads"}
-
-        if not changed:
-            self._poll_analyst_status()
-            return
-
         try:
             s = self._activity_store
+            # Pull activity_log rows newer than last seen
+            rows = s._conn.execute(
+                "SELECT id, ts, message FROM activity_log"
+                " WHERE engagement_id = ? AND id > ? ORDER BY id",
+                (s.engagement_id, self._db_poll_last_activity_id),
+            ).fetchall()
+            log = self.query_one("#activity-log", RichLog)
+            for r in rows:
+                self._db_poll_last_activity_id = max(self._db_poll_last_activity_id, r["id"])
+                msg = r["message"]
+                if "OPSEC" not in msg:
+                    log.write("")
+                log.write(msg)
+                self._activity_lines.append(msg)
 
-            if "activity" in changed:
-                rows = s._conn.execute(
-                    "SELECT id, ts, message FROM activity_log"
-                    " WHERE engagement_id = ? AND id > ? ORDER BY id",
-                    (s.engagement_id, self._db_poll_last_activity_id),
-                ).fetchall()
-                log = self.query_one("#activity-log", RichLog)
-                for r in rows:
-                    self._db_poll_last_activity_id = max(self._db_poll_last_activity_id, r["id"])
-                    msg = r["message"]
-                    if "OPSEC" not in msg:
-                        log.write("")
-                    log.write(msg)
-                    self._activity_lines.append(msg)
+            # Merge analyst token usage into status bar totals
+            totals = s.token_usage_totals()
+            if totals["input_tokens"] or totals["output_tokens"]:
+                self._analyst_tokens = totals
+                self._update_status()
 
-                totals = s.token_usage_totals()
-                if totals["input_tokens"] or totals["output_tokens"]:
-                    self._analyst_tokens = totals
-                    self._update_status()
-
-            if "hosts" in changed and self._is_ops_persona:
+            # Sync hosts from DB into the Hosts table
+            if self._is_ops_persona:
                 for h in s.load_hosts():
                     ports = h.get("open_ports") or []
                     for p in ports:
@@ -2224,17 +2206,18 @@ class PentestApp(App):
                         self._add_host_compact(h["ip"], hostname=h.get("hostname", ""),
                                                os_str=h.get("os", ""))
 
-            if "creds" in changed and self._is_ops_persona:
+            # Sync credentials from DB
+            if self._is_ops_persona:
                 for c in s.load_credentials():
                     self._show_cred_in_table(c.model_dump(), source="analyst")
 
-            if "findings" in changed:
-                for f in s.load_findings():
-                    self._add_finding(f.model_dump())
+            # Sync findings from DB
+            for f in s.load_findings():
+                self._add_finding(f.model_dump())
 
-            if "leads" in changed:
-                self._open_leads = s.load_leads()
-                self._refresh_next_steps()
+            # Sync leads from DB into Suggested Commands pane
+            self._open_leads = s.load_leads()
+            self._refresh_next_steps()
         except Exception:
             pass
 
