@@ -57,6 +57,26 @@ _DEFAULT_MODEL_IDS = [
 ]
 
 
+class CmdInput(TextArea):
+    """TextArea that submits on Enter, inserts newline on Shift+Enter."""
+
+    class Submitted(Message):
+        def __init__(self, text: str) -> None:
+            super().__init__()
+            self.text = text
+
+    def _on_key(self, event: events.Key) -> None:
+        if event.key == "enter":
+            event.prevent_default()
+            event.stop()
+            text = self.text.strip()
+            self.clear()
+            if text:
+                self.post_message(self.Submitted(text))
+            return
+        super()._on_key(event)
+
+
 _SEV_COLOR = {
     "critical": "bold red",
     "high":     "red",
@@ -794,7 +814,7 @@ class PentestApp(App):
                     )
                     yield RichLog(id="cmd-log", markup=True, highlight=False, auto_scroll=True,
                                   max_lines=_CMD_LOG_MAX)
-        yield TextArea("", id="cmd-input", language=None)
+        yield CmdInput("", id="cmd-input", language=None)
 
     def on_mount(self) -> None:
         # Set up creds table columns — explicit keys, because add_columns()
@@ -892,7 +912,7 @@ class PentestApp(App):
 
     def action_accept_completion(self) -> None:
         try:
-            inp = self.query_one("#cmd-input", TextArea)
+            inp = self.query_one("#cmd-input", CmdInput)
         except Exception:
             inp = None
         if inp is not None and self.focused is inp:
@@ -946,14 +966,10 @@ class PentestApp(App):
 
     # ── Input handling ────────────────────────────────────────────────────────
 
-    def _submit_cmd_input(self) -> None:
-        """Submit the cmd-input TextArea content (Enter key handler)."""
-        inp = self.query_one("#cmd-input", TextArea)
-        text = inp.text.strip()
-        inp.clear()
+    def on_cmd_input_submitted(self, event: CmdInput.Submitted) -> None:
+        """Handle Enter in the command input."""
+        text = event.text
         self._hist_idx = -1
-        if not text:
-            return
         # Keep secrets out of ↑-recallable history
         lower = text.lower()
         sensitive = lower.startswith("/key set ") or lower.startswith("/cred add ")
@@ -971,16 +987,6 @@ class PentestApp(App):
         else:
             self._dispatch(text)
 
-    def on_key(self, event: events.Key) -> None:
-        inp = self.query_one("#cmd-input", TextArea)
-        if self.focused is not inp:
-            return
-        # Enter submits; Shift+Enter inserts newline (handled by TextArea default)
-        if event.key == "enter":
-            event.prevent_default()
-            event.stop()
-            self._submit_cmd_input()
-
     def _log_session(self, event_type: str, data: dict) -> None:
         """Write to the active engagement log, if one is running."""
         logger = self._session_logger
@@ -993,7 +999,7 @@ class PentestApp(App):
     def action_history_prev(self) -> None:
         if not self._cmd_history:
             return
-        inp = self.query_one("#cmd-input", TextArea)
+        inp = self.query_one("#cmd-input", CmdInput)
         if self._hist_idx == -1:
             self._hist_idx = len(self._cmd_history) - 1
         elif self._hist_idx > 0:
@@ -1004,7 +1010,7 @@ class PentestApp(App):
     def action_history_next(self) -> None:
         if not self._cmd_history or self._hist_idx == -1:
             return
-        inp = self.query_one("#cmd-input", TextArea)
+        inp = self.query_one("#cmd-input", CmdInput)
         if self._hist_idx < len(self._cmd_history) - 1:
             self._hist_idx += 1
             inp.clear()
