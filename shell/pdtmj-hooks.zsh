@@ -192,10 +192,6 @@ pdtmj_op() {
     local ts_log="${log_dir}/tty_${ts}.log"
     local proc="${_PDTMJ_HOOKS_DIR}/log_processor.py"
     echo "pdtmj-ai: capturing TTY to ${ts_log}"
-    # Tell the log watcher which tty log is the primary terminal (where the TUI
-    # runs).  The watcher skips this file so TUI screen repaints don't feed back
-    # into the analyst.
-    echo "${ts_log##*/}" > "${log_dir}/.primary_tty"
     export _PDTMJ_IN_SCRIPT=1
     if [[ -f "$proc" ]]; then
         python3 -u "$proc" --watch "$raw_log" --out "$ts_log" &
@@ -205,7 +201,7 @@ pdtmj_op() {
     else
         script -q -f "$raw_log"
     fi
-    rm -f "$raw_log" "${log_dir}/.primary_tty"
+    rm -f "$raw_log"
     unset _PDTMJ_IN_SCRIPT
 }
 

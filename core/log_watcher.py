@@ -30,13 +30,6 @@ _PROMPT_BOUNDARY = re.compile(
 )
 
 
-_TUI_SIGS = (
-    b"\x1b[?1049h",   # alt-screen enable (Textual, vim, etc.)
-    b"\x1b[?1003h",   # all-mouse-tracking enable
-    b"\x1b[?1006h",   # SGR mouse mode
-)
-
-
 class LogWatcher:
     _SKIP_NAMES = ("sidesaddle", "debug", "pdtmj")
 
@@ -53,7 +46,6 @@ class LogWatcher:
         self._on_cursor_update = on_cursor_update
         self._cursors: dict[str, int] = {}
         self._buffers: dict[str, bytes] = {}
-        self._tui_files: set[str] = set()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -64,10 +56,6 @@ class LogWatcher:
 
     def stop(self) -> None:
         self._stop.set()
-
-    def _is_tui_data(self, data: bytes) -> bool:
-        """Detect TUI output (alt-screen, mouse tracking) in log data."""
-        return any(sig in data for sig in _TUI_SIGS)
 
     def _poll_loop(self) -> None:
         while not self._stop.wait(self._interval):
@@ -81,8 +69,6 @@ class LogWatcher:
             if any(s in name_lower for s in self._SKIP_NAMES):
                 continue
             key = str(path)
-            if key in self._tui_files:
-                continue
             try:
                 size = path.stat().st_size
             except OSError:
@@ -97,10 +83,6 @@ class LogWatcher:
                     data = f.read(size - cursor)
                 self._cursors[key] = size
                 if not data:
-                    continue
-                if self._is_tui_data(data):
-                    self._tui_files.add(key)
-                    self._buffers.pop(key, None)
                     continue
                 # Prepend any buffered data from previous incomplete polls
                 if key in self._buffers:

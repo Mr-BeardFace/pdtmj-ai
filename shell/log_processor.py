@@ -239,10 +239,15 @@ def _handle_csi(buf: LineBuffer, params: str, final: str) -> None:
     # All other CSI sequences (colors, modes, etc.) — ignore
 
 
+_ALT_SCREEN_ON  = "\x1b[?1049h"
+_ALT_SCREEN_OFF = "\x1b[?1049l"
+
+
 def watch_file(input_path: Path, output_path: Path) -> None:
     """Watch a raw TTY file and write rendered lines to output."""
     renderer = CursorRenderer()
     cursor = 0
+    alt_screen = False
     with open(output_path, "a") as out:
         while True:
             try:
@@ -252,13 +257,49 @@ def watch_file(input_path: Path, output_path: Path) -> None:
                         f.seek(cursor)
                         raw = f.read().decode("utf-8", errors="replace")
                     cursor = size
-                    for line in renderer.feed(raw):
-                        if line:
-                            out.write(line + "\n")
+                    # Track alt-screen transitions (TUI/vim/htop)
+                    for seg in _split_alt_screen(raw, alt_screen):
+                        if seg[0] == "on":
+                            alt_screen = True
+                            renderer = CursorRenderer()
+                        elif seg[0] == "off":
+                            alt_screen = False
+                            renderer = CursorRenderer()
+                        elif not alt_screen:
+                            for line in renderer.feed(seg[1]):
+                                if line:
+                                    out.write(line + "\n")
                     out.flush()
             except FileNotFoundError:
                 pass
             time.sleep(0.5)
+
+
+def _split_alt_screen(data: str, in_alt: bool):
+    """Yield segments split on alt-screen transitions.
+
+    Each yield is ("text", content) | ("on",) | ("off",).
+    """
+    pos = 0
+    while pos < len(data):
+        if in_alt:
+            idx = data.find(_ALT_SCREEN_OFF, pos)
+            if idx == -1:
+                break
+            in_alt = False
+            pos = idx + len(_ALT_SCREEN_OFF)
+            yield ("off",)
+        else:
+            idx = data.find(_ALT_SCREEN_ON, pos)
+            if idx == -1:
+                if pos < len(data):
+                    yield ("text", data[pos:])
+                break
+            if idx > pos:
+                yield ("text", data[pos:idx])
+            in_alt = True
+            pos = idx + len(_ALT_SCREEN_ON)
+            yield ("on",)
 
 
 def process_stdin(output_path: Path) -> None:
