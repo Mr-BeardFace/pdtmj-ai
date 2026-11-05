@@ -1,13 +1,12 @@
-# Please Don't Take My Job, AI!
+# Please Don't Take My Job, AI
 
-### PDTMJ-AI
+**PDTMJ-AI** — an AI-powered penetration testing and red team operations platform
 
-An autonomous, agentic penetration-testing assistant with a Textual TUI. A
-frontier-driven engine works the single highest-value lead toward the objective,
-dispatching agents (enumeration, web, Active Directory, database, network,
-exploitation/foothold, post-exploitation, reporting) over a shared engagement
-state, with credentials masked and every change to a target tracked and
-reversible.
+![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue) ![Kali Linux](https://img.shields.io/badge/Platform-Kali_Linux-557C94) ![Textual TUI](https://img.shields.io/badge/Interface-Textual_TUI-green)
+
+An AI-powered offensive security platform with two operational modes: **autonomous penetration testing** (`pentest-ctf` and `pentest` personas) driven by a frontier-based agent engine, and a **passive real-time analyst** (`pentest` and `redteam` personas) that watches your terminal, extracts hosts, credentials, and findings, and suggests what to try next — with OPSEC awareness baked in.
+
+> This started as a learning project — built to understand how LLMs interact with agents and to see what it takes to put a red teamer's way of thinking into a form an LLM can reason about. It's under active development and the internals change often.
 
 ## Demo
 
@@ -15,274 +14,218 @@ reversible.
 
 *([full-quality video](assets/demo.mp4))*
 
-## Why this exists
-
-I'm not a developer. This was vibe-coded — built with an LLM doing the heavy
-lifting because writing it by hand would have taken me far too long.
-
-The real point wasn't the tool. It was to **learn how LLMs interact with agents** —
-the orchestration, the workflow, the handoffs — and to see what it takes to put a
-**red teamer's / pentester's way of thinking** into a form an LLM can actually
-reason about and act on. If something genuinely useful falls out of that, great,
-but that was always a bonus, not the goal.
-
-So treat this as a learning project and a sandbox for ideas, not a polished
-product. It's under active, continuous testing and the internals change often.
-
 ## What it does
 
-Point it at a target with an objective; the engine enumerates, identifies attack
-surfaces, exploits what it can confirm, turns code execution into a stable
-foothold, loots and cracks credentials (offline cracking, file-format hashes, and
-NTLM capture/relay), escalates, and writes up findings. Files pulled off a target
-are saved locally and analyzed on the box; every change made to a target is
-tracked and reversible. It runs as an interactive TUI so you can watch each step,
-interrupt, feed it credentials, and steer.
+### Autonomous testing
 
-Personas tune behavior: `pentest` (full, methodical) and `pentest-ctf`
-(flag-focused, fast, pinned to a generalist agent so it solves a box without
-specialist routing).
+Point it at a target with an objective. The engine enumerates, identifies attack surfaces, exploits what it can confirm, turns code execution into a stable foothold, loots and cracks credentials, escalates privileges, and writes up findings. A frontier-driven driver always works the single highest-value lead. Available in `pentest-ctf` (fast, flag-focused) and `pentest` (methodical, full specialist routing).
 
-## How it works — agents, state, and routing
+The orchestration pipeline:
 
-The engine runs one agent at a time against a shared **engagement state**. Agents
-don't call each other — they read from that state and write back to it, and the
-driver decides who runs next.
+```
+staged port sweep → service ID → seed leads → strategist → score & pick lead → route agent → orchestrator → ingest results ↻
+```
 
-### Shared state
+### Passive analyst
 
-An agent is a system prompt plus a set of tools. Most tools shell out (nmap,
-netexec, etc.), but a few write straight into the engagement state:
+The operator runs every command. The AI watches your terminal session in real time — parsing nmap scans, credential dumps, enumeration output — and maintains a tactical picture: discovered hosts, credentials, findings, and suggested next steps with detection-risk ratings. It thinks like an adversary and advises like a senior operator, without ever touching the keyboard. Available in `pentest` and `redteam` personas.
 
-- `annotate_finding` records a finding (with a `verified` flag for proven vs.
-  suspected).
-- `record_credential` records a credential. The real secret is kept and handed to
-  the agent so it can authenticate; the operator UI and saved snapshots only ever
-  show a masked version.
-- `register_surface` records a `(host, service)` attack surface — the unit the
-  driver cycles on.
-- `record_service` records structured service detail into the target tracker — its
-  product/version, the host's DNS/LDAP hostname, any web vhosts, and whether it's
-  loopback-bound (reachable only through a pivot).
-- `record_fact` pins a confirmed operational fact — a target property or an
-  access/exec channel — so later turns act on it instead of re-deriving it.
-- `record_persistence` logs any change made to a target, with the original value
-  and the exact command to revert it.
-- `queue_followup` hands a lead to another agent.
+The analyst pipeline:
 
-Everything else an agent runs is appended to a tool log, and each agent finishes
-with a short handoff note. Before the next agent starts, the engine assembles a
-**context block** from all of this — recent tool output, known credentials, open
-surfaces, prior handoffs, and the findings so far — and puts it at the top of that
-agent's prompt. That context block is the only way work passes between agents.
+```
+shell hooks → TTY capture → log processor → LogWatcher → LLM analyst → DB → TUI
+```
 
-### The agents
+## Personas
 
-Each agent is a Markdown file (system prompt + methodology + tool scope). Shared
-methodology — like turning code execution into a stable foothold — lives in
-`_shared/` partials that multiple agents pull in.
+| Persona | Mode | Description |
+|---------|------|-------------|
+| **pentest-ctf** | Autonomous | CTF-tuned — flag-focused, aggressive. Six core agents (planning, enumeration, exploitation, post-exploitation, validation, report) with no specialist routing. Domain depth via on-demand playbook retrieval. Built for boxes. |
+| **pentest** | Hybrid | Full agent engine — all agents available, specialist routing (web, AD, database, network, cloud), methodical coverage. Ranges from fully autonomous to fully operator-driven. *In development.* |
+| **redteam** | Operator-driven | Fully passive — never executes commands. You run the op, the AI reads your logs, extracts intel, maintains the tactical picture, and suggests next moves with OPSEC/detection-risk ratings. Framed around finding SOC detection gaps. |
 
-| Agent | Phase | Role |
-|---|---|---|
-| `planning` | planning | Reasons over the enumerated surface and produces an ordered, vetted list of what to test next and why. |
-| `enumeration` | discovery | Broad, **observe-only** fingerprinting + cheap safe checks (anonymous/null/default access). Flags what responds; never exploits. |
-| `web` | assessment | Web app assessment — auth, business logic, injection, APIs, client-side. |
-| `database` | assessment | DB services — MySQL, PostgreSQL, MSSQL, MongoDB, Redis, Elasticsearch. |
-| `network` | assessment | Non-web/non-AD protocols — SMB, SSH, FTP, SMTP, SNMP, RDP, etc. |
-| `active-directory` | assessment | Windows domain — user enum, Kerberos, LDAP, lateral movement. |
-| `cloud` | assessment | AWS/GCP misconfig, exposed buckets, IAM privesc. |
-| `exploitation` | exploitation | Generalist — turns confirmed vulns into code execution and a stable foothold. Has every tool and the foothold methodology. |
-| `post-exploitation` | exploitation | Local enumeration + privilege escalation through an existing shell. |
-| `validation` | validation | Independently reproduces exploited findings and kills false positives / hallucinations. |
-| `report` | reporting | Consolidates findings and writes the final deliverable. Always runs last. |
+## How it works
 
-### The driver loop
+### pentest-ctf — fast, flag-driven
 
-The driver is **frontier-driven**: it works the single most valuable *lead* at a
-time. A lead is anything actionable — a surface, a vuln, a credential, a foothold, a
-new internal host — tagged with the kill-chain rung it would reach if it pans out:
+Six agents — planning, enumeration, exploitation, post-exploitation, validation, report — share an engagement state (SQLite, WAL mode). The **FrontierDriver** always works the single highest-value lead, scored by kill-chain position:
 
 ```
 recon → service → vuln → exploited → foothold → user → privesc → root
 ```
 
-The engine tracks how far up that ladder it has gotten, and scores each open lead by
-how much further it would push the frontier (with a nudge for higher-severity,
-still-open threads). So the next turn always goes to the lead that advances the
-engagement the most — not to whatever service happens to look the busiest.
+Phase 0 runs a staged port sweep then service identification. Each subsequent pass: pick the top lead, hand it to the right agent, the agent works it and writes back findings/credentials/new leads, re-score, repeat. No specialist routing — agents pull domain methodology via `load_playbook` on demand. Exploitation is auto-approved (no operator confirmation). A `record_flag` tool captures CTF flags.
 
-Each pass:
+### pentest — methodical, full coverage
 
-1. Pick the top-scored lead and hand it to the right agent.
-2. The agent works it and writes back — findings, credentials, a foothold — and any
-   new findings/credentials become **new leads** (a cracked password to reuse, a new
-   host to enumerate).
-3. Re-score the leads and repeat, until the objective is met, the leads dry up, or
-   the turn budget runs out.
+Same FrontierDriver loop, but with the full agent pool: all six core agents plus domain specialists (web, AD, database, network, cloud). The orchestrator routes to the specialist whose domain matches the lead. Supports the full spectrum from autonomous operation to operator-driven with AI guidance. The passive analyst also runs in this persona — terminal capture feeds the same DB the agents read from.
 
-`validation` then re-checks the exploited findings to drop false positives, and
-`report` runs last.
+> The pentest persona is in active development. Agent routing, stop conditions, and the operator interaction model are evolving.
 
-### How an agent gets picked
+### redteam — passive observation
 
-A lead's kind and rung decide the broad move (enumerate it, exploit it, escalate
-from it), and for a specific service there's a default specialist — `http → web`,
-`ldap`/`kerberos → active-directory` (a real domain controller, not a bare SMB
-host), `mysql`/`mssql`/`redis → database`, `smb`/`ssh`/`ftp`/`smtp` → network,
-`aws`/`gcp` → cloud.
+No agent engine. No command execution. Shell hooks (`pdtmj-hooks.zsh`) auto-capture your terminal session via `script(1)`. A log processor renders raw TTY output into clean text, filtering out TUI/vim alt-screen noise. The LogWatcher daemon polls for new log content and feeds it to an LLM analyst that extracts structured data — hosts, open ports, credentials, findings, leads — and writes it to the engagement DB. Every suggestion carries an OPSEC/detection-risk rating. A `record_ioc` tool captures indicators of compromise. Framed around SOC detection gaps: finding what defenders would miss is the primary objective.
 
-Selection is **reasoning-first with that map as a floor**: when a specialist is
-available, a small LLM router decides between it and the generalist `exploitation`
-agent based on the actual surface; the map is only the fallback when routing is off
-or no specialist fits. (Routing can be disabled in config, which pins everything to
-the map.)
+### Shared infrastructure
 
-Finally, the **persona controls which agents are even in play**. `pentest` exposes
-all of them — full specialist routing, surfaces worked in parallel. `pentest-ctf`
-loads only a generalist spine (enumeration, exploitation, post-exploitation,
-validation, report), so on a single box exploitation always lands on the generalist
-with no routing decision to get wrong.
+- **Engagement DB** — per-op SQLite with WAL mode, shared across agents, analyst, TUI, and CLI
 
-### Two ways to deliver domain depth: route, or retrieve
+### Analyst infrastructure
 
-There are two ways the same domain methodology reaches an agent, and the project is
-mid-transition between them:
+Runs in `pentest` and `redteam` only — not in `pentest-ctf`.
 
-- **Route to a specialist (the `pentest` persona).** A web/AD/DB surface is dispatched
-  to the `web` / `active-directory` / `database` agent — a separate run with that
-  domain's methodology as its system prompt.
-- **Retrieve a playbook (the `pentest-ctf` persona).** There are no specialists in the
-  pool; the generalist recognizes the domain from what it enumerated and calls the
-  `load_playbook` tool to pull that methodology **into its own context** — same
-  knowledge, no routing, no handoff. The `playbooks/` directory holds one document per
-  domain (`web`, `active-directory`, `database`, `network`, `cloud`); the specialist
-  agents and the playbooks are the same methodology in two delivery forms.
+- **Analyst pipeline** — shell hooks → TTY capture → log processor → LogWatcher → LLM analyst → DB
+- **C2 integration** — NightHawk C2 backend polls beacon activity and feeds it through the analyst pipeline
+- **TUI polls DB** via `PRAGMA data_version` — cheap integer check every 2s, full refresh only when data changes
 
-The retrieval model is deliberate: routing reliability stops gating domain depth, one
-agent holds the whole picture, and you only pay for the playbooks a box actually needs.
-The direction is to move the `pentest` persona onto retrieval too — a generalist that
-retrieves, run in parallel one-per-host for larger scopes.
+## The TUI
 
-Shared *foothold* methodology (turning code execution into a stable session) is handled
-a third way — a partial spliced into every exploitation-capable agent at load time — so
-the generalist and the specialists work a foothold identically.
+A Textual-based terminal interface showing:
 
-## Status
+- **Activity log** — real-time analyst output, advisories, OPSEC warnings
+- **Hosts** — discovered hosts, ports, services, OS
+- **Credentials** — extracted creds (secrets masked in UI)
+- **Findings** — vulnerabilities, misconfigurations, detection gaps
+- **Suggested Commands** — prioritized leads ranked by expected value, with OPSEC risk
+- **Chat** — direct conversation with the AI about the engagement
 
-Active development. Interfaces, agent layout, and workflow are still changing —
-see [Known limitations](#known-limitations).
+## saddle CLI
 
-## Requirements
+Shell-native CLI for managing ops without opening the TUI. Use it to query op state from a separate terminal without leaving your workflow.
 
-- **A Kali-style Linux host** (this is built and tested on Kali) with the usual
-  offensive tooling on `PATH` — `nmap`, `netexec`, `impacket`, `hashcat`, `john`,
-  `responder`, `smbclient`, etc. `install.sh` provisions what's needed.
-- **Passwordless `sudo` for the user that runs the tool.** Many tools shell out
-  to commands that need root (raw-socket scans, `/etc/hosts` edits, etc.), and
-  the engine does not stop to prompt for a password mid-run. Configure the
-  running user with `NOPASSWD` sudo.
-
-  > Yes, this is a security trade-off. It's deliberate: this runs as root in a
-  > disposable lab VM (a Kali attack box), not on anything you care about.
-
-- **Python 3.11+**, run inside a virtual environment (see Setup).
-- **An API key** for at least one provider (Anthropic, OpenRouter, or NVIDIA).
+```bash
+$ saddle start --op Enigma --persona redteam
+$ saddle op status
+$ saddle op hosts
+$ saddle op creds
+$ saddle op findings
+$ saddle op leads
+$ saddle op advisory
+$ saddle ai "what should I try next on the SMTP service?"
+$ saddle stop
+```
 
 ## Setup
 
-Run everything inside a Python virtual environment:
+### Requirements
+
+- **Kali Linux** (built and tested on Kali) with standard offensive tooling on `PATH`
+- **Python 3.11+**
+- **Passwordless sudo** for the running user — many tools need root
+- **An API key** for at least one provider (Anthropic, OpenRouter, or NVIDIA)
+
+### Install
 
 ```bash
-python -m venv venv
-source venv/bin/activate
-./install.sh
-
-python main.py
+$ python -m venv venv
+$ source venv/bin/activate
+$ ./install.sh
+$ cp config.yaml.example config.yaml
 ```
 
-Once inside the app, store a provider key (auto-detected by prefix) and select it:
+## Getting started
 
-```
+### 1. Set up a provider
+
+You need an API key for at least one LLM provider. Supported: **Anthropic**, **OpenRouter**, **NVIDIA**, **Bedrock**, and any **OpenAI-compatible** endpoint (Ollama, LM Studio, vLLM, etc.).
+
+Keys resolve in order: explicit override (`/key set`) → environment variable (e.g. `ANTHROPIC_API_KEY`) → OS keyring.
+
+```bash
+$ python main.py
+
+# Inside the TUI — set your key and provider:
 /key set sk-ant-...
 /provider set anthropic
+
+# Or for local models:
+/provider set local http://localhost:11434/v1
 ```
 
-### Local models
+### 2. Source the shell hooks
 
-Any OpenAI-compatible runtime works — Ollama, LM Studio, llama.cpp's server, vLLM.
-Point the `local` provider at its base URL and pick a model:
-
-```
-/provider set local http://localhost:11434/v1   # Ollama (LM Studio: :1234/v1)
-/agent set model global llama3.1:8b
-/models list local
-```
-
-No API key is needed for a typical local server; if yours requires one, set it with
-`/key set local <api-key>`. The base URL persists to `config.yaml` (`local_base_url`).
-
-Configuration lives in `config.yaml` (copy `config.yaml.example`). A provider key
-is resolved in order: an explicit override, then the provider's env var (e.g.
-`ANTHROPIC_API_KEY`, see `.env.example`), then the OS keyring. The env var is
-checked **before** the keyring, so an exported key skips the keyring's unlock
-prompt on a headless or SSH session:
+For the analyst pipeline (`pentest` and `redteam` personas), your terminal needs to be captured. Source the hooks in the shell where you'll run commands:
 
 ```bash
-export ANTHROPIC_API_KEY='sk-ant-...'   # avoids the Secret Service prompt
+$ source shell/pdtmj-hooks.zsh
+
+# Or add to ~/.zshrc to load automatically:
+$ echo 'source /path/to/pdtmj-ai/shell/pdtmj-hooks.zsh' >> ~/.zshrc
 ```
 
-Neither `config.yaml` nor `.env` is tracked — see `.gitignore`.
+The hooks enable: TTY capture via `script(1)` (auto-starts when an op is active), SSH/evil-winrm session wrappers (so remote sessions are captured too), command logging via `preexec`, and an RPROMPT badge showing the active op name.
 
-## Known limitations
+> Not needed for `pentest-ctf` — the autonomous engine doesn't use the analyst pipeline, so no terminal capture is required.
 
-Things I already know don't work the way I want yet — calling them out so nobody
-is surprised:
+### 3. Start your first op
 
-- **Limited LLM providers.** Anthropic, OpenRouter, NVIDIA, and any
-  OpenAI-compatible local server (Ollama, LM Studio, …). More to come.
-- **Reporting is still settling.** Recently reworked — the writer now captures a
-  story-flow narrative and CVSS-scored findings through structured tools — but it
-  hasn't been proven across many live runs, and an engagement stopped early
-  (quota/timeout) produces a draft.
-- **Copying text is flaky.** Pulling text out of the TUI panes doesn't always
-  behave.
-- **Logic and workflow are a work in progress.** Agent routing, lead handling,
-  and stop conditions are under continuous testing and tuning — expect rough
-  edges and behavior changes.
-- **Credential storage needs work.** Secrets are masked in the UI and snapshots,
-  but the underlying handling (keyring/state, on-disk artifacts) deserves a more
-  secure approach — on the list to improve.
-- General polish: this is a personal learning project, so plenty is half-built or
-  in flux at any given time.
+```bash
+# In the TUI:
+/op start Enigma pentest-ctf    # autonomous CTF — engine runs immediately
+/op start CorpNet redteam        # passive analyst — daemon starts, you run commands
 
-If something is broken in a way that isn't listed here, that's expected too — it's
-that kind of project.
+# Or from the shell:
+$ saddle start --op Enigma --persona pentest-ctf
+```
+
+What happens on `/op start`:
+
+- Op directory created at `ops/<name>/` with an engagement DB (SQLite, WAL mode)
+- **pentest / redteam:** a background daemon spawns — starts the LogWatcher, LogAnalyst, and C2 backends (if configured). Writes a `.daemon_pid` and `.badge` file.
+- **pentest-ctf / pentest:** the autonomous engine starts — sets a target and objective, then the FrontierDriver takes over.
+
+## Configuration reference
+
+40+ runtime-tunable settings covering engagement rules, parallelism, loop backstops, nudges, analyst behavior, model routing, context compaction, and cracking. All configurable via `/config <key> <value>` in the TUI or `saddle config <key> <value>` from the shell. Settings are filtered by the active persona — you only see what applies.
+
+See **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)** for the full reference with every setting, type, persona filter, and description.
+
+## Technical deep dive
+
+Detailed internals of both the autonomous orchestration pipeline (FrontierDriver, Phase 0 discovery, lead seeding, strategist, agent dispatch, result classification) and the analyst pipeline (7-stage flow from shell hooks through TTY capture, log processing, debounce, micro-model extraction, LLM analysis, and DB write).
+
+See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the full deep dive with pseudocode, data flows, and per-stage breakdowns.
+
+## Benchmarks
+
+`pentest-ctf` is regularly tested against Hack The Box machines across difficulty tiers and across providers. Updated benchmarks with the latest engine version are in progress.
+
+Metrics tracked per run:
+
+- **Result** — user flag, root flag, or partial progress
+- **Time to root** — wall-clock from `/op start` to flag capture
+- **Token spend** — input tokens, output tokens, cache hits, and estimated cost (USD)
+- **Model & provider** — which model was used, enabling cross-provider comparison
+- **Human nudges** — whether operator intervention was needed (and where the engine got stuck)
+- **Engine version** — tracking improvement across releases
+
+> Coming soon — full results table with per-box breakdowns across Easy / Medium / Hard tiers and multiple providers. Previous testing showed strong results on Easy and Medium boxes with common failure modes around privilege escalation and lateral movement on harder targets.
+
+## Status
+
+- **pentest-ctf** is the most exercised persona — regularly tested against HTB/CTF targets.
+- **pentest** is in active development — specialist routing, operator interaction, and stop conditions are evolving.
+- **redteam** analyst pipeline is functional and improving.
+- The internals change often. This is a learning project that became a real tool — expect rough edges.
 
 ## Resources & inspiration
 
-This is a learning project, and it stands on a lot of other people's work — both the
-open AI-security projects that shaped how I think about agentic offensive tooling, and
-the methodology references the playbooks are built from. Credit where it's due:
+**AI offensive-security projects**
 
-**AI offensive-security projects** (design inspiration)
-- [PentAGI](https://github.com/vxcontrol/pentagi) — autonomous AI penetration-testing agents.
-- [CAI](https://github.com/aliasrobotics/cai) — Cybersecurity AI, an open framework for AI security agents (Alias Robotics).
-- [CyberStrike](https://github.com/CyberStrikeus/CyberStrike) — AI-powered offensive-security agent: multi-agent, methodology-driven autonomous pentesting.
-- …and other agentic red-team projects I keep an eye on.
+- [PentAGI](https://github.com/vxcontrol/pentagi) — autonomous AI penetration-testing agents
+- [CAI](https://github.com/aliasrobotics/cai) — Cybersecurity AI framework (Alias Robotics)
+- [CyberStrike](https://github.com/CyberStrikeus/CyberStrike) — AI-powered multi-agent autonomous pentesting
 
-**Methodology & technique references** (what the playbooks are built from)
-- [ired.team](https://www.ired.team/) — Active Directory & offensive-security technique reference.
-- [Hackviser — Pentesting Tactics](https://hackviser.com/tactics/pentesting) — service-by-service enumeration and exploitation.
-- [MSSQL Pentesting Cheatsheet (thewhiteh4t)](https://thewhiteh4t.github.io/blog/mssql-pentesting-cheatsheet/) — source for the MSSQL playbook.
+**Methodology references**
 
-This list grows as the playbook library does.
+- [ired.team](https://www.ired.team/) — Active Directory & offensive-security techniques
+- [Hackviser](https://hackviser.com/tactics/pentesting) — service-by-service enumeration and exploitation
+- [thewhiteh4t](https://thewhiteh4t.github.io/blog/mssql-pentesting-cheatsheet/) — MSSQL pentesting cheatsheet
+
+---
 
 ## Authorized use only
 
-This is a dual-use offensive security tool intended for authorized penetration
-testing, CTF practice, and security research **only**. Use it solely against
-systems you own or have explicit written permission to test. The engine is
-constrained to non-destructive, reversible actions, but you remain responsible
-for operating within scope and the law.
+This is a dual-use offensive security tool intended for authorized penetration testing, CTF practice, and security research **only**. Use it solely against systems you own or have explicit written permission to test. The engine is constrained to non-destructive, reversible actions, but you remain responsible for operating within scope and the law.
 
 Provided as-is, with no warranty, for educational purposes.
