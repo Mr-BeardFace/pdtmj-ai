@@ -66,6 +66,11 @@ class CmdInput(TextArea):
             self.text = text
 
     def _on_key(self, event: events.Key) -> None:
+        if event.key == "shift+enter":
+            event.prevent_default()
+            event.stop()
+            self.insert("\n")
+            return
         if event.key == "enter":
             event.prevent_default()
             event.stop()
