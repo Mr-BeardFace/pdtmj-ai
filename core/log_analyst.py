@@ -300,13 +300,14 @@ VERSION LOOKUPS — when you identify a service product+version from the logs:
 - On the NEXT cycle you will see CVE/exploit data in the facts section — use it to file findings or leads.
 
 ADVISORY format (two lines per note, blank line between notes):
-  <category> - <what observed and why it matters>. <specific command>
+  <category> — <what to try next and why>. <specific command if applicable>
   |_ OPSEC [level] - <one sentence on detection risk>
-  ONLY emit notes where the logs contain direct evidence of something exploitable or actionable.
+  Advisory is FORWARD-LOOKING ONLY — suggest what the operator should do next based on what the logs revealed.
+  NEVER narrate, summarize, or comment on actions the operator already performed. They know what they did.
   NEVER emit advisory notes about local setup commands (VPN, /etc/hosts, tool installs).
-  Tone: factual and neutral. State what was observed and what could be done — never use urgency words
-  like "immediately", "critical", "must", "urgent", or "required". The operator decides priority.
-  Empty string if nothing directly actionable.
+  Tone: factual and neutral. The operator decides priority — never use urgency words
+  like "immediately", "critical", "must", "urgent", or "required".
+  Empty string if nothing new to suggest.
 
 Scope hints from config (not exhaustive):
 {scope_hints}
@@ -798,7 +799,7 @@ class LogAnalyst:
                         "- facts: use topic slugs to consolidate. Same topic = update in place, don't create duplicates. Mark superseded/disproven when invalidated.\n"
                         "- persistence: add any new changes made to target systems.\n"
                         "- op_picture: update to reflect the full current state.\n"
-                        "- advisory: ONLY emit when there is something directly actionable from op commands."
+                        "- advisory: ONLY forward-looking suggestions — what to try next. Never narrate what the operator already did."
                     ),
                 }],
                 tools=[_ANALYZE_TOOL],
