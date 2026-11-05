@@ -692,6 +692,7 @@ class PentestApp(App):
         self._analyst_tokens: dict = {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
         # Last activity_log id seen during DB poll (for incremental load)
         self._db_poll_last_activity_id: int = 0
+        self._last_db_version: int = -1
         # Chat conversation history (pentest/redteam free-form fallback)
         self._chat_history: list[dict] = []
         self._chat_lock = threading.Lock()
@@ -886,7 +887,7 @@ class PentestApp(App):
 
         self._update_status()
         self.set_interval(1.0,  self._tick_clock)  # live assessment clock
-        self.set_interval(10.0, self._poll_db)     # pull new analyst data from DB
+        self.set_interval(2.0, self._poll_db)      # check DB for analyst data
         self._welcome()
 
     # ── completion ────────────────────────────────────────────────────────────
@@ -2169,11 +2170,15 @@ class PentestApp(App):
             self._update_status()
 
     def _poll_db(self) -> None:
-        """Pull new analyst findings from DB into the activity pane (~10s interval)."""
+        """Pull new analyst findings from DB when it changes."""
         if self._activity_store is None:
             return
         try:
             s = self._activity_store
+            v = s._conn.execute("PRAGMA data_version").fetchone()[0]
+            if v == self._last_db_version:
+                return
+            self._last_db_version = v
             # Pull activity_log rows newer than last seen
             rows = s._conn.execute(
                 "SELECT id, ts, message FROM activity_log"
