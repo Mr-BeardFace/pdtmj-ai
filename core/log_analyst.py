@@ -255,6 +255,8 @@ LEAD QUALITY RULES:
 2. One intent, one lead — before emitting a lead, check the open leads list for a matching intent slug. If one exists, do NOT emit a new lead — use lead_updates to update the existing one, or skip it entirely. Two leads with the same intent is always wrong.
 3. Supersede on stage change — when the operator gains meaningfully better access (new user shell, lateral movement, privesc), mark prior-stage leads that are now redundant as superseded.
 4. Dead intents stay dead — if an intent appears in the dead-end list, do NOT emit a new lead with the same intent unless the approach is fundamentally different (different user context, different vulnerability, different access path). Rename the intent if the approach genuinely differs.
+5. Advisory commands = leads — every specific command you mention in the advisory MUST have a corresponding lead with that exact command. The advisory explains WHY; the lead makes it actionable in the Suggested Commands pane. If you wouldn't emit it as a lead, don't put the command in the advisory.
+6. Decay executed leads — scan the activities in this batch for commands that match (or answer the purpose of) open leads. Any lead whose command was already run, or whose question was already answered by logged output, gets a lead_update to "completed" or "dead-end". Do NOT wait for the next cycle — close them in the same response that sees the evidence.
 
 SURFACES — attack surface map:
 - A surface is a (host, service, port) unit. Emit one when a new service/port is discovered.
@@ -820,9 +822,12 @@ class LogAnalyst:
                         "- credentials: only add credentials whose secret is NOT already listed above. Same username+hash = skip.\n"
                         "- findings: only add findings NOT already listed above (match on title+target). ONLY from op-tagged commands.\n"
                         "- leads: check the open leads list for matching intent slugs FIRST. If an open lead with the same intent exists, do NOT emit a new one. Same intent = same lead. ONLY from evidence in op-tagged commands.\n"
-                        "- lead_updates: update status of existing leads when evidence warrants it. "
-                        "Reference by [ID]. Close leads whose PURPOSE was answered by log output, even if the exact command differs. "
-                        "Mark completed/dead-end/superseded. Supersede prior-stage leads when the operator advances access.\n"
+                        "- lead_updates: AGGRESSIVELY close stale leads. Scan EVERY open lead against this batch's activities — "
+                        "if the operator ran the lead's command (or something equivalent), mark it completed. "
+                        "If the output disproves the lead's premise, mark it dead-end. "
+                        "Reference by [ID]. Close leads whose PURPOSE was answered, even if the exact command differs. "
+                        "Supersede prior-stage leads when the operator advances access. "
+                        "A lead older than 30m with no progress is a candidate for superseding with a fresher approach.\n"
                         "- auth_attempts: add every auth event seen in the new logs.\n"
                         "- version_lookups: when you see a service product+version in the logs, emit it here. Only for NEW versions not already in facts as cve-* topics.\n"
                         "- facts: use topic slugs to consolidate. Same topic = update in place, don't create duplicates. Mark superseded/disproven when invalidated.\n"
