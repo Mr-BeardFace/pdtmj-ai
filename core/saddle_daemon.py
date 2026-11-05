@@ -40,6 +40,10 @@ def _clear_badge(op: str) -> None:
         _badge_path(op).unlink(missing_ok=True)
     except Exception:
         pass
+    try:
+        (_op_dir(op) / ".db_changes").unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 class _Daemon:

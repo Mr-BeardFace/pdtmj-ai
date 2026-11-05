@@ -549,6 +549,29 @@ def _badge_path(op: str) -> Path:
     return OPS_DIR / op / ".badge"
 
 
+def _signal_changes(op: str, categories: set[str]) -> None:
+    """Append changed categories to a notification file the TUI polls."""
+    try:
+        p = OPS_DIR / op / ".db_changes"
+        with open(p, "a") as f:
+            f.write("\n".join(categories) + "\n")
+    except Exception:
+        pass
+
+
+def read_and_clear_changes(op: str) -> set[str]:
+    """Read pending change categories and clear the file. Called by the TUI."""
+    p = OPS_DIR / op / ".db_changes"
+    try:
+        if not p.exists():
+            return set()
+        text = p.read_text()
+        p.write_text("")
+        return {c.strip() for c in text.splitlines() if c.strip()}
+    except Exception:
+        return set()
+
+
 def _write_badge(op: str, notable_leads: int, opsec_level: str) -> None:
     """Write zsh RPROMPT badge (LEADS/OPSEC only)."""
     parts: list[str] = []
@@ -966,6 +989,21 @@ class LogAnalyst:
             totals    = s.get_token_summary()
             n_notable = s.count_notable_open_leads()
             _write_badge(self._op, n_notable, opsec_level)
+
+            # Signal TUI which categories changed
+            changed: set[str] = set()
+            if _lst("leads") or _lst("lead_updates"):
+                changed.add("leads")
+            if _lst("findings"):
+                changed.add("findings")
+            if _lst("hosts") or _lst("surfaces"):
+                changed.add("hosts")
+            if _lst("credentials"):
+                changed.add("creds")
+            if advisory:
+                changed.add("activity")
+            changed.add("activity")  # activities always present
+            _signal_changes(self._op, changed)
 
         except Exception as e:
             self._log(f"[bold red]DB push error:[/bold red] {e}")

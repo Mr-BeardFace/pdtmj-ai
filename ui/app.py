@@ -868,7 +868,7 @@ class PentestApp(App):
 
         self._update_status()
         self.set_interval(1.0,  self._tick_clock)  # live assessment clock
-        self.set_interval(10.0, self._poll_db)     # pull new analyst data from DB
+        self.set_interval(2.0, self._poll_db)      # check for analyst changes (lightweight file check)
         self._welcome()
 
     # ── completion ────────────────────────────────────────────────────────────
@@ -2151,34 +2151,44 @@ class PentestApp(App):
             self._update_status()
 
     def _poll_db(self) -> None:
-        """Pull new analyst findings from DB into the activity pane (~10s interval)."""
+        """Check for analyst DB changes and refresh only affected panes."""
         if self._activity_store is None:
             return
+
+        # Check what changed via lightweight file signal
+        changed: set[str] = set()
+        if self._active_op:
+            from core.log_analyst import read_and_clear_changes
+            changed = read_and_clear_changes(self._active_op)
+
+        if not changed:
+            self._poll_analyst_status()
+            return
+
         try:
             s = self._activity_store
-            # Pull activity_log rows newer than last seen
-            rows = s._conn.execute(
-                "SELECT id, ts, message FROM activity_log"
-                " WHERE engagement_id = ? AND id > ? ORDER BY id",
-                (s.engagement_id, self._db_poll_last_activity_id),
-            ).fetchall()
-            log = self.query_one("#activity-log", RichLog)
-            for r in rows:
-                self._db_poll_last_activity_id = max(self._db_poll_last_activity_id, r["id"])
-                msg = r["message"]
-                if "OPSEC" not in msg:
-                    log.write("")
-                log.write(msg)
-                self._activity_lines.append(msg)
 
-            # Merge analyst token usage into status bar totals
-            totals = s.token_usage_totals()
-            if totals["input_tokens"] or totals["output_tokens"]:
-                self._analyst_tokens = totals
-                self._update_status()
+            if "activity" in changed:
+                rows = s._conn.execute(
+                    "SELECT id, ts, message FROM activity_log"
+                    " WHERE engagement_id = ? AND id > ? ORDER BY id",
+                    (s.engagement_id, self._db_poll_last_activity_id),
+                ).fetchall()
+                log = self.query_one("#activity-log", RichLog)
+                for r in rows:
+                    self._db_poll_last_activity_id = max(self._db_poll_last_activity_id, r["id"])
+                    msg = r["message"]
+                    if "OPSEC" not in msg:
+                        log.write("")
+                    log.write(msg)
+                    self._activity_lines.append(msg)
 
-            # Sync hosts from DB into the Hosts table
-            if self._is_ops_persona:
+                totals = s.token_usage_totals()
+                if totals["input_tokens"] or totals["output_tokens"]:
+                    self._analyst_tokens = totals
+                    self._update_status()
+
+            if "hosts" in changed and self._is_ops_persona:
                 for h in s.load_hosts():
                     ports = h.get("open_ports") or []
                     for p in ports:
@@ -2188,22 +2198,20 @@ class PentestApp(App):
                         self._add_host_compact(h["ip"], hostname=h.get("hostname", ""),
                                                os_str=h.get("os", ""))
 
-            # Sync credentials from DB
-            if self._is_ops_persona:
+            if "creds" in changed and self._is_ops_persona:
                 for c in s.load_credentials():
                     self._show_cred_in_table(c.model_dump(), source="analyst")
 
-            # Sync findings from DB
-            for f in s.load_findings():
-                self._add_finding(f.model_dump())
+            if "findings" in changed:
+                for f in s.load_findings():
+                    self._add_finding(f.model_dump())
 
-            # Sync leads from DB into Suggested Commands pane
-            self._open_leads = s.load_leads()
-            self._refresh_next_steps()
+            if "leads" in changed:
+                self._open_leads = s.load_leads()
+                self._refresh_next_steps()
         except Exception:
             pass
 
-        # Update activity log title from analyst status file
         self._poll_analyst_status()
 
     def _poll_analyst_status(self) -> None:
