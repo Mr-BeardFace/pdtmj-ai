@@ -1,33 +1,14 @@
 """Watches op log files for new content and calls on_new_content(path, bytes).
 
-Buffers incomplete data: a poll that doesn't end with a shell prompt is held
-and concatenated with the next poll's data. This ensures the analyst only
-sees complete command+output pairs, not fragments split by the poll interval.
+Sends new data to the analyst on each poll interval; the analyst's own
+debounce logic (15s quiet / 60s max wait) handles batching into complete
+command+output groups.
 """
 from __future__ import annotations
 
-import re
 import threading
 from pathlib import Path
 from typing import Callable
-
-# Strip ANSI escapes from raw bytes before prompt matching
-_ANSI_BYTES = re.compile(
-    rb"\x1b(?:"
-    rb"\].*?(?:\x07|\x1b\\)"           # OSC
-    rb"|\[[0-9;?]*[@-~]"              # CSI
-    rb"|[\x20-\x2f]*[\x30-\x7e]"     # 2-byte seqs (e.g. \x1b= keypad mode)
-    rb")"
-)
-
-# Prompt patterns that signal "command finished, shell is waiting for input"
-_PROMPT_BOUNDARY = re.compile(
-    rb"(?:"
-    rb"[$#>]\s*(?:\[.*?\]\s*)*$"        # prompt ending (tolerates rprompt badges)
-    rb"|Password:\s*$"                  # password prompt (su, sudo, ssh)
-    rb")",
-    re.MULTILINE,
-)
 
 
 class LogWatcher:
@@ -45,7 +26,6 @@ class LogWatcher:
         self._interval = interval
         self._on_cursor_update = on_cursor_update
         self._cursors: dict[str, int] = {}
-        self._buffers: dict[str, bytes] = {}
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -84,21 +64,11 @@ class LogWatcher:
                 self._cursors[key] = size
                 if not data:
                     continue
-                # Prepend any buffered data from previous incomplete polls
-                if key in self._buffers:
-                    data = self._buffers.pop(key) + data
-                # Check if the data ends at a prompt boundary
-                tail = data[-200:] if len(data) > 200 else data
-                tail = _ANSI_BYTES.sub(b"", tail)
-                if _PROMPT_BOUNDARY.search(tail):
-                    self._on_new_content(path, data)
-                    if self._on_cursor_update:
-                        try:
-                            self._on_cursor_update(key, size)
-                        except Exception:
-                            pass
-                else:
-                    # Incomplete — buffer until next poll brings a prompt
-                    self._buffers[key] = data
+                self._on_new_content(path, data)
+                if self._on_cursor_update:
+                    try:
+                        self._on_cursor_update(key, size)
+                    except Exception:
+                        pass
             except Exception:
                 pass
