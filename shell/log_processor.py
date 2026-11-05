@@ -69,7 +69,8 @@ class LineBuffer:
         self._buf = self._buf[:self._cur]
 
     def erase_to_start(self) -> None:
-        for i in range(self._cur):
+        end = min(self._cur, len(self._buf))
+        for i in range(end):
             self._buf[i] = " "
 
     def erase_line(self) -> None:
