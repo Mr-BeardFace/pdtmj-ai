@@ -21,11 +21,10 @@ from pathlib import Path
 # ── CSI sequence parser ──────────────────────────────────────────────────────
 # Matches: ESC [ <params> <final byte>
 _CSI = re.compile(r"\x1b\[([0-9;?]*)([A-Za-z@-~])")
-# Matches: OSC (ESC ] ... BEL/ST), single-byte ESC sequences, BEL
-_OTHER_ESC = re.compile(
-    r"\x1b(?:\].*?(?:\x07|\x1b\\)|[@-Z\\-_])"
-    r"|\x07"
-)
+# Matches: OSC (ESC ] ... BEL/ST)
+_OSC = re.compile(r"\x1b\].*?(?:\x07|\x1b\\)")
+# Matches: single-byte ESC sequences (excludes ] to avoid short-matching OSC), BEL
+_OTHER_ESC = re.compile(r"\x1b[@-Z\\^_]|\x07")
 
 # ANSI stripping for the stdin passthrough path (no cursor emulation needed)
 _ANSI = re.compile(
@@ -90,68 +89,99 @@ class LineBuffer:
         return line
 
 
+class CursorRenderer:
+    """Stateful renderer: feed raw chunks over time, get completed lines back."""
+
+    def __init__(self):
+        self._buf = LineBuffer()
+        self._residual = ""
+
+    def feed(self, data: str) -> list[str]:
+        """Feed a chunk of raw terminal data, return lines completed by \\n."""
+        data = self._residual + data
+        self._residual = ""
+        # Hold back any incomplete ESC sequence at the tail
+        esc_pos = data.rfind("\x1b", max(0, len(data) - 32))
+        if esc_pos >= 0:
+            tail = data[esc_pos:]
+            if not _CSI.match(tail) and not _OSC.match(tail) and not _OTHER_ESC.match(tail):
+                self._residual = tail
+                data = data[:esc_pos]
+
+        out: list[str] = []
+        i = 0
+        n = len(data)
+
+        while i < n:
+            ch = data[i]
+
+            if ch == "\x1b":
+                if i + 1 >= n:
+                    self._residual = data[i:]
+                    break
+                m = _CSI.match(data, i)
+                if m:
+                    params, final = m.group(1), m.group(2)
+                    _handle_csi(self._buf, params, final)
+                    i = m.end()
+                    continue
+                m = _OSC.match(data, i)
+                if m:
+                    i = m.end()
+                    continue
+                m = _OTHER_ESC.match(data, i)
+                if m:
+                    i = m.end()
+                    continue
+                nxt = data[i + 1]
+                if nxt == "[" or nxt == "]":
+                    self._residual = data[i:]
+                    break
+                i += 2
+                continue
+
+            if ch == "\n":
+                out.append(self._buf.flush())
+                i += 1
+                continue
+
+            if ch == "\r":
+                self._buf.cr()
+                i += 1
+                continue
+
+            if ch == "\x08":
+                self._buf.bs()
+                i += 1
+                continue
+
+            if ch == "\x07":
+                i += 1
+                continue
+
+            if ch >= " " or ch == "\t":
+                if ch == "\t":
+                    target = (self._buf._cur + 8) & ~7
+                    while self._buf._cur < target:
+                        self._buf.putchar(" ")
+                else:
+                    self._buf.putchar(ch)
+            i += 1
+
+        return out
+
+    def flush(self) -> str:
+        """Flush any incomplete line (call at end of stream)."""
+        return self._buf.flush()
+
+
 def render_raw(data: str) -> list[str]:
-    """Replay raw terminal data through LineBuffer, return completed lines."""
-    buf = LineBuffer()
-    out: list[str] = []
-    i = 0
-    n = len(data)
-
-    while i < n:
-        ch = data[i]
-
-        if ch == "\x1b" and i + 1 < n:
-            # Try CSI sequence
-            m = _CSI.match(data, i)
-            if m:
-                params, final = m.group(1), m.group(2)
-                _handle_csi(buf, params, final)
-                i = m.end()
-                continue
-            # Try other ESC sequences (OSC, Fe)
-            m = _OTHER_ESC.match(data, i)
-            if m:
-                i = m.end()
-                continue
-            # Unknown ESC — skip ESC + next byte
-            i += 2
-            continue
-
-        if ch == "\n":
-            out.append(buf.flush())
-            i += 1
-            continue
-
-        if ch == "\r":
-            buf.cr()
-            i += 1
-            continue
-
-        if ch == "\x08":
-            buf.bs()
-            i += 1
-            continue
-
-        if ch == "\x07":
-            i += 1
-            continue
-
-        # Printable character (or replacement char)
-        if ch >= " " or ch == "\t":
-            if ch == "\t":
-                # Tab: advance to next 8-col stop
-                target = (buf._cur + 8) & ~7
-                while buf._cur < target:
-                    buf.putchar(" ")
-            else:
-                buf.putchar(ch)
-        i += 1
-
-    # Flush whatever remains on the line
-    remainder = buf.flush()
+    """One-shot convenience: render a full raw capture into lines."""
+    r = CursorRenderer()
+    out = r.feed(data)
+    remainder = r.flush()
     if remainder:
         out.append(remainder)
-
     return out
 
 
@@ -211,8 +241,8 @@ def _handle_csi(buf: LineBuffer, params: str, final: str) -> None:
 
 def watch_file(input_path: Path, output_path: Path) -> None:
     """Watch a raw TTY file and write rendered lines to output."""
+    renderer = CursorRenderer()
     cursor = 0
-    residual = ""
     with open(output_path, "a") as out:
         while True:
             try:
@@ -222,17 +252,7 @@ def watch_file(input_path: Path, output_path: Path) -> None:
                         f.seek(cursor)
                         raw = f.read().decode("utf-8", errors="replace")
                     cursor = size
-                    # Prepend any leftover from last chunk (partial escape seq)
-                    raw = residual + raw
-                    residual = ""
-                    # Hold back a trailing partial ESC sequence
-                    if raw.endswith("\x1b"):
-                        residual = "\x1b"
-                        raw = raw[:-1]
-                    elif len(raw) >= 2 and raw[-2] == "\x1b":
-                        residual = raw[-2:]
-                        raw = raw[:-2]
-                    for line in render_raw(raw):
+                    for line in renderer.feed(raw):
                         if line:
                             out.write(line + "\n")
                     out.flush()
