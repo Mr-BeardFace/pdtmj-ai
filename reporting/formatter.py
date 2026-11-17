@@ -339,7 +339,8 @@ def _get_env() -> Environment:
 
 def _render(run: EngagementRun, fmt: str, output_dir: Path,
             persistence: list | None = None, termination: str = "completed",
-            persona: str = "", op_name: str = "", iocs: list | None = None) -> Path:
+            persona: str = "", op_name: str = "", iocs: list | None = None,
+            hosts: list | None = None) -> Path:
     output_dir.mkdir(exist_ok=True)
     env = _get_env()
 
@@ -349,11 +350,15 @@ def _render(run: EngagementRun, fmt: str, output_dir: Path,
     if run.technical_overview:
         run.technical_overview = embed_captures(run.technical_overview, run.tool_calls)
 
+    # Separate dead ends from reportable findings — dead ends go in the
+    # technical overview narrative, not the findings table.
+    reportable = [f for f in run.findings if f.type != "dead_end"]
+    dead_ends  = [f for f in run.findings if f.type == "dead_end" and f.verified]
     findings_sorted = sorted(
-        run.findings, key=lambda f: SEVERITY_ORDER.get(f.severity, 99)
+        reportable, key=lambda f: SEVERITY_ORDER.get(f.severity, 99)
     )
     severity_counts = {
-        sev: len([f for f in run.findings if f.severity == sev])
+        sev: len([f for f in reportable if f.severity == sev])
         for sev in ["critical", "high", "medium", "low", "info"]
     }
     generated_at = now_local().strftime("%Y-%m-%d %H:%M %Z")
@@ -368,6 +373,7 @@ def _render(run: EngagementRun, fmt: str, output_dir: Path,
     ctx = dict(
         run=run,
         findings=findings_sorted,
+        dead_ends=dead_ends,
         severity_counts=severity_counts,
         generated_at=generated_at,
         persistence=persistence or [],
@@ -376,6 +382,7 @@ def _render(run: EngagementRun, fmt: str, output_dir: Path,
         is_ops_report=persona in ("pentest", "redteam"),
         op_name=op_name,
         iocs=iocs or [],
+        hosts=hosts or [],
     )
 
     if fmt == "html":
@@ -392,9 +399,11 @@ def _render(run: EngagementRun, fmt: str, output_dir: Path,
 
 
 def generate_report(run: EngagementRun, output_dir: Path, fmt: str = "html",
-                    persona: str = "", op_name: str = "", iocs: list | None = None) -> Path:
+                    persona: str = "", op_name: str = "", iocs: list | None = None,
+                    hosts: list | None = None) -> Path:
     """Generate a report for a single EngagementRun."""
-    return _render(run, fmt, output_dir, persona=persona, op_name=op_name, iocs=iocs)
+    return _render(run, fmt, output_dir, persona=persona, op_name=op_name, iocs=iocs,
+                   hosts=hosts)
 
 
 def merge_runs(
@@ -510,8 +519,9 @@ def generate_merged_report(
     persona: str = "",
     op_name: str = "",
     iocs: list | None = None,
+    hosts: list | None = None,
 ) -> Path:
     """Merge multiple EngagementRun objects into one report."""
     return _render(merge_runs(runs, target=target), fmt, output_dir,
                    persistence=persistence, termination=termination,
-                   persona=persona, op_name=op_name, iocs=iocs)
+                   persona=persona, op_name=op_name, iocs=iocs, hosts=hosts)

@@ -59,6 +59,18 @@ A penetration test was conducted against `{{ run.target }}`. {{ run.findings | l
 - **Agent:** {{ run.agent }}
 {% if op_name %}- **Op:** {{ op_name }}{% else %}- **Engagement ID:** `{{ run.id }}`{% endif %}
 - **Testing Period:** {{ run.start_time.strftime("%Y-%m-%d %H:%M") }} – {{ run.end_time.strftime("%Y-%m-%d %H:%M UTC") if run.end_time else "In Progress" }}
+{% if hosts %}
+
+---
+
+## Discovered Hosts & Services
+
+| Host | Port | Protocol | Service | Version |
+|------|------|----------|---------|---------|
+{% for h in hosts -%}
+| {{ h.host or "" }} | {{ h.port or "" }} | {{ h.protocol or "tcp" }} | {{ h.service or "" }} | {{ h.version or "" }} |
+{% endfor %}
+{% endif %}
 
 ---
 
@@ -68,6 +80,16 @@ A penetration test was conducted against `{{ run.target }}`. {{ run.findings | l
 {{ run.technical_overview }}
 {% else %}
 *No technical details were generated for this engagement.*
+{% endif %}
+{% if dead_ends %}
+
+### Avenues Attempted Without Success
+
+The following approaches were attempted but did not yield exploitable results:
+
+{% for f in dead_ends -%}
+- **{{ f.title }}** ({{ f.target }}): {{ f.description[:200] }}
+{% endfor %}
 {% endif %}
 
 ---

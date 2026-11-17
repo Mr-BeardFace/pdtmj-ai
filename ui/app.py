@@ -4198,10 +4198,14 @@ class PentestApp(App):
                             self._export_iocs_csv(op_name, iocs, OPS_DIR)
                 except Exception:
                     pass
+            hosts = []
+            if self._current_state is not None and self._current_state.recon:
+                hosts = self._current_state.recon.open_ports
             path = generate_merged_report(completed_runs, out_dir, fmt="html",
                                           target=target, persistence=persistence,
                                           termination=termination,
-                                          persona=persona, op_name=op_name, iocs=iocs)
+                                          persona=persona, op_name=op_name, iocs=iocs,
+                                          hosts=hosts)
             self.post_message(PentestApp.Activity(f"[green]HTML Report:[/green] {path}"))
         except Exception as e:
             self.post_message(PentestApp.Activity(f"[red]Report failed: {e}[/red]"))

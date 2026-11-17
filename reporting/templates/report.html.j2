@@ -350,6 +350,35 @@
   </section>
   {% endif %}
 
+  <!-- Discovered Hosts & Services -->
+  {% if hosts %}
+  <section>
+    <h2>Discovered Hosts &amp; Services</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Host</th>
+          <th>Port</th>
+          <th>Protocol</th>
+          <th>Service</th>
+          <th>Version</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for h in hosts %}
+        <tr>
+          <td><code>{{ h.host or "" }}</code></td>
+          <td>{{ h.port or "" }}</td>
+          <td>{{ h.protocol or "tcp" }}</td>
+          <td>{{ h.service or "" }}</td>
+          <td>{{ h.version or "" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
   <!-- Findings Summary Table -->
   <section>
     <h2>Findings Summary</h2>
@@ -397,6 +426,19 @@
         <p>{{ b.content }}</p>
       {% endif %}
     {% endfor %}
+  </section>
+  {% endif %}
+
+  <!-- Dead Ends -->
+  {% if dead_ends %}
+  <section>
+    <h3 class="narrative-phase">Avenues Attempted Without Success</h3>
+    <p>The following approaches were attempted but did not yield exploitable results:</p>
+    <ul>
+      {% for f in dead_ends %}
+      <li><strong>{{ f.title }}</strong> (<code>{{ f.target }}</code>): {{ f.description[:200] }}</li>
+      {% endfor %}
+    </ul>
   </section>
   {% endif %}
 
