@@ -7,6 +7,7 @@ All settings are runtime-tunable via `/config <key> <value>` in the TUI or `sadd
 | Setting | Type | Personas | Description |
 |---------|------|----------|-------------|
 | `exploitation` | bool | pentest-ctf, pentest | Enable the plan → exploit → validate phase. Off = assessment-only (enumerate + report). |
+| `lab_mode` | bool | pentest-ctf, pentest | Lab / training-range mode. When true, all personas apply anti-cheat guardrails: agents must not search for or open writeups, walkthroughs, or solution guides for the target. General technical research (CVE mechanics, tool syntax, protocol behavior) remains allowed. |
 | `confirm_exploit` | bool | pentest-ctf, pentest | Pause and ask the operator before each exploit action. CTF defaults to off (auto-approved). |
 | `tool_gate` | str | pentest | `autonomous` = run freely. `gated` = pause for confirmation before each high-impact tool call (brute-force, active exploitation, coercion/relay, arbitrary code execution on target). |
 | `enum_turns` | int | pentest-ctf, pentest | Turn budget for each staged enumeration pass. Enumeration gathers intel without banking findings, so the progress-extension window never fires — this is the hard cap. |

@@ -706,6 +706,27 @@ class Orchestrator:
         else:
             self._base_instructions = ""
 
+        from core.config import get as _cfg_get
+        if _cfg_get("lab_mode", False):
+            self._base_instructions += (
+                "## Lab mode — no writeups or walkthroughs\n\n"
+                "This is a lab / training environment. You MUST NOT use web search or "
+                "page-fetch tools to look up the solution to this target. Reading how "
+                "someone else compromised this environment defeats the exercise and "
+                "invalidates the result.\n\n"
+                "- **Never search for or open a writeup, walkthrough, solution guide, "
+                "video, or solution repo for this target** — not by name, IP, hostname, "
+                "theme, or any combination. This includes HackTheBox writeups (official "
+                "and community), 0xdf/IppSec-style posts, GitHub solution repos, and "
+                "forum threads about the target.\n"
+                "- **General technical research is allowed and encouraged.** The line is: "
+                "research the *technology*, never the *answer to this target*. Look up a "
+                "CVE's mechanics, a tool's syntax, a protocol's behavior, an exploit "
+                "primitive — then apply it yourself.\n"
+                "- If a search result turns out to be a writeup for this target, do not "
+                "open it. Derive the path from the target's own behavior.\n\n---\n\n"
+            )
+
         self._active_persona = active_persona
         self._persona_instructions = ""
         if active_persona:

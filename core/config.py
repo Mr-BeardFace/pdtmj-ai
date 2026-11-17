@@ -17,6 +17,10 @@ _DEFAULTS: dict[str, Any] = {
     # Master switch for the exploitation phase (plan → exploit → validate). On by
     # default for all personas; toggle with /config exploitation on|off.
     "exploitation": True,
+    # Lab / training-range mode. When true, all personas apply the pentest-ctf
+    # anti-cheat guardrails: agents must not search for or open writeups,
+    # walkthroughs, or solution guides for the target environment.
+    "lab_mode": False,
     # Master switch for the reporting phase (the report-writer agent + HTML). On by
     # default; toggle with /config reporting on|off. Off is handy during testing so a run
     # doesn't spend tokens/time synthesizing a report — `/report` still generates
