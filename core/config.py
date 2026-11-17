@@ -62,12 +62,12 @@ _DEFAULTS: dict[str, Any] = {
     # produces no new intel (exhaustion). These are safety backstops only — set
     # to null to disable. They exist to stop a pathological non-converging loop,
     # not to drive normal termination.
-    "cycles_per_surface": 4,   # cap on cycles for a single surface
+    "cycles_per_surface": 8,   # cap on cycles for a single surface
     # Stop re-cycling a surface after this many consecutive cycles that produce NO
     # new verified finding — tighter than the cycle cap, overrides the LLM judge's
     # optimism, and kills the "grind a dead surface" loop. 0 disables.
-    "dry_cycles_per_surface": 2,
-    "total_cycles": 40,        # global backstop across all surfaces (null = unlimited)
+    "dry_cycles_per_surface": 4,
+    "total_cycles": 120,       # global backstop across all surfaces (null = unlimited)
     "surfaces": 50,            # cap on surfaces investigated (null = unlimited)
 
     # ── Parallel hypothesis search ────────────────────────────────────────────
