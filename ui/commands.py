@@ -131,6 +131,9 @@ COMMANDS: list[Command] = [
         Sub("remove", "Remove a credential by its number from /cred list", "<n>"),
         Sub("clear",  "Remove all manually added credentials"),
     )),
+    Command("/identity", "View discovered identities per service", (
+        Sub("list",   "List identities for a service (or all)", "[service]"),
+    )),
     Command("/scope", "Manage the engagement's in-scope targets", (
         Sub("add",    "Approve a target for agent followups", "<target>"),
         Sub("remove", "Take a host/IP/CIDR out of scope (and keep it out)", "<target>"),
@@ -278,7 +281,7 @@ def usage(cmd_path: str) -> str:
 _HELP_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Setup & config",          ("/info", "/config", "/key", "/models", "/agent", "/persona", "/provider")),
     ("Op management",           ("/op",)),
-    ("Engagement data",         ("/scope", "/cred", "/ioc")),
+    ("Engagement data",         ("/scope", "/cred", "/identity", "/ioc")),
     ("Ops (pentest/redteam)",   ("/analyst", "/c2", "/endop")),
     ("Control (while running)", ("/abort", "/skip", "/pause", "/continue", "/end", "/job")),
     ("Assessments & reports",   ("/assessment", "/report")),

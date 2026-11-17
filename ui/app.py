@@ -49,6 +49,7 @@ _MARKUP_RE = re.compile(r"\[/?[^\]]*\]")
 _ACTIVITY_PANE_MAX = 5000        # lines retained in the live activity RichLog
 _CMD_LOG_MAX = 1000              # lines retained in the command RichLog
 _ACTIVITY_HISTORY_MAX = 50000    # lines retained for the Ctrl+L modal / copy
+_IDENTITY_PER_SERVICE = 25       # max identities shown per service in the Identities tab
 
 # Seeded model ids — extended at runtime when the user runs `/models list`.
 _DEFAULT_MODEL_IDS = [
@@ -710,6 +711,9 @@ class PentestApp(App):
 
         # Cred reveal map {masked → plaintext}
         self._cred_reveal: dict[str, str] = {}
+        # Identity tracking: {service → list[row_key]} for per-service cap + total count
+        self._identity_rows: dict[str, list[str]] = {}
+        self._identity_total: int = 0
 
         # Static Hosts table — row keys (host:port/proto) already present
         self._host_rows: set[str] = set()
@@ -769,12 +773,23 @@ class PentestApp(App):
     def _is_ops_persona(self) -> bool:
         return self._active_persona in ("pentest", "redteam")
 
+    @property
+    def _use_pipeline_layout(self) -> bool:
+        """CTF-style layout (findings top, tabs bottom) when running an automated
+        pipeline: pentest-ctf always, or pentest with exploitation=on + confirm=off."""
+        if self._active_persona == "pentest-ctf":
+            return True
+        if self._active_persona == "pentest":
+            from core.config import get as _cfg
+            return bool(_cfg("exploitation", False)) and not bool(_cfg("confirm_exploit", True))
+        return False
+
     def compose(self) -> ComposeResult:
         yield Static("", id="status-bar")
         with Horizontal(id="main-panes"):
             # ── Left ──────────────────────────────────────────────────────────
             with Vertical(id="left-pane"):
-                if self._is_ops_persona:
+                if self._is_ops_persona and not self._use_pipeline_layout:
                     with TabbedContent(id="info-tabs"):
                         with TabPane("Beacons", id="tab-beacons"):
                             yield DataTable(id="beacons-table", cursor_type="row")
@@ -782,6 +797,8 @@ class PentestApp(App):
                             yield DataTable(id="hosts-table", cursor_type="row")
                         with TabPane("Creds", id="tab-creds"):
                             yield DataTable(id="creds-table", cursor_type="row")
+                        with TabPane("Identities", id="tab-identities"):
+                            yield DataTable(id="identities-table", cursor_type="row")
                         with TabPane("Findings", id="tab-findings"):
                             yield ListView(id="findings-list")
                     with Vertical(id="next-steps-container"):
@@ -795,6 +812,8 @@ class PentestApp(App):
                             yield DataTable(id="hosts-table", cursor_type="row")
                         with TabPane("Creds", id="tab-creds"):
                             yield DataTable(id="creds-table", cursor_type="row")
+                        with TabPane("Identities", id="tab-identities"):
+                            yield DataTable(id="identities-table", cursor_type="row")
                         # Flags tab is always built but hidden unless the CTF persona is active.
                         with TabPane("Flags", id="tab-flags"):
                             yield DataTable(id="flags-table", cursor_type="row")
@@ -837,6 +856,14 @@ class PentestApp(App):
         else:
             for label in ("IP", "Hostname", "Vhost", "OS", "Port", "Protocol", "Service", "Fingerprint", "Tech"):
                 ht.add_column(label, key=label)
+
+        # Identities table (pipeline layout) — per-service identity tracking
+        try:
+            it = self.query_one("#identities-table", DataTable)
+            for label in ("Username", "Service", "Host", "Access", "Source"):
+                it.add_column(label, key=label)
+        except Exception:
+            pass
 
         # Flags table (CTF) — columns set up; tab shown only for the CTF persona
         try:
@@ -1326,6 +1353,25 @@ class PentestApp(App):
             self._show_cmd_output(["Credentials cleared."], True)
             return
 
+        # /identity list [service] — show discovered identities
+        if parsed and parsed[0] == "/identity list":
+            if self._current_state is None:
+                self._show_cmd_output(["No engagement running."], False)
+            elif parsed[1]:
+                lines = self._identity_list_for_service(parsed[1][0])
+                self._show_cmd_output(lines, True)
+            else:
+                # Summary: count per service
+                if not self._identity_rows:
+                    self._show_cmd_output(["No identities discovered yet."], False)
+                else:
+                    lines = [f"Discovered identities ({self._identity_total} total):", ""]
+                    for svc, rows in sorted(self._identity_rows.items()):
+                        lines.append(f"  {svc:<20s}  {len(rows)} identities")
+                    lines += ["", "Use /identity list <service> for the full list."]
+                    self._show_cmd_output(lines, True)
+            return
+
         # /scope add — approve a target for agent followups (running engagement)
         if parsed and parsed[0] == "/scope add":
             if not parsed[1]:
@@ -1359,6 +1405,10 @@ class PentestApp(App):
                 if removed:
                     lines.append(f"Removed from scope: {', '.join(removed)}")
                     lines.append("Agents will no longer act against it; it is now excluded.")
+                    for t in removed:
+                        to_drop = [rk for rk in list(self._host_rows) if rk.startswith(f"{t}:")]
+                        for rk in to_drop:
+                            self._remove_host_row(rk)
                 if missing:
                     lines.append(f"Not in scope (now excluded anyway): {', '.join(missing)}")
                 self._show_cmd_output(lines, bool(removed))
@@ -1602,11 +1652,13 @@ class PentestApp(App):
                         pass
                 prev = self._active_persona
                 self._active_persona = parsed[1][0].lower()
-                # Rebuild layout when crossing the ops/ctf boundary;
+                # Rebuild layout when crossing the ops/pipeline boundary;
                 # always clear stale display state from the previous persona.
                 prev_ops = prev in ("pentest", "redteam")
                 new_ops  = self._is_ops_persona
-                if prev_ops != new_ops:
+                prev_pipeline = prev == "pentest-ctf"
+                new_pipeline  = self._use_pipeline_layout
+                if (prev_ops != new_ops) or (prev_pipeline != new_pipeline):
                     self._rebuild_left_pane()
                 else:
                     self._clear_display_state()
@@ -2715,6 +2767,8 @@ class PentestApp(App):
             dt.update_cell(rk, "✓",        verified, update_width=True)
         else:
             dt.add_row(cred_type, username, masked, fmt, location, verified, key=row_key)
+        if self._active_persona != "pentest-ctf":
+            self._add_identity(c)
 
     def _refresh_creds_table(self) -> None:
         """Rebuild the Creds tab from the authoritative source — live engagement
@@ -2729,6 +2783,111 @@ class PentestApp(App):
         else:
             for c in self._manual_creds:
                 self._show_cred_in_table(c, source="manual")
+
+    # ── Identities table (pipeline layout) ─────────────────────────────────────
+
+    def _add_identity(self, c: dict) -> None:
+        """Track an identity in the Identities tab. Shows per-service cap of rows;
+        the rest are accessible via /identity <service> list."""
+        try:
+            dt = self.query_one("#identities-table", DataTable)
+        except Exception:
+            return
+        username = c.get("username") or c.get("user") or ""
+        if not username:
+            return
+        service  = (c.get("service") or c.get("location") or "unknown").lower()
+        host     = c.get("location") or ""
+        verified = c.get("verified", False)
+        secret   = c.get("secret") or c.get("password") or ""
+        fmt      = (c.get("secret_format") or "").lower()
+        ctype    = (c.get("cred_type") or "password").lower()
+
+        # Access level: cleartext/passable hash > non-cracked hash/ticket > identified-only
+        if ctype == "password" and secret:
+            access = "✓ cleartext"
+        elif fmt in ("ntlm", "netlm", "rc4", "aes256") and secret:
+            access = "✓ passable hash"
+        elif secret:
+            access = "hash/ticket"
+        else:
+            access = "identified"
+
+        row_key = f"id|{username}|{service}|{host}"
+        svc_rows = self._identity_rows.setdefault(service, [])
+
+        if row_key in svc_rows:
+            # Update existing row
+            rk = next((k for k in dt.rows if str(k.value) == row_key), None)
+            if rk:
+                dt.update_cell(rk, "Access", access, update_width=True)
+            return
+
+        self._identity_total += 1
+        svc_rows.append(row_key)
+
+        if len(svc_rows) <= _IDENTITY_PER_SERVICE:
+            source = c.get("source_agent") or ""
+            dt.add_row(username, service, host, access, source, key=row_key)
+
+        self._sync_identity_tab_label()
+
+    def _sync_identity_tab_label(self) -> None:
+        """Update the Identities tab title with total count."""
+        try:
+            tabs = self.query_one("#info-tabs", TabbedContent)
+            tab = tabs.get_tab("tab-identities")
+            overflow = self._identity_total - sum(
+                min(len(rows), _IDENTITY_PER_SERVICE)
+                for rows in self._identity_rows.values()
+            )
+            if overflow > 0:
+                tab.label = f"Identities ({self._identity_total}; +{overflow} hidden)"
+            elif self._identity_total:
+                tab.label = f"Identities ({self._identity_total})"
+        except Exception:
+            pass
+
+    def _refresh_identities_table(self) -> None:
+        """Rebuild the Identities tab from the engagement state."""
+        try:
+            dt = self.query_one("#identities-table", DataTable)
+        except Exception:
+            return
+        dt.clear()
+        self._identity_rows.clear()
+        self._identity_total = 0
+        if self._current_state is not None:
+            for c in self._current_state.credentials:
+                self._add_identity(c.model_dump())
+
+    def _identity_list_for_service(self, service: str) -> list[str]:
+        """Full identity list for a specific service (for /identity command)."""
+        lines = []
+        svc = service.lower()
+        creds = []
+        if self._current_state is not None:
+            creds = [c for c in self._current_state.credentials
+                     if (c.service or c.location or "").lower() == svc]
+        if not creds:
+            return [f"No identities found for service '{service}'."]
+        lines.append(f"Identities for [bold]{service}[/bold] ({len(creds)} total):")
+        lines.append("")
+        for i, c in enumerate(creds, 1):
+            user = c.username or "(unknown)"
+            fmt = (c.secret_format or "").lower()
+            ctype = (c.cred_type or "password").lower()
+            if ctype == "password" and c.secret:
+                access = "✓ cleartext"
+            elif fmt in ("ntlm", "netlm", "rc4", "aes256") and c.secret:
+                access = "✓ passable hash"
+            elif c.secret:
+                access = "hash/ticket"
+            else:
+                access = "identified"
+            loc = c.location or ""
+            lines.append(f"  {i:3d}. {user:<24s}  {access:<18s}  {loc}")
+        return lines
 
     def _cred_list_lines(self) -> list:
         """Numbered list of every credential on the board so the operator can pull
@@ -2814,6 +2973,7 @@ class PentestApp(App):
         self._agent_cols.clear(); self._agent_os_ips.clear()
         self._host_rowdata.clear(); self._hosts_compact.clear()
         self._open_leads.clear()
+        self._identity_rows.clear(); self._identity_total = 0
         self._findings.clear(); self._findings_title_map.clear()
         try:
             self.query_one("#findings-list", ListView).clear()
@@ -2836,14 +2996,15 @@ class PentestApp(App):
         await lp.remove_children()
         self._clear_display_state()
 
-        if self._is_ops_persona:
+        if self._is_ops_persona and not self._use_pipeline_layout:
             info_tabs = TabbedContent(id="info-tabs")
             next_steps = Vertical(id="next-steps-container")
             await lp.mount(info_tabs, next_steps)
-            await info_tabs.add_pane(TabPane("Beacons",  DataTable(id="beacons-table",  cursor_type="row"), id="tab-beacons"))
-            await info_tabs.add_pane(TabPane("Hosts",    DataTable(id="hosts-table",    cursor_type="row"), id="tab-hosts"))
-            await info_tabs.add_pane(TabPane("Creds",    DataTable(id="creds-table",    cursor_type="row"), id="tab-creds"))
-            await info_tabs.add_pane(TabPane("Findings", ListView(id="findings-list"),                      id="tab-findings"))
+            await info_tabs.add_pane(TabPane("Beacons",     DataTable(id="beacons-table",     cursor_type="row"), id="tab-beacons"))
+            await info_tabs.add_pane(TabPane("Hosts",       DataTable(id="hosts-table",       cursor_type="row"), id="tab-hosts"))
+            await info_tabs.add_pane(TabPane("Creds",       DataTable(id="creds-table",       cursor_type="row"), id="tab-creds"))
+            await info_tabs.add_pane(TabPane("Identities",  DataTable(id="identities-table",  cursor_type="row"), id="tab-identities"))
+            await info_tabs.add_pane(TabPane("Findings",    ListView(id="findings-list"),                         id="tab-findings"))
             await next_steps.mount(
                 Static("● SUGGESTED COMMANDS", classes="pane-header", id="next-steps-label"),
                 ListView(id="next-steps-content"),
@@ -2857,6 +3018,7 @@ class PentestApp(App):
             )
             await info_tabs.add_pane(TabPane("Hosts",  DataTable(id="hosts-table",  cursor_type="row"), id="tab-hosts"))
             await info_tabs.add_pane(TabPane("Creds",  DataTable(id="creds-table",  cursor_type="row"), id="tab-creds"))
+            await info_tabs.add_pane(TabPane("Identities", DataTable(id="identities-table", cursor_type="row"), id="tab-identities"))
             await info_tabs.add_pane(TabPane("Flags",  DataTable(id="flags-table",  cursor_type="row"), id="tab-flags"))
 
         self._setup_table_columns_after_rebuild()
@@ -2880,6 +3042,12 @@ class PentestApp(App):
             else:
                 for label in ("IP", "Hostname", "Vhost", "OS", "Port", "Protocol", "Service", "Fingerprint", "Tech"):
                     ht.add_column(label, key=label)
+        except Exception:
+            pass
+        try:
+            it = self.query_one("#identities-table", DataTable)
+            for label in ("Username", "Service", "Host", "Access", "Source"):
+                it.add_column(label, key=label)
         except Exception:
             pass
         try:
