@@ -89,6 +89,9 @@ SETTINGS: tuple[Setting, ...] = (
             personas=_CTF),
     Setting("web_search", "Web research",   "Engagement", "bool",
             "Allow the web_search + fetch_url tools", personas=_CTF),
+    Setting("lab_mode",   "Lab mode",       "Engagement", "bool",
+            "Lab / training-range anti-cheat: block writeup/walkthrough searches",
+            personas=_PENTEST_CTF),
     # Engagement — all personas
     Setting("temp", "Temperature", "Engagement", "float",
             "Sampling temperature baseline, 0=focused … 1=varied (null=provider default; "
