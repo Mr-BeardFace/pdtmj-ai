@@ -87,16 +87,24 @@ class Lead(BaseModel):
     detection_risk: Optional[str] = None   # redteam only: low|medium|high|certain
     timestamp: datetime = Field(default_factory=now_local)
 
-    def ev(self, current_frontier: int = 0) -> float:
+    def ev(self, current_frontier: int = 0, *, breadth_mode: bool = False) -> float:
         """Expected progress toward the objective from the current frontier.
 
         `gain` is how many rungs past the current frontier this lead would push
         (clamped ≥ 1 so an at-or-below-frontier lead still has *some* value but is
         dominated by anything that advances). Dead leads score 0 so they're never
-        re-picked."""
+        re-picked.
+
+        In breadth mode (objective met, continuing for coverage), the bias inverts:
+        untouched lower-level surfaces score higher because they represent unexplored
+        attack surface worth documenting."""
         if self.status in _DEAD_STATES:
             return 0.0
-        gain = max(1, level_of(self.reach_level) - current_frontier + 1)
+        if breadth_mode:
+            # ponytail: invert depth bias — reward distance below frontier (untouched surface)
+            gain = max(1, current_frontier - level_of(self.reach_level) + 2)
+        else:
+            gain = max(1, level_of(self.reach_level) - current_frontier + 1)
         return gain * self.prior / _COST_WEIGHT.get(self.cost, 3.0)
 
     @property
@@ -106,6 +114,7 @@ class Lead(BaseModel):
 
 class LeadStore(BaseModel):
     leads: list[Lead] = []
+    breadth_mode: bool = False
 
     def add(self, lead: Lead) -> Lead:
         """Add a lead, de-duplicating on (kind, target, normalized description) so
@@ -145,12 +154,15 @@ class LeadStore(BaseModel):
         return [l for l in self.leads if l.is_open]
 
     def ranked(self) -> list[Lead]:
-        """Open leads, best-first by EV against the current frontier (depth-biased).
-        Ties broken toward the higher rung, then the cheaper lead."""
+        """Open leads, best-first by EV against the current frontier.
+        Depth-biased normally; breadth-biased when objective is met and engine
+        continues for coverage. Ties broken toward the higher rung (or lower rung
+        in breadth mode), then the cheaper lead."""
         cur = self.current_frontier()
+        bm = self.breadth_mode
         return sorted(
             self.open_leads(),
-            key=lambda l: (l.ev(cur), level_of(l.reach_level), -_COST_WEIGHT.get(l.cost, 3.0)),
+            key=lambda l: (l.ev(cur, breadth_mode=bm), level_of(l.reach_level), -_COST_WEIGHT.get(l.cost, 3.0)),
             reverse=True,
         )
 

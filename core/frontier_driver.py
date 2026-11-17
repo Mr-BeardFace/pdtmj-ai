@@ -291,6 +291,8 @@ class FrontierDriver(ParallelDriver):
         frontier_before = self.store.current_frontier()
 
         agent, objective, budget = self._plan_lead(lead)
+        if self.objective.complete() and self.objective.breadth_after:
+            objective = self._BREADTH_CONTEXT + objective
         spec = agent.split("/")[-1]
         self._banner(f"Lead [{lead.reach_level}] → {spec}  ·  {lead.description[:64]}")
         self._run_agent(agent, lead.target or self.target, objective, max_turns=budget)
@@ -383,6 +385,15 @@ class FrontierDriver(ParallelDriver):
         ad = self._domain_specialist_for(lead, surface)
         agent = ad or self._exploit_agent_for(surface)
         return (agent, self._lead_exploit_objective(lead, surface, plan), self.max_turns or 20)
+
+    _BREADTH_CONTEXT = (
+        "⚑ PRIMARY OBJECTIVE MET — continuing for comprehensive coverage.\n"
+        "Your job is to thoroughly assess this remaining attack surface. Enumerate "
+        "services, identify vulnerabilities, and attempt exploitation where viable. "
+        "Document ALL findings (annotate_finding) even if they don't advance the "
+        "frontier — the report needs full coverage. Do NOT exit early because the "
+        "engagement objective is already met; you have budget and work to do.\n\n"
+    )
 
     def _domain_specialist_for(self, lead: Lead, surface: Optional[Surface]) -> Optional[str]:
         """The AD specialist when the lead OR its surface reads like Active Directory,
@@ -477,14 +488,17 @@ class FrontierDriver(ParallelDriver):
 
     def _cred_objective(self, lead: Lead) -> str:
         return (
-            f"PRIORITY LEAD: {lead.description}. Use the credential(s) already in the engagement "
-            "state VERBATIM against every applicable service on reachable hosts (SSH, SMB, WinRM, "
-            "FTP, database, web login) — operators reuse passwords across services, so spray the "
-            "known secret broadly before anything else. Do NOT brute-force. When a login lands, "
-            "establish a session, record_credential the working pair (and where it works), capture "
-            "any flag, and look immediately for the next step toward the objective. If none of the "
-            "known credentials authenticate anywhere new, say so plainly and stop — that releases "
-            "this lead. Stay in scope and non-destructive."
+            f"PRIORITY LEAD: {lead.description}. "
+            "CREDENTIAL ISOLATION — work this lead at its discovery access level first:\n"
+            "  1. Use ONLY the credential(s) described in this lead VERBATIM against every "
+            "applicable service on reachable hosts (SSH, SMB, WinRM, FTP, database, web login).\n"
+            "  2. ONLY if those credentials fail to authenticate anywhere new, THEN try other "
+            "known credentials from the engagement state as a fallback.\n"
+            "Do NOT brute-force. When a login lands, establish a session, record_credential the "
+            "working pair (and where it works), capture any flag, and look immediately for the "
+            "next step toward the objective. If none of the credentials authenticate anywhere "
+            "new, say so plainly and stop — that releases this lead. Stay in scope and "
+            "non-destructive."
         )
 
     def _lead_exploit_objective(self, lead: Lead, surface: Optional[Surface], plan) -> str:

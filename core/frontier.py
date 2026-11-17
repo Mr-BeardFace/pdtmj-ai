@@ -112,6 +112,10 @@ class FrontierController:
                 self._halted_on_objective = True
                 self._emit("objective_met", self.objective)
                 break
+            if self.objective.complete() and self.objective.breadth_after:
+                if not self.store.breadth_mode:
+                    self.store.breadth_mode = True
+                    self._emit("breadth_mode", "objective met — switching to coverage")
             lead = self.store.pick_top()
             if lead is None:
                 # Frontier is cold — nothing hot to push. Only now do we go wide.
