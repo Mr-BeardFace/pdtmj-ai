@@ -345,8 +345,14 @@ def op_creds(op: str | None, reveal: bool) -> None:
     t.add_column("Source",  width=14)
     t.add_column("V", width=1)
     for r in rows:
-        secret  = r.secret or ""
-        display = secret if reveal else (secret[:2] + "***" if len(secret) > 3 else secret)
+        cleartext = getattr(r, "cleartext", "") or ""
+        secret = cleartext if (r.cred_type == "hash" and cleartext) else (r.secret or "")
+        if reveal:
+            display = secret
+        else:
+            display = secret[:2] + "***" if len(secret) > 3 else secret
+        if r.cred_type == "hash" and cleartext:
+            display = f"🔓 {display}"
         verified = "[green]✓[/green]" if getattr(r, "verified", False) else ""
         t.add_row(r.cred_type, r.username or "", display, r.service or "", r.location or "", verified)
     _console.print(t)

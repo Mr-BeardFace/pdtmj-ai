@@ -206,6 +206,7 @@ class Credential(BaseModel):
     port: Optional[int] = None
     source_agent: str = ""
     verified: bool = False
+    cleartext: str = ""             # original plaintext when secret is a cracked hash
     timestamp: datetime = Field(default_factory=lambda: now_local())
 
 
@@ -1188,6 +1189,7 @@ class EngagementState(BaseModel):
         for c in self.credentials:
             d = c.model_dump(mode="json")
             d["secret"] = ""                                    # never persist cleartext
+            d["cleartext"] = ""                                   # ditto
             d["secret_masked"] = c.secret_masked or mask_secret(c.secret)
             creds.append(d)
         return {
@@ -1371,16 +1373,24 @@ class EngagementState(BaseModel):
 
         elif tool_name == "hashcat_crack":
             # A cracked hash becomes a verified plaintext credential.
+            # Also back-fill cleartext on the original hash credential.
             for c in result.get("cracked", []):
-                if c.get("plaintext"):
-                    self.add_credential(
-                        cred_type="password",
-                        secret=c["plaintext"],
-                        username=c.get("username") or None,
-                        location=c.get("location") or "cracked hash",
-                        source_agent=source_agent,
-                        verified=True,
-                    )
+                plaintext = c.get("plaintext")
+                if not plaintext:
+                    continue
+                self.add_credential(
+                    cred_type="password",
+                    secret=plaintext,
+                    username=c.get("username") or None,
+                    location=c.get("location") or "cracked hash",
+                    source_agent=source_agent,
+                    verified=True,
+                )
+                hash_val = c.get("hash", "")
+                if hash_val:
+                    for existing in self.credentials:
+                        if existing.cred_type == "hash" and existing.secret == hash_val:
+                            existing.cleartext = plaintext
 
     # ── context block ─────────────────────────────────────────────────────────
 

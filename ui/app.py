@@ -2744,6 +2744,7 @@ class PentestApp(App):
         cred_type = c.get("cred_type") or "password"
         username  = c.get("username") or c.get("user") or ""
         secret    = c.get("secret") or c.get("password") or ""
+        cleartext = c.get("cleartext", "") or ""
         fmt       = c.get("secret_format", "") or ""
         location_base = c.get("location") or c.get("service") or ""
         used_at   = c.get("used_at") or []
@@ -2751,13 +2752,17 @@ class PentestApp(App):
         if used_at:
             location = (location_base + "  ·works@ " + ", ".join(used_at)).strip(" ·")
         verified  = "✓" if c.get("verified") else ""
-        masked    = mask_secret(secret)
+        # For hash creds with a cracked cleartext, show the cleartext (masked)
+        display_secret = cleartext if (cred_type == "hash" and cleartext) else secret
+        masked = mask_secret(display_secret)
+        if cred_type == "hash" and cleartext:
+            masked = f"🔓 {masked}"
 
         # Key on the STABLE identity (base location, not the works@-augmented one)
         # so a later update — verified / used_at added — refreshes the row in place
         # instead of inserting a duplicate.
         row_key = f"{cred_type}|{username}|{location_base}|{secret[:8]}"
-        self._cred_reveal[row_key] = secret
+        self._cred_reveal[row_key] = cleartext if (cred_type == "hash" and cleartext) else secret
 
         if dt.row_count > 0 and row_key in [str(k.value) for k in dt.rows]:
             rk = next(k for k in dt.rows if str(k.value) == row_key)
