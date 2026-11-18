@@ -4206,11 +4206,15 @@ class PentestApp(App):
             hosts = []
             if self._current_state is not None and self._current_state.recon:
                 hosts = self._current_state.recon.open_ports
+            show_usage = persona == "pentest-ctf"
+            if persona in ("pentest", "redteam"):
+                from core.config import get as _cfg
+                show_usage = bool(_cfg("exploitation", False)) and not bool(_cfg("confirm_exploit", True))
             path = generate_merged_report(completed_runs, out_dir, fmt="html",
                                           target=target, persistence=persistence,
                                           termination=termination,
                                           persona=persona, op_name=op_name, iocs=iocs,
-                                          hosts=hosts)
+                                          hosts=hosts, show_usage=show_usage)
             self.post_message(PentestApp.Activity(f"[green]HTML Report:[/green] {path}"))
         except Exception as e:
             self.post_message(PentestApp.Activity(f"[red]Report failed: {e}[/red]"))

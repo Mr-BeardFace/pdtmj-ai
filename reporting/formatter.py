@@ -342,7 +342,7 @@ def _get_env() -> Environment:
 def _render(run: EngagementRun, fmt: str, output_dir: Path,
             persistence: list | None = None, termination: str = "completed",
             persona: str = "", op_name: str = "", iocs: list | None = None,
-            hosts: list | None = None) -> Path:
+            hosts: list | None = None, show_usage: bool = False) -> Path:
     output_dir.mkdir(exist_ok=True)
     env = _get_env()
 
@@ -397,6 +397,7 @@ def _render(run: EngagementRun, fmt: str, output_dir: Path,
         iocs=iocs or [],
         hosts=hosts or [],
         attack_path=attack_path,
+        show_usage=show_usage,
     )
 
     if fmt == "html":
@@ -414,10 +415,10 @@ def _render(run: EngagementRun, fmt: str, output_dir: Path,
 
 def generate_report(run: EngagementRun, output_dir: Path, fmt: str = "html",
                     persona: str = "", op_name: str = "", iocs: list | None = None,
-                    hosts: list | None = None) -> Path:
+                    hosts: list | None = None, show_usage: bool = False) -> Path:
     """Generate a report for a single EngagementRun."""
     return _render(run, fmt, output_dir, persona=persona, op_name=op_name, iocs=iocs,
-                   hosts=hosts)
+                   hosts=hosts, show_usage=show_usage)
 
 
 def merge_runs(
@@ -435,6 +436,7 @@ def merge_runs(
     if not runs:
         raise ValueError("No runs to merge")
 
+    from core.models import TokenUsage
     merged = EngagementRun(
         id=str(uuid.uuid4())[:12],
         agent=agent_name,
@@ -443,6 +445,12 @@ def merge_runs(
         end_time=runs[-1].end_time or now_local(),
         status="complete",
         estimated_cost_usd=sum(r.estimated_cost_usd for r in runs),
+        token_usage=TokenUsage(
+            input_tokens=sum(r.token_usage.input_tokens for r in runs),
+            output_tokens=sum(r.token_usage.output_tokens for r in runs),
+            cache_read_tokens=sum(r.token_usage.cache_read_tokens for r in runs),
+            cache_write_tokens=sum(r.token_usage.cache_write_tokens for r in runs),
+        ),
         executive_summary=next((r.executive_summary for r in runs if r.executive_summary), None),
     )
 
@@ -534,8 +542,10 @@ def generate_merged_report(
     op_name: str = "",
     iocs: list | None = None,
     hosts: list | None = None,
+    show_usage: bool = False,
 ) -> Path:
     """Merge multiple EngagementRun objects into one report."""
     return _render(merge_runs(runs, target=target), fmt, output_dir,
                    persistence=persistence, termination=termination,
-                   persona=persona, op_name=op_name, iocs=iocs, hosts=hosts)
+                   persona=persona, op_name=op_name, iocs=iocs, hosts=hosts,
+                   show_usage=show_usage)

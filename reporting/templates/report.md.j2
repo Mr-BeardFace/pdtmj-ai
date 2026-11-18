@@ -10,7 +10,8 @@ generated: {{ generated_at }}
 
 # Penetration Test Report — {{ run.target }}
 
-*Written by: {{ run.agent }} agent  |  Delivered: {{ generated_at }}*
+*Written by: {{ run.agent }} agent  |  Delivered: {{ generated_at }}*{% if show_usage %}
+*{% if run.token_usage and (run.token_usage.input_tokens or run.token_usage.output_tokens) %}Tokens: {{ "{:,}".format(run.token_usage.input_tokens) }} in / {{ "{:,}".format(run.token_usage.output_tokens) }} out  |  {% endif %}{% if run.estimated_cost_usd %}Cost: ${{ "%.4f" | format(run.estimated_cost_usd) }}{% endif %}*{% endif %}
 
 {% if is_draft %}
 > ⚠ **DRAFT — generated without the report-writer pass** (the engagement was paused or stopped before the reporting phase). The executive summary and technical details are assembled from raw run data and may be incomplete. Resume the engagement to reporting for the synthesized version.

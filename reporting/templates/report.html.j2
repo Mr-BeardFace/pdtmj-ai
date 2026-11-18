@@ -345,7 +345,10 @@
       {% if not is_ops_report %}<span><strong>Status</strong> {{ run.status | capitalize }}</span>{% endif %}
       <span><strong>Period</strong> {{ run.start_time.strftime("%Y-%m-%d %H:%M") }} – {{ run.end_time.strftime("%Y-%m-%d %H:%M UTC") if run.end_time else "In Progress" }}</span>
       <span><strong>Generated</strong> {{ generated_at }}</span>
-      {% if not is_ops_report and run.estimated_cost_usd %}<span><strong>Model Cost</strong> ${{ "%.4f" | format(run.estimated_cost_usd) }}</span>{% endif %}
+      {% if show_usage %}
+      {% if run.token_usage and (run.token_usage.input_tokens or run.token_usage.output_tokens) %}<span><strong>Tokens</strong> {{ "{:,}".format(run.token_usage.input_tokens) }} in / {{ "{:,}".format(run.token_usage.output_tokens) }} out</span>{% endif %}
+      {% if run.estimated_cost_usd %}<span><strong>Cost</strong> ${{ "%.4f" | format(run.estimated_cost_usd) }}</span>{% endif %}
+      {% endif %}
     </div>
   </div>
 
