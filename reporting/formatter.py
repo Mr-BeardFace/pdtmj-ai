@@ -98,6 +98,8 @@ def narrative_blocks(text) -> list[dict]:
 # fills each marker with the REAL tool command + captured output from the run — its
 # own "screenshot" — wherever a matching tool call exists. Unmatched markers (a
 # purely manual visual) are dropped.
+_MERMAID_BLOCK_RE = re.compile(r"```mermaid\s*\n(.*?)```", re.DOTALL)
+
 _IMAGE_MARKER_RE = re.compile(r"\[IMAGE:\s*(.*?)\]", re.IGNORECASE | re.DOTALL)
 
 # Generic words that don't help tie a marker description to a specific tool call.
@@ -350,6 +352,17 @@ def _render(run: EngagementRun, fmt: str, output_dir: Path,
     if run.technical_overview:
         run.technical_overview = embed_captures(run.technical_overview, run.tool_calls)
 
+    # Extract mermaid attack-path diagram from the technical overview (if the
+    # report-writer agent included one) and strip it from the prose narrative.
+    attack_path = ""
+    if run.technical_overview and persona in ("pentest", "redteam"):
+        m = _MERMAID_BLOCK_RE.search(run.technical_overview)
+        if m:
+            attack_path = m.group(1).strip()
+            run.technical_overview = (
+                run.technical_overview[:m.start()] + run.technical_overview[m.end():]
+            ).strip()
+
     # Separate dead ends from reportable findings — dead ends go in the
     # technical overview narrative, not the findings table.
     reportable = [f for f in run.findings if f.type != "dead_end"]
@@ -383,6 +396,7 @@ def _render(run: EngagementRun, fmt: str, output_dir: Path,
         op_name=op_name,
         iocs=iocs or [],
         hosts=hosts or [],
+        attack_path=attack_path,
     )
 
     if fmt == "html":

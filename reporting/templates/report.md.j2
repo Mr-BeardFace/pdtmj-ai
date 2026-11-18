@@ -72,6 +72,17 @@ A penetration test was conducted against `{{ run.target }}`. {{ run.findings | l
 {% endfor %}
 {% endif %}
 
+{% if attack_path %}
+
+---
+
+## Attack Path
+
+```mermaid
+{{ attack_path }}
+```
+{% endif %}
+
 ---
 
 ## Technical Details

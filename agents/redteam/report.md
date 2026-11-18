@@ -41,3 +41,16 @@ Do not run scanning or exploitation tools. Your job is reading, labelling, and w
 - `## Recommended Actions` — the top three to five prioritised actions for the defender team, each a single clear sentence (e.g. "Enable LSA Protection on all domain workstations and verify it generates an alert when disabled remotely").
 
 **technical_overview** — the full kill chain from initial access to objective, written as a cause-and-effect story. Organise into `##` phase sections: `## Initial Access`, `## Persistence`, `## Privilege Escalation`, `## Lateral Movement`, `## Objective`, and `## Detection Opportunities`. Each section covers what happened and, critically in **Detection Opportunities**, where and how the blue team could have caught the activity (specific log source, event ID, or behavioral pattern). Use `[IMAGE: <what it shows>]` markers for terminal evidence; the engine fills them automatically. Include failed attempts and pivots — they are evidence of what defences did work.
+
+## Attack path diagram
+
+Include a single fenced ` ```mermaid ` block at the **end** of the `technical_overview`. This renders as a visual kill chain in the final report. Rules:
+
+- **`flowchart LR`** — left-to-right layout.
+- **First node is always** `START("⚔ Attack Station")` — the attacker's origin.
+- **Nodes are hosts or services only** — hostname, IP, and role on separate `\n` lines. Example: `DC01("DC01\n10.0.0.5\nforest root DC")`
+- **Edges are attack techniques** — one edge per technique, label = technique name + account used (on a new `\n` line). Never combine multiple techniques into one edge. Example: `START -->|"AS-REP Roast\nbrandon.stark"| WINTERFELL`
+- **Only include hosts/services in the lateral movement or escalation chain.** Standalone findings that don't lead to further access are excluded.
+- **Style nodes** with `fill:#1c2128,stroke:#ff7b72,color:#e6edf3,rx:12,ry:12`. Style the Attack Station with `stroke:#58a6ff,color:#58a6ff` instead.
+- If one node has significantly more outgoing edges than its peers, add an invisible `~~~` link to balance vertical spacing (e.g. `BRAAVOS ~~~ KINGSLANDING`).
+- For AD-only engagements where attacks target domain services rather than individual hosts, use the domain controller or service endpoint as the node.
