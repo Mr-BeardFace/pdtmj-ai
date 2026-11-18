@@ -1170,9 +1170,35 @@ class EngagementState(BaseModel):
                 source_agent=c.get("source_agent", "loaded"), verified=bool(c.get("verified")))
             if cred is not None and c.get("secret_masked"):
                 cred.secret_masked = c["secret_masked"]      # keep the original masked form
+        for f in snap.get("flags", []) or []:
+            try:
+                s.flags.append(Flag(**f))
+            except Exception:
+                pass
+        for p in snap.get("persistence", []) or []:
+            try:
+                s.persistence.append(PersistenceItem(**p))
+            except Exception:
+                pass
+        for of in snap.get("operational_facts", []) or []:
+            try:
+                s.operational_facts.append(OperationalFact(**of))
+            except Exception:
+                pass
         recon = snap.get("recon", {}) or {}
         s.recon.host_names.update(recon.get("host_names", {}) or {})
         s.recon.os_info.update(recon.get("os_info", {}) or {})
+        for p in recon.get("open_ports", []) or []:
+            s.recon.open_ports.append(p)
+        for u in recon.get("users", []) or []:
+            if u and u not in s.recon.users:
+                s.recon.users.append(u)
+        for g in recon.get("groups", []) or []:
+            if g and g not in s.recon.groups:
+                s.recon.groups.append(g)
+        for sh in recon.get("shares", []) or []:
+            if sh and sh not in s.recon.shares:
+                s.recon.shares.append(sh)
         for svc in snap.get("services", []) or []:
             try:
                 s.services.append(dict(svc))
@@ -1200,7 +1226,11 @@ class EngagementState(BaseModel):
             "persistence":   [p.model_dump(mode="json") for p in self.persistence],
             "operational_facts": [f.model_dump(mode="json") for f in self.operational_facts],
             "recon":         {"os_info":    dict(self.recon.os_info),
-                              "host_names": dict(self.recon.host_names)},
+                              "host_names": dict(self.recon.host_names),
+                              "open_ports": list(self.recon.open_ports),
+                              "users":      list(self.recon.users),
+                              "groups":     list(self.recon.groups),
+                              "shares":     list(self.recon.shares)},
             "scope_targets": list(self.scope_targets),
             "out_of_scope":  list(self.out_of_scope),
         }
@@ -1371,7 +1401,7 @@ class EngagementState(BaseModel):
                 if s not in self.recon.shares:
                     self.recon.shares.append(s)
 
-        elif tool_name == "hashcat_crack":
+        elif tool_name in ("hashcat_crack", "john"):
             # A cracked hash becomes a verified plaintext credential.
             # Also back-fill cleartext on the original hash credential.
             for c in result.get("cracked", []):
@@ -1389,7 +1419,7 @@ class EngagementState(BaseModel):
                 hash_val = c.get("hash", "")
                 if hash_val:
                     for existing in self.credentials:
-                        if existing.cred_type == "hash" and existing.secret == hash_val:
+                        if existing.cred_type == "hash" and hash_val in existing.secret:
                             existing.cleartext = plaintext
 
     # ── context block ─────────────────────────────────────────────────────────

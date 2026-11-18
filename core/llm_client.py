@@ -180,6 +180,8 @@ def _bedrock_converse_response(resp: dict) -> "_Message":
     usage = _Usage(
         input_tokens=usage_data.get("inputTokens", 0),
         output_tokens=usage_data.get("outputTokens", 0),
+        cache_read_input_tokens=usage_data.get("cacheReadInputTokenCount", 0),
+        cache_creation_input_tokens=usage_data.get("cacheWriteInputTokenCount", 0),
     )
     return _Message(stop_reason=stop_reason, content=content, usage=usage)
 

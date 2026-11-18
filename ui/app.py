@@ -609,11 +609,12 @@ class PentestApp(App):
     class Cred(Message):
         def __init__(self, cred_type: str, username: str, secret: str,
                      secret_masked: str, secret_format: str, location: str,
-                     verified: bool, used_at: list | None = None) -> None:
+                     verified: bool, used_at: list | None = None,
+                     cleartext: str = "") -> None:
             self.cred_type = cred_type; self.username = username
             self.secret = secret; self.secret_masked = secret_masked
             self.secret_format = secret_format; self.location = location
-            self.used_at = used_at or []
+            self.used_at = used_at or []; self.cleartext = cleartext
             self.verified = verified; super().__init__()
 
     class Flag(Message):
@@ -849,10 +850,11 @@ class PentestApp(App):
         if self._is_ops_persona:
             for label in ("IP", "Hostname", "OS", "Ports"):
                 ht.add_column(label, key=label)
-            # Beacons table (ops personas only)
-            bt = self.query_one("#beacons-table", DataTable)
-            for label in ("ID", "From", "OS", "Connected"):
-                bt.add_column(label, key=label)
+            # Beacons table (ops personas only, not pipeline layout)
+            if not self._use_pipeline_layout:
+                bt = self.query_one("#beacons-table", DataTable)
+                for label in ("ID", "From", "OS", "Connected"):
+                    bt.add_column(label, key=label)
         else:
             for label in ("IP", "Hostname", "Vhost", "OS", "Port", "Protocol", "Service", "Fingerprint", "Tech"):
                 ht.add_column(label, key=label)
@@ -1406,9 +1408,17 @@ class PentestApp(App):
                     lines.append(f"Removed from scope: {', '.join(removed)}")
                     lines.append("Agents will no longer act against it; it is now excluded.")
                     for t in removed:
+                        # Non-compact layout: row keys are "ip:port/proto:vhost"
                         to_drop = [rk for rk in list(self._host_rows) if rk.startswith(f"{t}:")]
                         for rk in to_drop:
                             self._remove_host_row(rk)
+                        # Compact layout (ops): row key is bare IP
+                        if t in self._hosts_compact:
+                            del self._hosts_compact[t]
+                            try:
+                                self.query_one("#hosts-table", DataTable).remove_row(t)
+                            except Exception:
+                                pass
                 if missing:
                     lines.append(f"Not in scope (now excluded anyway): {', '.join(missing)}")
                 self._show_cmd_output(lines, bool(removed))
@@ -2575,16 +2585,45 @@ class PentestApp(App):
             self._show_cmd_output(
                 ["Engagement ended. Reporting is OFF — run /report to make one on demand."], True)
 
+    def _report_extra_kwargs(self) -> dict:
+        """Compute the extra kwargs for generate_merged_report from live state."""
+        persona = self._active_persona or ""
+        hosts = []
+        if self._current_state is not None and self._current_state.recon:
+            hosts = self._current_state.recon.open_ports
+        show_usage = persona == "pentest-ctf"
+        if persona in ("pentest", "redteam"):
+            from core.config import get as _cfg
+            show_usage = bool(_cfg("exploitation", False)) and not bool(_cfg("confirm_exploit", True))
+        op_name = ""
+        iocs: list = []
+        if persona in ("pentest", "redteam"):
+            try:
+                from core.paths import OPS_DIR
+                active_op_file = OPS_DIR / ".active_op"
+                if active_op_file.exists():
+                    op_name = active_op_file.read_text(encoding="utf-8").strip()
+                if op_name:
+                    from core.engagement_store import EngagementStore
+                    store, _, _ = EngagementStore.open_or_create(op_name)
+                    iocs = store.load_iocs()
+            except Exception:
+                pass
+        return dict(persona=persona, hosts=hosts, show_usage=show_usage,
+                    op_name=op_name, iocs=iocs)
+
     def _cmd_report(self) -> None:
         """Handle /report — generate HTML from last assessment, or most recent runs."""
         from reporting.formatter import generate_merged_report
         self._show_cmd_output(["Generating HTML report…"], True)
+        extra = self._report_extra_kwargs()
         if self._current_assessment and self._current_assessment.runs:
             try:
                 path = generate_merged_report(
                     self._current_assessment.runs,
                     self._current_assessment_dir or RESULTS_DIR,
                     fmt="html", target=self._current_assessment.target,
+                    **extra,
                 )
                 self._show_cmd_output([f"Report saved: {path}"], True)
                 self._activity(f"[green]HTML Report:[/green] {path}")
@@ -2614,7 +2653,8 @@ class PentestApp(App):
                         if d.get("target") == first_target:
                             runs.append(EngagementRun(**d))
                     runs.sort(key=lambda r: r.start_time)
-                    path = generate_merged_report(runs, files[0].parent, fmt="html", target=first_target)
+                    path = generate_merged_report(runs, files[0].parent, fmt="html",
+                                                  target=first_target, **extra)
                     self._show_cmd_output([f"Report saved: {path}"], True)
                     self._activity(f"[green]HTML Report:[/green] {path}")
                 except Exception as e:
@@ -2626,6 +2666,7 @@ class PentestApp(App):
                 path = generate_merged_report(
                     assessment.runs, assessment_files[0].parent,
                     fmt="html", target=assessment.target,
+                    **extra,
                 )
                 self._show_cmd_output([f"Report saved: {path}"], True)
                 self._activity(f"[green]HTML Report:[/green] {path}")
@@ -2788,6 +2829,7 @@ class PentestApp(App):
         else:
             for c in self._manual_creds:
                 self._show_cred_in_table(c, source="manual")
+        self._refresh_identities_table()
 
     # ── Identities table (pipeline layout) ─────────────────────────────────────
 
@@ -2801,8 +2843,16 @@ class PentestApp(App):
         username = c.get("username") or c.get("user") or ""
         if not username:
             return
-        service  = (c.get("service") or c.get("location") or "unknown").lower()
-        host     = c.get("location") or ""
+        service  = (c.get("service") or "unknown").lower()
+        # ponytail: location is typically "{service} {host}" — strip the service prefix
+        loc = c.get("location") or ""
+        if " " in loc and loc.lower().startswith(service):
+            host = loc.split(None, 1)[1]
+        elif " " in loc:
+            # Freeform location — grab last word (usually the host/IP)
+            host = loc.rsplit(None, 1)[-1]
+        else:
+            host = loc
         verified = c.get("verified", False)
         secret   = c.get("secret") or c.get("password") or ""
         fmt      = (c.get("secret_format") or "").lower()
@@ -2865,6 +2915,9 @@ class PentestApp(App):
         if self._current_state is not None:
             for c in self._current_state.credentials:
                 self._add_identity(c.model_dump())
+            # Also surface enumerated users from recon (not tied to a credential)
+            for u in self._current_state.recon.users:
+                self._add_identity({"username": u, "service": "enumerated", "cred_type": "none"})
 
     def _identity_list_for_service(self, service: str) -> list[str]:
         """Full identity list for a specific service (for /identity command)."""
@@ -3384,6 +3437,7 @@ class PentestApp(App):
             "location":      ev.location,
             "used_at":       ev.used_at,
             "verified":      ev.verified,
+            "cleartext":     ev.cleartext,
         }, source="agent")
 
     def on_pentest_app_flag(self, ev: Flag) -> None:
@@ -3749,6 +3803,7 @@ class PentestApp(App):
                         location=c.get("location", "") or c.get("service", ""),
                         used_at=c.get("used_at", []),
                         verified=c.get("verified", False),
+                        cleartext=c.get("cleartext", ""),
                     ))
                 leads = ev.get("leads")
                 if leads is not None:
@@ -3773,6 +3828,7 @@ class PentestApp(App):
                     location=ev.get("location", ""),
                     used_at=ev.get("used_at", []),
                     verified=ev.get("verified", False),
+                    cleartext=ev.get("cleartext", ""),
                 ))
                 # Surface the source line + context that this secret came from — MASKED
                 # (we now know the secret, so the evidence renders masked, not clear).

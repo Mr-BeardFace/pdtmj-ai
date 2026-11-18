@@ -103,6 +103,20 @@ The following approaches were attempted but did not yield exploitable results:
 - **{{ f.title }}** ({{ f.target }}): {{ f.description[:200] }}
 {% endfor %}
 {% endif %}
+{% if persistence %}
+
+---
+
+## Cleanup Required — Persistence Planted
+
+The following footholds were established during testing and **must be removed** by the operator.
+
+| Type | Host | OS | Detail | Removal |
+|------|------|----|--------|---------|
+{% for p in persistence -%}
+| {{ p.kind }} | `{{ p.host }}` | {{ p.os }} | {{ p.detail }} | {% if p.cleanup %}`{{ p.cleanup }}`{% else %}—{% endif %} |
+{% endfor %}
+{% endif %}
 
 ---
 

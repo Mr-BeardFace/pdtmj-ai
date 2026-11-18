@@ -2331,6 +2331,25 @@ class Orchestrator:
                                    username=c.get("username") or "", secret=pw,
                                    secret_masked=mask_secret(pw), secret_format="",
                                    location=c.get("location") or "cracked hash", verified=True)
+                # Re-emit updated hash creds (now with cleartext) so TUI refreshes + persist
+                if self.state:
+                    for existing in self.state.credentials:
+                        if existing.cred_type == "hash" and existing.cleartext:
+                            self._emit("credential",
+                                       cred_type=existing.cred_type,
+                                       username=existing.username or "",
+                                       secret=existing.secret,
+                                       secret_masked=existing.secret_masked,
+                                       secret_format=existing.secret_format,
+                                       location=existing.location,
+                                       used_at=list(existing.used_at),
+                                       verified=existing.verified,
+                                       cleartext=existing.cleartext)
+                            if self._store:
+                                try:
+                                    self._store.upsert_credential(existing)
+                                except Exception:
+                                    pass
 
         if run is not None:
             tc = ToolCall(id=f"job-{job.id}", tool_name=name, inputs=job.inputs)

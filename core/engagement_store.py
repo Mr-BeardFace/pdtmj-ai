@@ -19,8 +19,6 @@ import sqlite3
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
-
 from core.paths import OPS_DIR
 
 # Migration columns: (table, col_name, col_def) — added if missing on open
@@ -326,7 +324,7 @@ class EngagementStore:
         self._conn.commit()
 
     def upsert_credential(self, cred) -> None:
-        """Insert or replace a Credential (by id). Masked secret only."""
+        """Insert or replace a Credential (by id). Stores full secret for ops reuse."""
         self._conn.execute(
             "INSERT OR REPLACE INTO credentials (id, engagement_id, json, created_at)"
             " VALUES (?, ?, ?, ?)",
@@ -368,25 +366,6 @@ class EngagementStore:
             (self.engagement_id, run_id, input_tokens, output_tokens,
              cache_read, cache_write, cost_usd, _now()),
         )
-        self._conn.commit()
-
-    def upsert_run(self, run_id: str, agent: str, status: str, summary: str = "") -> None:
-        """Create or update a run record."""
-        existing = self._conn.execute(
-            "SELECT id FROM runs WHERE id = ?", (run_id,)
-        ).fetchone()
-        if existing is None:
-            self._conn.execute(
-                "INSERT INTO runs (id, engagement_id, agent, status, summary, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                (run_id, self.engagement_id, agent, status, summary, _now()),
-            )
-        else:
-            ended_at = _now() if status in ("complete", "failed") else None
-            self._conn.execute(
-                "UPDATE runs SET status = ?, summary = ?, ended_at = ? WHERE id = ?",
-                (status, summary, ended_at, run_id),
-            )
         self._conn.commit()
 
     def upsert_ioc(self, ioc) -> None:
@@ -761,23 +740,7 @@ class EngagementStore:
         )
         self._conn.commit()
 
-    def load_activity_records(self, limit: int = 200) -> list[dict]:
-        rows = self._conn.execute(
-            "SELECT activity_id, beacon_id, timestamp, ioc_type, execution_context,"
-            "       execution_host, user_context, command_action, result, observable_artifacts"
-            " FROM activity_records WHERE engagement_id = ? ORDER BY created_at DESC LIMIT ?",
-            (self.engagement_id, limit),
-        ).fetchall()
-        return [dict(r) for r in rows]
-
     # ── Log cursors ────────────────────────────────────────────────────────────
-
-    def get_log_cursor(self, file_path: str) -> int:
-        row = self._conn.execute(
-            "SELECT byte_offset FROM log_cursors WHERE file_path = ? AND engagement_id = ?",
-            (file_path, self.engagement_id),
-        ).fetchone()
-        return row["byte_offset"] if row else 0
 
     def set_log_cursor(self, file_path: str, offset: int) -> None:
         self._conn.execute(
@@ -908,27 +871,7 @@ class EngagementStore:
         )
         self._conn.commit()
 
-    def load_persistence(self) -> list[dict]:
-        rows = self._conn.execute(
-            "SELECT kind, host, detail, cleanup, created_at FROM persistence"
-            " WHERE engagement_id = ? ORDER BY id",
-            (self.engagement_id,),
-        ).fetchall()
-        return [dict(r) for r in rows]
-
     # ── Token totals summary ───────────────────────────────────────────────────
-
-    def get_token_summary(self) -> dict:
-        """Quick token totals + cost across all analyst cycles for this engagement."""
-        row = self._conn.execute(
-            "SELECT SUM(input_tokens) as inp, SUM(output_tokens) as out, SUM(cost_usd) as cost"
-            " FROM token_usage WHERE engagement_id = ?",
-            (self.engagement_id,),
-        ).fetchone()
-        if not row or row["inp"] is None:
-            return {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
-        return {"input_tokens": int(row["inp"]), "output_tokens": int(row["out"]),
-                "cost_usd": float(row["cost"] or 0.0)}
 
     # ── Notable leads count (for badge) ───────────────────────────────────────
 

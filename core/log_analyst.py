@@ -831,7 +831,10 @@ class LogAnalyst:
 
         if self._store:
             try:
-                self._store.add_token_usage("analyst", in_tok, out_tok, cost_usd=cost)
+                cw_tok = getattr(usage, "cache_creation_input_tokens", 0) if usage else 0
+                self._store.add_token_usage("analyst", in_tok, out_tok,
+                                            cache_read=cache_tok, cache_write=cw_tok,
+                                            cost_usd=cost)
             except Exception:
                 pass
 
@@ -969,7 +972,6 @@ class LogAnalyst:
                                 op_picture=op_picture, advisory=advisory,
                                 next_steps=[l.get("intent") or l["description"] for l in _lst("leads")[:5]])
 
-            totals    = s.get_token_summary()
             n_notable = s.count_notable_open_leads()
             _write_badge(self._op, n_notable, opsec_level)
 
