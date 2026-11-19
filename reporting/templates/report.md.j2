@@ -11,7 +11,7 @@ generated: {{ generated_at }}
 # Penetration Test Report — {{ run.target }}
 
 *Written by: {{ run.agent }} agent  |  Delivered: {{ generated_at }}*{% if show_usage %}
-*{% if run.token_usage and (run.token_usage.input_tokens or run.token_usage.output_tokens) %}Tokens: {{ "{:,}".format(run.token_usage.input_tokens) }} in / {{ "{:,}".format(run.token_usage.output_tokens) }} out  |  {% endif %}{% if run.estimated_cost_usd %}Cost: ${{ "%.4f" | format(run.estimated_cost_usd) }}{% endif %}*{% endif %}
+*{% if run.token_usage and (run.token_usage.input_tokens or run.token_usage.output_tokens or run.token_usage.cache_read_tokens) %}Tokens: {{ "{:,}".format(run.token_usage.input_tokens) }} in{% if run.token_usage.cache_read_tokens %} ({{ "{:,}".format(run.token_usage.cache_read_tokens) }} cached){% endif %} / {{ "{:,}".format(run.token_usage.output_tokens) }} out  |  {% endif %}{% if run.estimated_cost_usd %}Cost: ${{ "%.4f" | format(run.estimated_cost_usd) }}{% endif %}*{% endif %}
 
 {% if is_draft %}
 > ⚠ **DRAFT — generated without the report-writer pass** (the engagement was paused or stopped before the reporting phase). The executive summary and technical details are assembled from raw run data and may be incomplete. Resume the engagement to reporting for the synthesized version.
@@ -100,7 +100,7 @@ A penetration test was conducted against `{{ run.target }}`. {{ run.findings | l
 The following approaches were attempted but did not yield exploitable results:
 
 {% for f in dead_ends -%}
-- **{{ f.title }}** ({{ f.target }}): {{ f.description[:200] }}
+- **{{ f.title }}** ({{ f.target }}): {{ f.description | truncate(200, True, "…") }}
 {% endfor %}
 {% endif %}
 {% if persistence %}

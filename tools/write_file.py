@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from core.paths import OPS_DIR
+from core.paths import OPS_DIR, assessment_root
 
 
 def _active_op() -> str | None:
@@ -25,10 +25,15 @@ def _workspace(op: str) -> Path:
 
 def write_file(path: str, content: str, op: str | None = None) -> dict:
     op_name = op or _active_op()
-    if not op_name:
-        return {"error": "no active op — cannot determine ai_workspace path"}
+    if op_name:
+        workspace = _workspace(op_name).resolve()
+    else:
+        adir = assessment_root()
+        if adir is None:
+            return {"error": "no active op or assessment — cannot determine ai_workspace path"}
+        workspace = (adir / "ai_workspace").resolve()
 
-    workspace = _workspace(op_name).resolve()
+    workspace.mkdir(parents=True, exist_ok=True)
 
     # Resolve the requested path relative to ai_workspace if not absolute.
     requested = Path(path)

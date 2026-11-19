@@ -243,11 +243,19 @@ class PersistenceItem(BaseModel):
     timestamp: datetime = Field(default_factory=lambda: now_local())
 
 
+class IdentifiedUser(BaseModel):
+    username: str
+    service: str = ""               # AD, SQL, Web, SSH, FTP, …
+    host: str = ""                  # host/IP/URL where the user was found
+    notes: str = ""                 # e.g. "Standard User", "Domain Admin"
+    source_agent: str = ""
+
 class ReconData(BaseModel):
     open_ports: list[dict] = []     # {host, port, protocol, service, version}
     os_info: dict[str, str] = {}    # ip → best OS guess
     host_names: dict[str, str] = {} # ip → resolved/PTR/vhost hostname
     users: list[str] = []
+    identified_users: list[IdentifiedUser] = []
     groups: list[str] = []
     shares: list[dict] = []         # {name, comment, access}
 
@@ -1050,6 +1058,24 @@ class EngagementState(BaseModel):
             return self.credentials.pop(index)
         return None
 
+    def add_identified_user(self, username: str, service: str = "",
+                            host: str = "", notes: str = "",
+                            source_agent: str = "") -> "IdentifiedUser | None":
+        username = (username or "").strip()
+        if not username:
+            return None
+        svc_lower = (service or "").lower()
+        for existing in self.recon.identified_users:
+            if existing.username == username and existing.service.lower() == svc_lower \
+                    and existing.host == host:
+                if notes and not existing.notes:
+                    existing.notes = notes
+                return existing
+        iu = IdentifiedUser(username=username, service=service,
+                            host=host, notes=notes, source_agent=source_agent)
+        self.recon.identified_users.append(iu)
+        return iu
+
     # ── CTF flags ───────────────────────────────────────────────────────────────
 
     def add_flag(self, value: str, location: str = "", source_agent: str = "",
@@ -1193,6 +1219,11 @@ class EngagementState(BaseModel):
         for u in recon.get("users", []) or []:
             if u and u not in s.recon.users:
                 s.recon.users.append(u)
+        for iu in recon.get("identified_users", []) or []:
+            try:
+                s.recon.identified_users.append(IdentifiedUser(**iu))
+            except Exception:
+                pass
         for g in recon.get("groups", []) or []:
             if g and g not in s.recon.groups:
                 s.recon.groups.append(g)
@@ -1229,6 +1260,7 @@ class EngagementState(BaseModel):
                               "host_names": dict(self.recon.host_names),
                               "open_ports": list(self.recon.open_ports),
                               "users":      list(self.recon.users),
+                              "identified_users": [u.model_dump(mode="json") for u in self.recon.identified_users],
                               "groups":     list(self.recon.groups),
                               "shares":     list(self.recon.shares)},
             "scope_targets": list(self.scope_targets),
@@ -1356,10 +1388,21 @@ class EngagementState(BaseModel):
                         evidence=result.get("spec", local), scope=foothold)
 
         elif tool_name in ("enum4linux_ng", "rpcclient", "ldapsearch_query"):
+            host = result.get("host") or result.get("target") or ""
             for u in result.get("users", []):
-                name = u if isinstance(u, str) else u.get("username", "")
+                if isinstance(u, str):
+                    name = u
+                    svc = "AD" if tool_name == "ldapsearch_query" else ""
+                    notes = ""
+                else:
+                    name = u.get("username", "")
+                    svc = u.get("service", "") or ("AD" if tool_name == "ldapsearch_query" else "")
+                    notes = u.get("notes", "")
                 if name and name not in self.recon.users:
                     self.recon.users.append(name)
+                if name:
+                    self.add_identified_user(name, service=svc, host=host,
+                                             notes=notes, source_agent=source_agent)
             for g in result.get("groups", []):
                 name = g if isinstance(g, str) else g.get("name", "")
                 if name and name not in self.recon.groups:
@@ -1402,25 +1445,34 @@ class EngagementState(BaseModel):
                     self.recon.shares.append(s)
 
         elif tool_name in ("hashcat_crack", "john"):
-            # A cracked hash becomes a verified plaintext credential.
-            # Also back-fill cleartext on the original hash credential.
+            # Back-fill cleartext on the original hash credential — no separate
+            # password row; the TUI shows cleartext when present on a hash cred.
             for c in result.get("cracked", []):
                 plaintext = c.get("plaintext")
                 if not plaintext:
                     continue
-                self.add_credential(
-                    cred_type="password",
-                    secret=plaintext,
-                    username=c.get("username") or None,
-                    location=c.get("location") or "cracked hash",
-                    source_agent=source_agent,
-                    verified=True,
-                )
                 hash_val = c.get("hash", "")
+                matched = False
                 if hash_val:
                     for existing in self.credentials:
                         if existing.cred_type == "hash" and hash_val in existing.secret:
                             existing.cleartext = plaintext
+                            existing.verified = True
+                            if c.get("username") and not existing.username:
+                                existing.username = c["username"]
+                            for loc in (existing.used_at or []):
+                                pass  # already tracked
+                            matched = True
+                if not matched:
+                    # No hash cred to backfill — create a standalone password cred
+                    self.add_credential(
+                        cred_type="password",
+                        secret=plaintext,
+                        username=c.get("username") or None,
+                        location=c.get("location") or "cracked hash",
+                        source_agent=source_agent,
+                        verified=True,
+                    )
 
     # ── context block ─────────────────────────────────────────────────────────
 

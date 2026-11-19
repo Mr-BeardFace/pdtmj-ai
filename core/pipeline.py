@@ -307,17 +307,23 @@ class EngagementDriver:
         if self._check_control() != "continue":
             surface.cycles += 1
             return
+        if self.state and getattr(self.state, "concluded", None):
+            surface.cycles += 1
+            return
 
         # 2) Plan → 3) Exploit → 4) Validate. These only run when exploitation is
         # enabled — planning exists to feed exploitation, so producing a plan with
         # no phase to execute it would just strand the work. With exploitation off
         # this is an assessment-only run: enumerate each surface and report.
         if self.brief.exploitation_allowed:
-            if PLAN_AGENT in self.agents and self._check_control() == "continue":
+            if PLAN_AGENT in self.agents and self._check_control() == "continue" \
+                    and not (self.state and getattr(self.state, "concluded", None)):
                 self._banner(f"Planning — {surface.label}")
                 self._run_agent(PLAN_AGENT, surface.host, self._plan_objective(surface))
 
-            if self._check_control() == "continue" and self._approve_exploitation(surface):
+            if self._check_control() == "continue" \
+                    and not (self.state and getattr(self.state, "concluded", None)) \
+                    and self._approve_exploitation(surface):
                 self._run_exploit(surface)
 
         # Close the cycle: re-derive surfaces, then test for new intel.

@@ -2322,34 +2322,34 @@ class Orchestrator:
             self.state.store_cache(name, job.inputs, result, summary)
             self.state.ingest_tool_result(name, result, source_agent=agent_name)
             self._emit_state_update()
-            # hashcat/john recovered plaintext(s) → surface as credential event(s)
-            if name in ("hashcat_crack", "john"):
-                for c in result.get("cracked", []):
-                    pw = c.get("plaintext")
-                    if pw:
-                        self._emit("credential", cred_type="password",
-                                   username=c.get("username") or "", secret=pw,
-                                   secret_masked=mask_secret(pw), secret_format="",
-                                   location=c.get("location") or "cracked hash", verified=True)
-                # Re-emit updated hash creds (now with cleartext) so TUI refreshes + persist
-                if self.state:
-                    for existing in self.state.credentials:
-                        if existing.cred_type == "hash" and existing.cleartext:
-                            self._emit("credential",
-                                       cred_type=existing.cred_type,
-                                       username=existing.username or "",
-                                       secret=existing.secret,
-                                       secret_masked=existing.secret_masked,
-                                       secret_format=existing.secret_format,
-                                       location=existing.location,
-                                       used_at=list(existing.used_at),
-                                       verified=existing.verified,
-                                       cleartext=existing.cleartext)
-                            if self._store:
-                                try:
-                                    self._store.upsert_credential(existing)
-                                except Exception:
-                                    pass
+            # hashcat/john recovered plaintext(s) — re-emit affected creds
+            # (hash creds now with cleartext, or fallback password creds) so the
+            # TUI refreshes + DB persists.
+            if name in ("hashcat_crack", "john") and self.state:
+                cracked_plains = {c.get("plaintext") for c in result.get("cracked", [])
+                                  if c.get("plaintext")}
+                for existing in self.state.credentials:
+                    emit = False
+                    if existing.cred_type == "hash" and existing.cleartext:
+                        emit = True
+                    elif existing.cred_type == "password" and existing.secret in cracked_plains:
+                        emit = True
+                    if emit:
+                        self._emit("credential",
+                                   cred_type=existing.cred_type,
+                                   username=existing.username or "",
+                                   secret=existing.secret,
+                                   secret_masked=existing.secret_masked,
+                                   secret_format=existing.secret_format,
+                                   location=existing.location,
+                                   used_at=list(existing.used_at),
+                                   verified=existing.verified,
+                                   cleartext=existing.cleartext)
+                        if self._store:
+                            try:
+                                self._store.upsert_credential(existing)
+                            except Exception:
+                                pass
 
         if run is not None:
             tc = ToolCall(id=f"job-{job.id}", tool_name=name, inputs=job.inputs)

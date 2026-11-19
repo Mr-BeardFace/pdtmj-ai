@@ -14,6 +14,13 @@ _DAEMON_BINARIES = {
     "impacket-ntlmrelayx", "pcredz", "bettercap", "ettercap",
 }
 
+# Commands that corrupt the host clock or system time — the agent must never
+# run these, even via sudo, because stepping the clock mid-engagement breaks
+# every subsequent timestamp in logs, state, and reports.
+_CLOCK_BINARIES = {
+    "ntpdate", "timedatectl", "date", "hwclock",
+}
+
 
 def _daemon_in(command: str) -> str | None:
     try:
@@ -27,9 +34,27 @@ def _daemon_in(command: str) -> str | None:
     return None
 
 
+def _clock_cmd_in(command: str) -> str | None:
+    try:
+        toks = shlex.split(command)
+    except ValueError:
+        toks = command.split()
+    for t in toks:
+        base = t.rsplit("/", 1)[-1].lower()
+        if base in _CLOCK_BINARIES:
+            return base
+    return None
+
+
 def local_exec(command: str, timeout: int = 120) -> dict:
     if not command or not command.strip():
         return {"error": "command is required"}
+    clock = _clock_cmd_in(command)
+    if clock:
+        return {"error": f"{clock} modifies the system clock — running it mid-engagement "
+                "corrupts every subsequent timestamp in logs, state, and reports. "
+                "If you need the target's time, read it remotely (e.g. nmap scripts, "
+                "net time, or rpcclient)."}
     daemon = _daemon_in(command)
     if daemon:
         return {"error": f"{daemon} is a long-running daemon — local_exec waits for the "

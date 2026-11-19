@@ -346,7 +346,7 @@
       <span><strong>Period</strong> {{ run.start_time.strftime("%Y-%m-%d %H:%M") }} – {{ run.end_time.strftime("%Y-%m-%d %H:%M UTC") if run.end_time else "In Progress" }}</span>
       <span><strong>Generated</strong> {{ generated_at }}</span>
       {% if show_usage %}
-      {% if run.token_usage and (run.token_usage.input_tokens or run.token_usage.output_tokens) %}<span><strong>Tokens</strong> {{ "{:,}".format(run.token_usage.input_tokens) }} in / {{ "{:,}".format(run.token_usage.output_tokens) }} out</span>{% endif %}
+      {% if run.token_usage and (run.token_usage.input_tokens or run.token_usage.output_tokens or run.token_usage.cache_read_tokens) %}<span><strong>Tokens</strong> {{ "{:,}".format(run.token_usage.input_tokens) }} in{% if run.token_usage.cache_read_tokens %} ({{ "{:,}".format(run.token_usage.cache_read_tokens) }} cached){% endif %} / {{ "{:,}".format(run.token_usage.output_tokens) }} out</span>{% endif %}
       {% if run.estimated_cost_usd %}<span><strong>Cost</strong> ${{ "%.4f" | format(run.estimated_cost_usd) }}</span>{% endif %}
       {% endif %}
     </div>
@@ -496,7 +496,7 @@
     <p>The following approaches were attempted but did not yield exploitable results:</p>
     <ul>
       {% for f in dead_ends %}
-      <li><strong>{{ f.title }}</strong> (<code>{{ f.target }}</code>): {{ f.description[:200] }}</li>
+      <li><strong>{{ f.title }}</strong> (<code>{{ f.target }}</code>): {{ f.description | truncate(200, True, "…") }}</li>
       {% endfor %}
     </ul>
   </section>

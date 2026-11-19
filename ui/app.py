@@ -2590,7 +2590,7 @@ class PentestApp(App):
         persona = self._active_persona or ""
         hosts = []
         if self._current_state is not None and self._current_state.recon:
-            hosts = self._current_state.recon.open_ports
+            hosts = [h for h in self._current_state.recon.open_ports if h.get("port")]
         show_usage = persona == "pentest-ctf"
         if persona in ("pentest", "redteam"):
             from core.config import get as _cfg
@@ -2915,9 +2915,18 @@ class PentestApp(App):
         if self._current_state is not None:
             for c in self._current_state.credentials:
                 self._add_identity(c.model_dump())
-            # Also surface enumerated users from recon (not tied to a credential)
+            # Structured identified users from recon (enum4linux, rpcclient, ldap, etc.)
+            for iu in self._current_state.recon.identified_users:
+                self._add_identity({
+                    "username": iu.username, "service": iu.service or "enumerated",
+                    "location": f"{iu.service} {iu.host}".strip() if iu.host else "",
+                    "cred_type": "none", "source_agent": iu.source_agent,
+                })
+            # Legacy plain string users from recon
+            seen = {iu.username for iu in self._current_state.recon.identified_users}
             for u in self._current_state.recon.users:
-                self._add_identity({"username": u, "service": "enumerated", "cred_type": "none"})
+                if u not in seen:
+                    self._add_identity({"username": u, "service": "enumerated", "cred_type": "none"})
 
     def _identity_list_for_service(self, service: str) -> list[str]:
         """Full identity list for a specific service (for /identity command)."""
@@ -3372,10 +3381,10 @@ class PentestApp(App):
         self._add_finding(ev.finding)
 
     def on_pentest_app_port(self, ev: Port) -> None:
-        if not ev.ip:
+        if not ev.ip or not ev.entry.get("port"):
             return
         if self._is_ops_persona:
-            port_str = str(ev.entry.get("port", "")) if ev.entry.get("port") else ""
+            port_str = str(ev.entry["port"])
             self._add_host_compact(ev.ip, hostname=ev.entry.get("hostname", ""), port=port_str)
         else:
             self._add_host_row(ev.ip, ev.entry)
