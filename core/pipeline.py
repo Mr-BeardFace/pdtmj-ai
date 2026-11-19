@@ -207,6 +207,11 @@ class EngagementDriver:
             # Re-derive: the -sV/-sC pass may have surfaced ports the bare sweep missed.
             self.state.derive_surfaces_from_recon(origin="initial")
 
+            for p in self.state.recon.open_ports:
+                h = p.get("host", "")
+                if h:
+                    self.state.swept_hosts.add(h)
+
             if not self.state.surfaces:
                 self.state.add_surface(target, origin="initial")
 
@@ -680,7 +685,7 @@ class EngagementDriver:
         note = f" Operator note: {surface.notes}." if surface.notes else ""
         hint = self._tool_hint_for(surface)
         hint_line = f" {hint}" if hint else ""
-        return (
+        obj = (
             f"Deep-enumerate this specific surface: {surface.label} "
             f"(host {surface.host}, service {surface.service or 'unknown'}"
             f"{', ' + surface.fingerprint if surface.fingerprint else ''}, "
@@ -690,6 +695,13 @@ class EngagementDriver:
             "host, service, or deeper access you uncover so it gets its own cycle. Verify, "
             "do not exploit — that is the next phase."
         )
+        if surface.host in self.state.swept_hosts:
+            obj += (
+                " This host was already port-swept as part of a broader subnet scan — "
+                "do NOT re-run nmap discovery. Its ports are already known. Focus on "
+                "deep service-level probing of THIS specific service only."
+            )
+        return obj
 
     # Service / product fingerprint → the right specialist tool to reach for,
     # so the agent stops hand-rolling a protocol that a real client handles

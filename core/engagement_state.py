@@ -280,6 +280,7 @@ class EngagementState(BaseModel):
     # Explicit exclusions from the engagement brief — rejected even if they
     # would otherwise match an in-scope CIDR/domain.
     out_of_scope: list[str] = []
+    swept_hosts: set[str] = set()   # hosts already covered by a broader subnet sweep
 
     # Operator brief — injected verbatim into every agent's context block.
     tech_context: str = ""
@@ -650,6 +651,12 @@ class EngagementState(BaseModel):
         }
         if t not in self.out_of_scope:
             self.out_of_scope.append(t)
+        self.recon.open_ports = [
+            p for p in self.recon.open_ports if p.get("host", "") != t
+        ]
+        for s in self.surfaces:
+            if s.host == t and s.status != "exhausted":
+                s.status = "exhausted"
         return was_in
 
     def annotate_service(self, host: str, port=None, service: str = "", app: str = "",
