@@ -69,6 +69,10 @@ TOOL_DEFINITION = {
                 "type": "boolean",
                 "description": "false = potential, needs follow-up. true = confirmed exploitable with evidence.",
             },
+            "target": {
+                "type": "string",
+                "description": "The specific host/IP this finding applies to — e.g. '192.168.56.22', not the engagement subnet. Defaults to the engagement target if omitted.",
+            },
             "finding_id": {
                 "type": "string",
                 "description": "If provided, updates the existing finding with this ID instead of creating a new one.",

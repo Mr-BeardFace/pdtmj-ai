@@ -1640,7 +1640,8 @@ class EngagementState(BaseModel):
                 "exploited with evidence; [UNCONFIRMED] = a LEAD still to be proven (e.g. a CVE "
                 "inferred from a version/banner), NOT an established fact:")
             DETAIL_N = 3
-            for i, f in enumerate(sev_sort[:10]):
+            SUMMARY_N = 30
+            for i, f in enumerate(sev_sort[:SUMMARY_N]):
                 status = "CONFIRMED" if f.verified else "UNCONFIRMED"
                 lines.append(f"  [{f.severity.upper()}] [{status}] {f.title}  (id={f.id})")
                 if i < DETAIL_N:
@@ -1651,8 +1652,8 @@ class EngagementState(BaseModel):
                     if ev:
                         vs = " ".join(str(ev[1]).split())
                         lines.append(f"      evidence: {ev[0]}={vs[:100]}" + ("…" if len(vs) > 100 else ""))
-            if len(sev_sort) > 10:
-                lines.append(f"  ... and {len(sev_sort) - 10} more")
+            if len(sev_sort) > SUMMARY_N:
+                lines.append(f"  ... and {len(sev_sort) - SUMMARY_N} more")
             lines.append("")
 
         # Confirmed dead-ends — banked negatives (an attempt that provably failed), so

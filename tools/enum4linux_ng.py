@@ -2,6 +2,8 @@ import json
 import shlex
 import shutil
 import subprocess
+import tempfile
+from pathlib import Path
 from core import proc as runner
 from typing import Optional
 
@@ -11,16 +13,33 @@ def enum4linux_ng(target: str, flags: Optional[str] = None) -> dict:
     if not binary:
         return {"error": "enum4linux-ng not found in PATH. Install: pip install enum4linux-ng"}
 
-    cmd = [binary, "-A", "-oJ", "/dev/stdout", target]
-    if flags:
-        cmd = [binary] + shlex.split(flags) + ["-oJ", "/dev/stdout", target]
+    # Write JSON to a tempfile instead of /dev/stdout (not portable)
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
+        json_path = tf.name
 
     try:
-        proc = runner.run(cmd, capture_output=True, text=True, timeout=300)
-    except subprocess.TimeoutExpired:
-        return {"error": "enum4linux-ng timed out", "target": target}
+        stem = str(Path(json_path).with_suffix(""))  # -oJ appends .json itself
+        cmd = [binary, "-A", "-oJ", stem, target]
+        if flags:
+            cmd = [binary] + shlex.split(flags) + ["-oJ", stem, target]
 
-    return _parse_output(proc.stdout, proc.stderr, target, " ".join(cmd))
+        try:
+            proc = runner.run(cmd, capture_output=True, text=True, timeout=300)
+        except subprocess.TimeoutExpired:
+            return {"error": "enum4linux-ng timed out", "target": target}
+
+        # Read JSON from the output file
+        try:
+            json_text = Path(json_path).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            json_text = proc.stdout
+
+        return _parse_output(json_text, proc.stderr, target, " ".join(cmd))
+    finally:
+        try:
+            Path(json_path).unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def _parse_output(stdout: str, stderr: str, target: str, command: str) -> dict:
