@@ -33,7 +33,7 @@ def _persona_names() -> tuple[str, ...]:
 
 
 _PERSONA_COMPLETIONS = _persona_names()
-# Credential kinds for /cred add (matches record_credential's enum), with a few aliases.
+# Identity secret types for /cred add (matches record_identity's enum), with a few aliases.
 _CRED_TYPES = ("password", "hash", "api_key", "token", "key")
 _CRED_TYPE_ALIASES = {"api": "api_key", "apikey": "api_key", "ntlm": "hash",
                       "pass": "password", "pw": "password", "privkey": "key",
@@ -285,7 +285,7 @@ _HELP_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Ops (pentest/redteam)",   ("/analyst", "/c2", "/endop")),
     ("Control (while running)", ("/abort", "/skip", "/pause", "/continue", "/end", "/job")),
     ("Assessments & reports",   ("/assessment", "/report")),
-    ("Session",                 ("/clear", "/help", "/exit")),
+    ("Session",                 ("/clear", "/help", "/exit", "/quit")),
 )
 
 
@@ -1172,11 +1172,11 @@ def handle_cred_add(args: list[str]) -> tuple[list[str], bool, dict | None]:
         return _usage_cred_add(), False, None
 
     who = f"user={username}" if username else "user=(unknown)"
-    return [f"Credential added: type={cred_type}  {who}  service={service or 'any'}"], True, {
-        "username":  username,
-        "secret":    secret,
-        "service":   service,
-        "cred_type": cred_type,
+    return [f"Identity added: type={cred_type}  {who}  service={service or 'any'}"], True, {
+        "username":    username,
+        "secret":      secret,
+        "service":     service,
+        "secret_type": cred_type,
     }
 
 
@@ -1187,7 +1187,7 @@ def handle_cred_list(creds: list[dict]) -> tuple[list[str], bool]:
     lines = [f"{'Type':<10} {'Username':<20} {'Secret':<20} Service", ""]
     for c in creds:
         user = c.get("username") or "-"
-        lines.append(f"  {(c.get('cred_type') or 'password'):<8} {user:<20} "
+        lines.append(f"  {(c.get('secret_type') or c.get('cred_type') or 'password'):<8} {user:<20} "
                      f"{mask_secret(c.get('secret', '')):<20} {c.get('service', '')}")
     return lines, True
 

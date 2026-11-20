@@ -22,5 +22,5 @@ Enumerate slabs, list keys, then read each value — sessions and tokens are the
 look for: session IDs, auth tokens, password/credential values, API responses with secrets.
 
 ## Record
-`record_credential` for any session token or credential recovered, then reuse it
+`record_identity` for any session token or credential recovered, then reuse it
 (a stolen session can be replayed straight against the app). Unauthenticated access = critical.

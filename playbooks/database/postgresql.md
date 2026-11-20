@@ -40,5 +40,5 @@ If COPY PROGRAM is blocked: `ALTER SYSTEM SET archive_command = '<cmd>';` runs o
 (needs a config reload / checkpoint to fire).
 
 ## Record
-`record_credential` for creds in tables/config. Code-exec or file read/write = critical
+`record_identity` for creds in tables/config. Code-exec or file read/write = critical
 (benign proof). `record_persistence` anything planted.

@@ -30,7 +30,7 @@ def test_fork_is_isolated():
     fork.add_credential(secret="hunter2", username="admin", service="smb", verified=True)
     fork.surfaces[0].cycles = 2
     # base is untouched — the fork mutates its own copy only
-    assert base.credentials == []
+    assert base.identities == []
     assert base.surfaces[0].cycles == 0
     # fork rebuilt its own private indexes (not shared with base)
     assert fork._surface_keys is not base._surface_keys
@@ -47,7 +47,7 @@ def test_fork_carries_nudge_counters():
 
 # ── merge folds deltas back ───────────────────────────────────────────────────
 
-def test_merge_folds_new_credentials_and_recon():
+def test_merge_folds_new_identities_and_recon():
     base = _seeded()
     marks = base.merge_marks()
     fork = base.fork()
@@ -55,12 +55,12 @@ def test_merge_folds_new_credentials_and_recon():
     fork.recon.open_ports.append({"host": "10.10.10.5", "port": 445,
                                   "protocol": "tcp", "service": "smb", "version": ""})
     fork._port_keys.add(EngagementState._port_key(fork.recon.open_ports[-1]))
-    fork.recon.users.append("administrator")
+    fork.add_identity(username="administrator")  # users now tracked as identities
 
     base.merge_from(fork, marks)
-    assert any(c.secret == "hunter2" for c in base.credentials)
+    assert any(c.secret == "hunter2" for c in base.identities)
     assert len(base.recon.open_ports) == 2
-    assert "administrator" in base.recon.users
+    assert any(c.username == "administrator" for c in base.identities)
 
 
 def test_merge_dedups_snapshot_items():
@@ -70,7 +70,7 @@ def test_merge_dedups_snapshot_items():
     fork = base.fork()                       # fork already has seed-pw
     fork.add_credential(secret="new-pw", username="root", service="ssh")
     base.merge_from(fork, marks)
-    secrets = [c.secret for c in base.credentials]
+    secrets = [c.secret for c in base.identities]
     assert secrets.count("seed-pw") == 1     # not duplicated
     assert "new-pw" in secrets
 
@@ -266,7 +266,7 @@ def test_parallel_surface_fanout_merges_both_results():
     # both surfaces were deep-enumerated (discovery + service-id + 2 deep) ...
     assert orch.calls.count(ENUM_AGENT) == 4
     # ... and BOTH workers' distinct deltas landed in canonical state
-    assert any(c.secret == "webpass" for c in state.credentials)        # http fork → cred
+    assert any(c.secret == "webpass" for c in state.identities)        # http fork → cred
     assert any(f.title == "SMB Signing Disabled" for f in driver.all_findings)  # smb fork → finding
     assert all(s.status == "exhausted" for s in state.surfaces)
     assert REPORT_AGENT in orch.calls                                   # findings → report ran

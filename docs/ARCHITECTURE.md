@@ -68,7 +68,7 @@ Each agent turn, the orchestrator (`core/orchestrator.py`):
 
 - Builds the system prompt: persona instructions + base instructions + agent system prompt + schema instructions
 - Gates tools by persona and agent role (CTF gets `record_flag`; pentest/redteam get `record_ioc`; `load_playbook` available to non-planning/non-reporting agents)
-- Intercepts tool calls before they hit the registry — `annotate_finding`, `record_credential`, `shell_exec`, etc. are processed by the orchestrator for state management, not passed to external tools
+- Intercepts tool calls before they hit the registry — `annotate_finding`, `record_identity`, `shell_exec`, etc. are processed by the orchestrator for state management, not passed to external tools
 - High-impact tools (`hydra`, `sqlmap_scan`, `coercer`, `run_script`, etc.) pause for operator confirmation when `tool_gate=gated`
 - Web tools (`web_search`, `fetch_url`) are scrubbed against live engagement state to prevent leaking target-specific information
 

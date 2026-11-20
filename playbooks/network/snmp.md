@@ -27,4 +27,4 @@ A read-write string can change device config (router/switch/printer) — read/pr
 never disrupt.
 
 ## Record
-A working string = finding; `record_credential` for credentials found in process args or configs.
+A working string = finding; `record_identity` for credentials found in process args or configs.

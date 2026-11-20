@@ -81,10 +81,10 @@ def test_credential_used_at_tracks_reuse():
     # same cred confirmed working elsewhere
     s.add_credential(cred_type="password", secret="pw", username="nathan",
                      location="SSH on host", verified=True)
-    c = s.credentials[0]
-    assert len(s.credentials) == 1
-    assert c.location == "FTP on host"
-    assert c.used_at == ["SSH on host"]
+    c = s.identities[0]
+    assert len(s.identities) == 1
+    assert "FTP on host" in c.locations
+    assert "SSH on host" in c.locations
 
 
 # ── conclude_engagement ───────────────────────────────────────────────────────

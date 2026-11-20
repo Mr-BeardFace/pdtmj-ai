@@ -95,7 +95,7 @@ delete as `cleanup`, and remove it when done.
 
 ## What to record
 
-- `record_credential` for every credential/hash the moment it's obtained; crackable
+- `record_identity` for every credential/hash the moment it's obtained; crackable
   hashes go straight to `hashcat_crack` (it backgrounds and records the result).
 - `annotate_finding`: anonymous LDAP / null sessions (config, high); Kerberoastable /
   no-preauth accounts (config, high); retrieved ticket/AS-REP hashes (vuln, high);

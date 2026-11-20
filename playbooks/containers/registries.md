@@ -27,4 +27,4 @@ Push access → replace an image with a backdoored one (supply-chain). Non-destr
 write capability with a benign tag — don't replace a production image.
 
 ## Record
-`record_credential` secrets from layers and reuse them.
+`record_identity` secrets from layers and reuse them.

@@ -23,4 +23,4 @@ look for: SCM/CI tokens (GitHub/GitLab, deploy keys) → pivot to repos and pipe
 Version-specific CVEs; with admin, plugin/webhook abuse.
 
 ## Record
-`record_credential` stored tokens and reuse them against the linked SCM/CI; RCE = critical.
+`record_identity` stored tokens and reuse them against the linked SCM/CI; RCE = critical.

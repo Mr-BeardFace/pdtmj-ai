@@ -29,5 +29,5 @@ If JS execution is enabled, `db.eval()` / `$where` / mapReduce can run JS server
 (removed/restricted in modern versions — version-dependent).
 
 ## Record
-`record_credential` for every hash/secret in documents (crackable → `hashcat_crack`),
+`record_identity` for every hash/secret in documents (crackable → `hashcat_crack`),
 then reuse against other services. Unauthenticated access = critical finding.

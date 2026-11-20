@@ -75,6 +75,7 @@ def test_vhost_display_hides_baseline_groups_and_copies_full():
 
     async def _run():
         app = PentestApp()
+        app._active_persona = "pentest-ctf"
         async with app.run_test() as pilot:
             app._add_host_row("10.0.0.1", {"port": 80, "protocol": "tcp",
                                            "service": "http", "version": "nginx"})

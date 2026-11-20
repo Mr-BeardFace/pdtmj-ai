@@ -32,5 +32,5 @@ look for: a writable path the system acts on (→ foothold methodology), or dire
 (critical, benign proof).
 
 ## Record
-`record_credential` for every login (default creds are still a finding), and feed any
+`record_identity` for every login (default creds are still a finding), and feed any
 recovered Oracle password hashes to `hashcat_crack`. Code-exec or file R/W = critical.

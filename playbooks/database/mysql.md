@@ -43,4 +43,4 @@ look for: a writable `@@plugin_dir` and FILE priv to place the library.
 ## Hashes & record
 - Example: `SELECT user, authentication_string FROM mysql.user;` → feed `hashcat_crack`
 
-Code-exec or file read/write = critical (benign proof). `record_credential` for recovered creds/hashes.
+Code-exec or file read/write = critical (benign proof). `record_identity` for recovered creds/hashes.

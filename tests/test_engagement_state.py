@@ -120,8 +120,8 @@ def test_ingest_hydra_credentials_verified():
         "found_credentials": [{"login": "admin", "password": "hunter2"}],
         "service": "ssh", "port": 22,
     }, source_agent="pentest/network")
-    assert len(s.credentials) == 1
-    c = s.credentials[0]
+    assert len(s.identities) == 1
+    c = s.identities[0]
     assert c.username == "admin"
     assert c.verified is True
     assert "hunter2" not in c.secret_masked

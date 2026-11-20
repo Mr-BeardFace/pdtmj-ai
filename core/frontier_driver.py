@@ -286,7 +286,7 @@ class FrontierDriver(ParallelDriver):
             return WorkResult(lead.id, "refuted", note="exploitation not approved")
 
         findings_before = len(self.all_findings)
-        creds_before = len(self.state.credentials)
+        creds_before = len(self.state.identities)
         flags_before = len(self.state.flags)
         frontier_before = self.store.current_frontier()
 
@@ -298,7 +298,7 @@ class FrontierDriver(ParallelDriver):
         self._run_agent(agent, lead.target or self.target, objective, max_turns=budget)
 
         new_findings = self.all_findings[findings_before:]
-        new_creds = self.state.credentials[creds_before:]
+        new_creds = self.state.identities[creds_before:]
         new_flags = self.state.flags[flags_before:]
 
         # Child leads: what this step uncovered. Returned to the controller so it
@@ -480,7 +480,7 @@ class FrontierDriver(ParallelDriver):
             "  • record_persistence for anything planted; enumerate for privilege escalation "
             "(sudo -l / SUID / capabilities / cron / services running as root) and escalate where "
             "a path exists; capture any flag/objective.",
-            "Record every credential with record_credential and every flag with record_flag. "
+            "Record every credential with record_identity and every flag with record_flag. "
             "Call conclude_engagement when the objective is met. Stay in scope; keep every change "
             "reversible and non-destructive.",
         ]
@@ -494,7 +494,7 @@ class FrontierDriver(ParallelDriver):
             "applicable service on reachable hosts (SSH, SMB, WinRM, FTP, database, web login).\n"
             "  2. ONLY if those credentials fail to authenticate anywhere new, THEN try other "
             "known credentials from the engagement state as a fallback.\n"
-            "Do NOT brute-force. When a login lands, establish a session, record_credential the "
+            "Do NOT brute-force. When a login lands, establish a session, record_identity the "
             "working pair (and where it works), capture any flag, and look immediately for the "
             "next step toward the objective. If none of the credentials authenticate anywhere "
             "new, say so plainly and stop — that releases this lead. Stay in scope and "

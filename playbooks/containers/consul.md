@@ -22,4 +22,4 @@ Register a service/health check whose body is a command (if script checks are en
 look for: `enable-script-checks` on → RCE on the agent.
 
 ## Record
-`record_credential` KV secrets; RCE = critical (benign proof).
+`record_identity` KV secrets; RCE = critical (benign proof).

@@ -407,7 +407,7 @@ class EngagementDriver:
         findings + recorded credentials + captured flags. Matches what the agent
         loop counts as banked progress — anything less is a dry, no-progress pass."""
         verified = sum(1 for f in self.all_findings if getattr(f, "verified", False))
-        creds = len(getattr(self.state, "credentials", []) or [])
+        creds = len(getattr(self.state, "identities", []) or [])
         flags = len(getattr(self.state, "flags", []) or [])
         return verified + creds + flags
 

@@ -888,10 +888,10 @@ class LogAnalyst:
             for c in _lst("credentials"):
                 if not c.get("secret"):
                     continue
-                s.add_credential_from_analyst(
+                s.add_identity_from_analyst(
                     username=c.get("username", ""), secret=c["secret"],
-                    cred_type=c.get("type", "password"),
-                    cred_format=c.get("format", ""),
+                    secret_type=c.get("type", "password"),
+                    secret_format=c.get("format", ""),
                     location=c.get("location", ""),
                     service=c.get("service", ""),
                     source_host=c.get("source_host", ""),
@@ -1047,7 +1047,7 @@ class LogAnalyst:
             if not surfaces:
                 lines.append("  none")
 
-            creds = s.load_credentials()
+            idents = s.load_identities()
             auth_attempts = s.load_auth_attempts()
             # Index auth attempts by username for cross-reference
             auth_by_user: dict[str, list[dict]] = {}
@@ -1055,18 +1055,18 @@ class LogAnalyst:
                 u = (a.get("username") or "").lower()
                 if u:
                     auth_by_user.setdefault(u, []).append(a)
-            lines.append(f"\nCredentials ({len(creds)}):")
-            for c in creds[:20]:
-                masked = (c.secret[:2] + "***") if c.secret else "???"
-                lines.append(f"  {c.username}  [{c.cred_type}]  {masked}  service={c.service}  found={c.location or c.source_agent}")
-                # Inline auth attempt results for this credential
+            lines.append(f"\nIdentities ({len(idents)}):")
+            for c in idents[:20]:
+                masked = (c.secret[:2] + "***") if c.secret else (c.secret_hash[:8] + "…" if c.secret_hash else "???")
+                locs = ", ".join(c.locations) if c.locations else c.source_agent
+                lines.append(f"  {c.username}  [{c.secret_type}]  {masked}  realm={c.realm}  service={c.service}  found={locs}")
                 user_attempts = auth_by_user.get((c.username or "").lower(), [])
                 for a in user_attempts:
                     port_s = f":{a['port']}" if a.get("port") else ""
                     lines.append(f"    → {a['service']}@{a['host']}{port_s}: {a['result'].upper()}")
                 if not user_attempts and c.username:
                     lines.append("    → no auth attempts recorded")
-            if not creds:
+            if not idents:
                 lines.append("  none")
 
             findings = s.load_findings()

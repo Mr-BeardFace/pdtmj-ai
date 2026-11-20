@@ -607,14 +607,16 @@ class PentestApp(App):
             self.ip = ip; self.os_str = os_str; super().__init__()
 
     class Cred(Message):
-        def __init__(self, cred_type: str, username: str, secret: str,
-                     secret_masked: str, secret_format: str, location: str,
-                     verified: bool, used_at: list | None = None,
-                     cleartext: str = "") -> None:
-            self.cred_type = cred_type; self.username = username
+        def __init__(self, secret_type: str = "", username: str = "", secret: str = "",
+                     secret_masked: str = "", secret_format: str = "",
+                     secret_hash: str = "", realm: str = "", service: str = "",
+                     locations: list | None = None,
+                     verified: bool = False, **_kw) -> None:
+            self.secret_type = secret_type; self.username = username
             self.secret = secret; self.secret_masked = secret_masked
-            self.secret_format = secret_format; self.location = location
-            self.used_at = used_at or []; self.cleartext = cleartext
+            self.secret_format = secret_format; self.secret_hash = secret_hash
+            self.realm = realm; self.service = service
+            self.locations = locations or []
             self.verified = verified; super().__init__()
 
     class Flag(Message):
@@ -1089,7 +1091,7 @@ class PentestApp(App):
         st = self._current_state
         if not st:
             return text
-        for c in getattr(st, "credentials", []):
+        for c in getattr(st, "identities", []):
             s = getattr(c, "secret", "")
             if s and len(s) >= 4 and s in text:
                 text = text.replace(s, getattr(c, "secret_masked", "") or _mask_val(s))
@@ -1326,10 +1328,11 @@ class PentestApp(App):
                 # mid-run, they'd never reach the running agent — inject them live so a
                 # cred handed to an in-flight engagement becomes an actionable lead now.
                 if self._current_state is not None:
-                    self._current_state.add_credential(
-                        cred_type=cred.get("cred_type", "password"),
+                    self._current_state.add_identity(
                         username=cred.get("username"),
-                        secret=cred["secret"], service=cred.get("service", ""),
+                        secret=cred.get("secret", ""),
+                        secret_type=cred.get("cred_type", "password"),
+                        service=cred.get("service", ""),
                         location=cred.get("location", "") or cred.get("service", ""),
                         source_agent="operator", verified=False,
                     )
@@ -1350,7 +1353,7 @@ class PentestApp(App):
         if parsed and parsed[0] == "/cred clear":
             self._manual_creds.clear()
             if self._current_state is not None:
-                self._current_state.credentials.clear()
+                self._current_state.identities.clear()
             self._refresh_creds_table()
             self._show_cmd_output(["Credentials cleared."], True)
             return
@@ -1914,12 +1917,13 @@ class PentestApp(App):
                     ports = ",".join((h.get("open_ports") or [])[:10])
                     lines.append(f"  {h['ip']}  hostname={h.get('hostname','')}  os={h.get('os','')}  ports={ports}")
 
-            creds = s.load_credentials()
-            if creds:
-                lines.append(f"\nCredentials ({len(creds)}):")
-                for c in creds[:20]:
-                    d = c.model_dump()
-                    lines.append(f"  {d.get('username','')}:{d.get('secret','')} type={d.get('cred_type','')} location={d.get('location','')}")
+            idents = s.load_identities()
+            if idents:
+                lines.append(f"\nIdentities ({len(idents)}):")
+                for ident in idents[:20]:
+                    d = ident.model_dump()
+                    locs = ", ".join(d.get("locations", []))
+                    lines.append(f"  {d.get('username','')}:{d.get('secret','')} type={d.get('secret_type','')} realm={d.get('realm','')} locs={locs}")
 
             findings = s.load_findings()
             if findings:
@@ -2275,8 +2279,8 @@ class PentestApp(App):
 
             # Sync credentials from DB
             if self._is_ops_persona:
-                for c in s.load_credentials():
-                    self._show_cred_in_table(c.model_dump(), source="analyst")
+                for ident in s.load_identities():
+                    self._show_cred_in_table(ident.model_dump(), source="analyst")
 
             # Sync findings from DB
             for f in s.load_findings():
@@ -2782,28 +2786,26 @@ class PentestApp(App):
     def _show_cred_in_table(self, c: dict, source: str = "agent") -> None:
         """Add or update a credential row: Type | Username | Secret | Format | Location | ✓."""
         dt        = self.query_one("#creds-table", DataTable)
-        cred_type = c.get("cred_type") or "password"
+        secret_type = c.get("secret_type") or c.get("cred_type") or "password"
         username  = c.get("username") or c.get("user") or ""
         secret    = c.get("secret") or c.get("password") or ""
-        cleartext = c.get("cleartext", "") or ""
+        secret_hash = c.get("secret_hash", "") or ""
         fmt       = c.get("secret_format", "") or ""
-        location_base = c.get("location") or c.get("service") or ""
-        used_at   = c.get("used_at") or []
-        location  = location_base
-        if used_at:
-            location = (location_base + "  ·works@ " + ", ".join(used_at)).strip(" ·")
+        locations = c.get("locations") or []
+        location_base = locations[0] if locations else (c.get("location") or c.get("service") or "")
+        location = location_base
+        if len(locations) > 1:
+            location = (location_base + "  ·works@ " + ", ".join(locations[1:])).strip(" ·")
+        realm = c.get("realm", "") or ""
         verified  = "✓" if c.get("verified") else ""
-        # For hash creds with a cracked cleartext, show the cleartext (masked)
-        display_secret = cleartext if (cred_type == "hash" and cleartext) else secret
+        # For hash identities with a cracked cleartext, show the cleartext (masked)
+        display_secret = secret if secret else secret_hash
         masked = mask_secret(display_secret)
-        if cred_type == "hash" and cleartext:
+        if secret and secret_hash:
             masked = f"🔓 {masked}"
 
-        # Key on the STABLE identity (base location, not the works@-augmented one)
-        # so a later update — verified / used_at added — refreshes the row in place
-        # instead of inserting a duplicate.
-        row_key = f"{cred_type}|{username}|{location_base}|{secret[:8]}"
-        self._cred_reveal[row_key] = cleartext if (cred_type == "hash" and cleartext) else secret
+        row_key = f"{secret_type}|{username}|{realm}|{location_base}|{(secret or secret_hash)[:8]}"
+        self._cred_reveal[row_key] = display_secret
 
         if dt.row_count > 0 and row_key in [str(k.value) for k in dt.rows]:
             rk = next(k for k in dt.rows if str(k.value) == row_key)
@@ -2812,7 +2814,7 @@ class PentestApp(App):
             dt.update_cell(rk, "Location", location, update_width=True)
             dt.update_cell(rk, "✓",        verified, update_width=True)
         else:
-            dt.add_row(cred_type, username, masked, fmt, location, verified, key=row_key)
+            dt.add_row(secret_type, username, masked, fmt, location, verified, key=row_key)
         if self._active_persona != "pentest-ctf":
             self._add_identity(c)
 
@@ -2823,8 +2825,8 @@ class PentestApp(App):
         dt = self.query_one("#creds-table", DataTable)
         dt.clear()
         self._cred_reveal.clear()
-        if self._current_state is not None and self._current_state.credentials:
-            for c in self._current_state.credentials:
+        if self._current_state is not None and self._current_state.identities:
+            for c in self._current_state.identities:
                 self._show_cred_in_table(c.model_dump(), source="agent")
         else:
             for c in self._manual_creds:
@@ -2844,27 +2846,32 @@ class PentestApp(App):
         if not username:
             return
         service  = (c.get("service") or "unknown").lower()
-        # ponytail: location is typically "{service} {host}" — strip the service prefix
-        loc = c.get("location") or ""
+        realm    = c.get("realm", "") or ""
+        locations = c.get("locations") or []
+        loc = locations[0] if locations else (c.get("location") or "")
         if " " in loc and loc.lower().startswith(service):
             host = loc.split(None, 1)[1]
         elif " " in loc:
-            # Freeform location — grab last word (usually the host/IP)
             host = loc.rsplit(None, 1)[-1]
         else:
-            host = loc
+            host = realm or loc
         verified = c.get("verified", False)
         secret   = c.get("secret") or c.get("password") or ""
+        secret_hash = c.get("secret_hash", "") or ""
         fmt      = (c.get("secret_format") or "").lower()
-        ctype    = (c.get("cred_type") or "password").lower()
+        ctype    = (c.get("secret_type") or c.get("cred_type") or "password").lower()
 
         # Access level: cleartext/passable hash > non-cracked hash/ticket > identified-only
-        if ctype == "password" and secret:
+        if secret and ctype in ("password", "api_key", "token"):
             access = "✓ cleartext"
-        elif fmt in ("ntlm", "netlm", "rc4", "aes256") and secret:
+        elif secret and secret_hash:
+            access = "🔓 cracked"
+        elif fmt in ("ntlm", "netlm", "rc4", "aes256") and (secret or secret_hash):
             access = "✓ passable hash"
-        elif secret:
+        elif secret_hash or (ctype == "hash" and secret):
             access = "hash/ticket"
+        elif secret:
+            access = "✓ cleartext"
         else:
             access = "identified"
 
@@ -2904,7 +2911,7 @@ class PentestApp(App):
             pass
 
     def _refresh_identities_table(self) -> None:
-        """Rebuild the Identities tab from the engagement state."""
+        """Rebuild the Identities tab from the engagement state — single source (identities)."""
         try:
             dt = self.query_one("#identities-table", DataTable)
         except Exception:
@@ -2913,47 +2920,37 @@ class PentestApp(App):
         self._identity_rows.clear()
         self._identity_total = 0
         if self._current_state is not None:
-            for c in self._current_state.credentials:
-                self._add_identity(c.model_dump())
-            # Structured identified users from recon (enum4linux, rpcclient, ldap, etc.)
-            for iu in self._current_state.recon.identified_users:
-                self._add_identity({
-                    "username": iu.username, "service": iu.service or "enumerated",
-                    "location": f"{iu.service} {iu.host}".strip() if iu.host else "",
-                    "cred_type": "none", "source_agent": iu.source_agent,
-                })
-            # Legacy plain string users from recon
-            seen = {iu.username for iu in self._current_state.recon.identified_users}
-            for u in self._current_state.recon.users:
-                if u not in seen:
-                    self._add_identity({"username": u, "service": "enumerated", "cred_type": "none"})
+            for ident in self._current_state.identities:
+                self._add_identity(ident.model_dump())
 
     def _identity_list_for_service(self, service: str) -> list[str]:
         """Full identity list for a specific service (for /identity command)."""
         lines = []
         svc = service.lower()
-        creds = []
+        idents = []
         if self._current_state is not None:
-            creds = [c for c in self._current_state.credentials
-                     if (c.service or c.location or "").lower() == svc]
-        if not creds:
+            idents = [i for i in self._current_state.identities
+                      if (i.service or "").lower() == svc]
+        if not idents:
             return [f"No identities found for service '{service}'."]
-        lines.append(f"Identities for [bold]{service}[/bold] ({len(creds)} total):")
+        lines.append(f"Identities for [bold]{service}[/bold] ({len(idents)} total):")
         lines.append("")
-        for i, c in enumerate(creds, 1):
-            user = c.username or "(unknown)"
-            fmt = (c.secret_format or "").lower()
-            ctype = (c.cred_type or "password").lower()
-            if ctype == "password" and c.secret:
+        for i, ident in enumerate(idents, 1):
+            user = ident.username or "(unknown)"
+            fmt = (ident.secret_format or "").lower()
+            if ident.secret and ident.secret_hash:
+                access = "🔓 cracked"
+            elif ident.secret and ident.secret_type in ("password", "api_key", "token", ""):
                 access = "✓ cleartext"
-            elif fmt in ("ntlm", "netlm", "rc4", "aes256") and c.secret:
+            elif fmt in ("ntlm", "netlm", "rc4", "aes256") and ident.secret_hash:
                 access = "✓ passable hash"
-            elif c.secret:
+            elif ident.secret_hash:
                 access = "hash/ticket"
             else:
                 access = "identified"
-            loc = c.location or ""
-            lines.append(f"  {i:3d}. {user:<24s}  {access:<18s}  {loc}")
+            loc = ", ".join(ident.locations) if ident.locations else ""
+            realm = f"[{ident.realm}]" if ident.realm else ""
+            lines.append(f"  {i:3d}. {user:<24s}  {realm:<16s}  {access:<18s}  {loc}")
         return lines
 
     def _cred_list_lines(self) -> list:
@@ -2961,12 +2958,14 @@ class PentestApp(App):
         one by number. Uses the live engagement state when present (this is where
         agent-discovered creds live), else the operator pre-load list."""
         from core.utils import mask_secret
-        if self._current_state is not None and self._current_state.credentials:
+        if self._current_state is not None and self._current_state.identities:
             lines = [f"  {'#':<3}{'Type':<9}{'Username':<18}{'Secret':<18}{'Location':<18}✓", ""]
-            for i, c in enumerate(self._current_state.credentials, 1):
+            for i, c in enumerate(self._current_state.identities, 1):
+                display = c.secret or c.secret_hash or ""
+                loc = ", ".join(c.locations) if c.locations else (c.service or "")
                 lines.append(
-                    f"  {i:<3}{c.cred_type:<9}{(c.username or ''):<18}"
-                    f"{mask_secret(c.secret):<18}{(c.location or c.service or ''):<18}"
+                    f"  {i:<3}{(c.secret_type or 'identity'):<9}{(c.username or ''):<18}"
+                    f"{mask_secret(display):<18}{loc:<18}"
                     f"{'✓' if c.verified else ''}")
             lines += ["", "Remove any one (incl. agent-found) with: /cred remove <#>"]
             return lines
@@ -2993,20 +2992,21 @@ class PentestApp(App):
 
         # Live engagement state is authoritative when present — this is what removes
         # an agent-discovered cred so it stops showing up in the agent's context.
-        if self._current_state is not None and self._current_state.credentials:
-            removed = self._current_state.remove_credential(n - 1)
+        if self._current_state is not None and self._current_state.identities:
+            removed = self._current_state.remove_identity(n - 1)
             if removed is None:
                 self._show_cmd_output([f"No credential #{n}. Use /cred list."], False)
                 return
             # Drop a matching operator pre-load entry too, so a later reset won't re-seed it.
+            match_secret = removed.secret or removed.secret_hash
             self._manual_creds = [m for m in self._manual_creds
-                                  if not (m.get("secret") == removed.secret
+                                  if not (m.get("secret") == match_secret
                                           and (m.get("username") or None) == removed.username)]
             self._refresh_creds_table()
             who = f"{removed.username}:" if removed.username else ""
+            loc = ", ".join(removed.locations) if removed.locations else (removed.service or removed.secret_type or "")
             self._show_cmd_output(
-                [f"Removed #{n}  {who}{mask_secret(removed.secret)}  "
-                 f"({removed.location or removed.service or removed.cred_type}).",
+                [f"Removed #{n}  {who}{mask_secret(match_secret)}  ({loc}).",
                  "The agent will no longer see it in its context."], True)
             return
 
@@ -3436,17 +3436,18 @@ class PentestApp(App):
             pass
 
     def on_pentest_app_cred(self, ev: Cred) -> None:
-        if not ev.secret:
+        if not ev.secret and not ev.secret_hash:
             return
         self._show_cred_in_table({
-            "cred_type":     ev.cred_type,
+            "secret_type":   ev.secret_type,
             "username":      ev.username,
             "secret":        ev.secret,          # real value; table masks for display
+            "secret_hash":   ev.secret_hash,
             "secret_format": ev.secret_format,
-            "location":      ev.location,
-            "used_at":       ev.used_at,
+            "realm":         ev.realm,
+            "service":       ev.service,
+            "locations":     ev.locations,
             "verified":      ev.verified,
-            "cleartext":     ev.cleartext,
         }, source="agent")
 
     def on_pentest_app_flag(self, ev: Flag) -> None:
@@ -3804,15 +3805,16 @@ class PentestApp(App):
                         self.post_message(PentestApp.OsInfo(host_ip, os_str))
                 for c in creds:
                     self.post_message(PentestApp.Cred(
-                        cred_type=c.get("cred_type", "password"),
+                        secret_type=c.get("secret_type", ""),
                         username=c.get("username", "") or "",
                         secret=c.get("secret", ""),
                         secret_masked=c.get("secret_masked", ""),
                         secret_format=c.get("secret_format", ""),
-                        location=c.get("location", "") or c.get("service", ""),
-                        used_at=c.get("used_at", []),
+                        secret_hash=c.get("secret_hash", ""),
+                        realm=c.get("realm", ""),
+                        service=c.get("service", ""),
+                        locations=c.get("locations", []),
                         verified=c.get("verified", False),
-                        cleartext=c.get("cleartext", ""),
                     ))
                 leads = ev.get("leads")
                 if leads is not None:
@@ -3827,17 +3829,18 @@ class PentestApp(App):
                     f"  [bold green]⚡ shell[/bold green] connected {addr}  [dim]id={sid}[/dim]"
                 ))
             elif t == "credential":
-                # record_credential fired — update the Creds tab immediately
+                # record_identity fired — update the Creds tab immediately
                 self.post_message(PentestApp.Cred(
-                    cred_type=ev.get("cred_type", "password"),
+                    secret_type=ev.get("secret_type", ""),
                     username=ev.get("username", "") or "",
                     secret=ev.get("secret", ""),
                     secret_masked=ev.get("secret_masked", ""),
                     secret_format=ev.get("secret_format", ""),
-                    location=ev.get("location", ""),
-                    used_at=ev.get("used_at", []),
+                    secret_hash=ev.get("secret_hash", ""),
+                    realm=ev.get("realm", ""),
+                    service=ev.get("service", ""),
+                    locations=ev.get("locations", []),
                     verified=ev.get("verified", False),
-                    cleartext=ev.get("cleartext", ""),
                 ))
                 # Surface the source line + context that this secret came from — MASKED
                 # (we now know the secret, so the evidence renders masked, not clear).
@@ -3929,14 +3932,17 @@ class PentestApp(App):
                 state.out_of_scope  = list(brief.out_of_scope)
                 state.tech_context  = brief.tech_context
                 state.focus_areas   = list(brief.focus_areas)
-                # Seed credentials from the brief and any manual /cred adds
+                # Seed identities from the brief and any manual /cred adds
                 for c in list(brief.credentials) + list(self._manual_creds):
-                    if c.get("secret"):
-                        state.add_credential(
-                            cred_type=c.get("cred_type", "password"),
+                    if c.get("secret") or c.get("secret_hash"):
+                        state.add_identity(
                             username=c.get("username"),
-                            secret=c["secret"], service=c.get("service", ""),
-                            location=c.get("location", "") or c.get("service", ""),
+                            secret=c.get("secret", ""),
+                            secret_hash=c.get("secret_hash", ""),
+                            secret_type=c.get("secret_type") or c.get("cred_type", "password"),
+                            service=c.get("service", ""),
+                            realm=c.get("realm", ""),
+                            locations=[c["location"]] if c.get("location") else [],
                             source_agent="brief", verified=False,
                         )
                 assessment = Assessment(target=target, objective=brief.objective)
@@ -4151,7 +4157,7 @@ class PentestApp(App):
             if not interrupted and not driver.stopped:
                 summary = (f"{len(all_findings)} finding(s)  "
                            f"[dim]surfaces: {len(state.surfaces)}  cycles: {driver.total_cycles}  "
-                           f"creds: {len(state.credentials)}[/dim]")
+                           f"creds: {len(state.identities)}[/dim]")
                 label = "■ Engagement ended (/end)" if driver.ended_early else "■ Engagement complete"
                 mode_note = ("" if brief.exploitation_allowed else
                              "  [yellow](assessment only — exploitation was not enabled)[/yellow]")

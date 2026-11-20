@@ -283,7 +283,7 @@ class ParallelDriver(EngagementDriver):
             "means, not the goal:",
             "  • Linux: inject a key you generate into the user's ~/.ssh/authorized_keys, then "
             "ssh_exec(key_file=...); or add a user; or hold a reverse shell.",
-            "  • Windows: add a local admin (generated password, record_credential it) and drive "
+            "  • Windows: add a local admin (generated password, record_identity it) and drive "
             "it with netexec winrm; or enable RDP.",
             "If a durable channel doesn't land in a couple of tries, STOP chasing it and USE the "
             "primitive you already have. A fragile-but-working primitive (even OOB HTTP exfil that "
@@ -300,7 +300,7 @@ class ParallelDriver(EngagementDriver):
             "enumerate for privilege escalation (sudo -l / SUID / capabilities / cron), "
             "escalate where a clear path exists, capture any flag/objective, and call "
             "conclude_engagement when the objective is met. Record every credential with "
-            "record_credential. Stay in scope and keep every change reversible and "
+            "record_identity. Stay in scope and keep every change reversible and "
             "non-destructive.",
         ]
         return "\n".join(lines)
@@ -319,7 +319,7 @@ class ParallelDriver(EngagementDriver):
             "",
             f"You have ~{self._hyp_turns} turns. Gather just enough evidence to "
             "CONFIRM (annotate_finding verified=true with concrete evidence; "
-            "record_credential / record_flag for anything you obtain) or REFUTE this "
+            "record_identity / record_flag for anything you obtain) or REFUTE this "
             "one hypothesis. If proving it reaches the engagement objective (root, the "
             "flag, full control), call conclude_engagement. Work the cheap, "
             "high-probability checks first; if you confirm it or rule it out, finish — "

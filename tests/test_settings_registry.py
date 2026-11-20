@@ -42,9 +42,9 @@ def test_nullable_int_accepts_null():
 
 def test_is_changed_tracks_default(monkeypatch):
     s = settings.get_setting("parallel_agents")
-    monkeypatch.setattr(config, "get", lambda k, d=None: s.default if k == s.key else d)
+    monkeypatch.setattr(config, "get", lambda k, d=None, **_kw: s.default if k == s.key else d)
     assert settings.is_changed(s) is False
-    monkeypatch.setattr(config, "get", lambda k, d=None: 9 if k == s.key else d)
+    monkeypatch.setattr(config, "get", lambda k, d=None, **_kw: 9 if k == s.key else d)
     assert settings.is_changed(s) is True
 
 

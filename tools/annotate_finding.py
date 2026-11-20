@@ -31,7 +31,7 @@ TOOL_DEFINITION = {
                     "'Insecure Direct Object Reference', not 'IDOR on /data/{id}'). No specific "
                     "paths, parameters, IDs, or file names in the title (put those in description/"
                     "evidence). NEVER include a credential, password, hash, or token in the title "
-                    "or anywhere in the finding — record secrets with record_credential and "
+                    "or anywhere in the finding — record secrets with record_identity and "
                     "describe only what was exposed."
                 ),
             },
@@ -62,7 +62,7 @@ TOOL_DEFINITION = {
                     "verbatim in a 'script' key (the final working code, not every failed iteration) so "
                     "the report can show the actual exploit. "
                     "Other useful keys: 'url', 'parameter', 'payload', 'notes'. Never put a credential, "
-                    "hash, or token in evidence — record those with record_credential."
+                    "hash, or token in evidence — record those with record_identity."
                 ),
             },
             "verified": {

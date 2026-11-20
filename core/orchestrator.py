@@ -24,7 +24,9 @@ from tools.annotate_finding import TOOL_DEFINITION as ANNOTATE_DEF
 from tools.queue_followup import TOOL_DEFINITION as FOLLOWUP_DEF
 from tools.record_plan import TOOL_DEFINITION as RECORD_PLAN_DEF
 from tools.register_surface import TOOL_DEFINITION as REGISTER_SURFACE_DEF
-from tools.record_credential import TOOL_DEFINITION as RECORD_CRED_DEF
+from tools.record_identity import TOOL_DEFINITION as RECORD_IDENTITY_DEF
+from tools.merge_identity import TOOL_DEFINITION as MERGE_IDENTITY_DEF
+from tools.record_credential import TOOL_DEFINITION as RECORD_CRED_DEF  # legacy alias
 from tools.record_service import TOOL_DEFINITION as RECORD_SERVICE_DEF
 from tools.record_fact import TOOL_DEFINITION as RECORD_FACT_DEF
 from tools.write_report import TOOL_DEFINITION as WRITE_REPORT_DEF
@@ -55,7 +57,8 @@ SEV_COLOR = {
 
 # These tools are intercepted before reaching the registry
 _INTERCEPTED = {"annotate_finding", "queue_followup", "record_plan", "register_surface",
-                "record_credential", "record_service", "record_fact", "record_flag", "record_ioc",
+                "record_identity", "merge_identity", "record_credential",
+                "record_service", "record_fact", "record_flag", "record_ioc",
                 "conclude_engagement", "grep_artifact", "read_artifact", "check_jobs", "list_scripts",
                 "start_listener", "shell_exec", "list_shells", "record_persistence", "wait",
                 "load_playbook", "write_report"}
@@ -291,14 +294,14 @@ _COMPACT_CONTEXT_WINDOWS = {       # model family → context window tokens
 _COMPACT_DEFAULT_WINDOW  = 200_000
 
 _PROTECTED_TOOLS = {
-    "annotate_finding", "record_credential", "record_flag", "record_ioc",
+    "annotate_finding", "record_identity", "record_credential", "record_flag", "record_ioc",
     "conclude_engagement",
 }
 
 _COMPACT_SYSTEM = (
     "You are summarizing turns from an autonomous penetration test agent run. "
     "Produce a dense, factual summary preserving:\n"
-    "- Every credential discovered (username, secret type, where found, what service)\n"
+    "- Every identity/credential discovered (username, realm, service, secret type, where found)\n"
     "- Every finding (title, severity, target, evidence snippet)\n"
     "- Every flag captured\n"
     "- Attack path logic: what was tried, what worked, what was ruled out and why\n"
@@ -429,7 +432,7 @@ The agent instructions above define what to annotate and when.
 **Title rules — keep titles generalized:**
 - Name the vulnerability *class*, spelled out — "Insecure Direct Object Reference", not "IDOR"; "Cross-Site Scripting", not "XSS". Expand every acronym.
 - Do NOT put specific paths, parameter names, IDs, ports, or file names in the title. "Insecure Direct Object Reference" — not "IDOR on /data/{id} — Unauthenticated PCAP Access". Put those specifics in `description`/`evidence`.
-- NEVER put a credential, password, hash, token, or other secret in the title or anywhere in the finding. Record secrets with `record_credential`. In the finding, describe only *what was exposed* ("cleartext FTP credentials recovered from a captured PCAP"), never the value or `user:pass` pair.
+- NEVER put a credential, password, hash, token, or other secret in the title or anywhere in the finding. Record secrets with `record_identity`. In the finding, describe only *what was exposed* ("cleartext FTP credentials recovered from a captured PCAP"), never the value or `user:pass` pair.
 - A good title reads as a finding-class heading: "Cleartext Credentials Exposed in Network Capture", "Anonymous FTP Access", "Unauthenticated Database Access".
 
 ## Enriching a finding
@@ -680,9 +683,9 @@ class Orchestrator:
         self._procs = ProcessRegistry()
         self._jobs = job_manager or JobManager(self._procs)
         self._shells = ShellManager()
-        # Secret values seen this session (recorded creds + secrets passed into
+        # Secret values seen this session (recorded identities + secrets passed into
         # tool calls). Redaction draws on this so a secret is masked from its
-        # FIRST appearance — not only after record_credential adds it to state.
+        # FIRST appearance — not only after record_identity adds it to state.
         self._secret_values: set[str] = set()
         # Last UI-state fingerprint — state_update is only emitted when the panels
         # would actually change, so a run of tool calls that adds no new intel does
@@ -773,7 +776,7 @@ class Orchestrator:
 
     def _emit(self, event_type: str, **data) -> None:
         # Mask confirmed-credential secrets in logs/UI; skip credential/state_update.
-        if (self.state and any(c.verified for c in self.state.credentials)
+        if (self.state and any(c.verified for c in self.state.identities)
                 and event_type not in ("state_update", "credential")):
             data = self._redact_obj(data)
         if self._session_logger:
@@ -796,8 +799,8 @@ class Orchestrator:
         shell. A change in ANY component between turns means the agent advanced — the
         signal the sliding turn budget uses to refuse to kill a working exploit."""
         st = self.state
-        creds   = len(st.credentials) if st else 0
-        vcreds  = sum(1 for c in st.credentials if c.verified) if st else 0
+        creds   = len(st.identities) if st else 0
+        vcreds  = sum(1 for c in st.identities if c.verified) if st else 0
         flags   = len(st.flags) if st else 0
         persist = len(st.persistence) if st else 0
         surf    = len(st.surfaces) if st else 0
@@ -970,7 +973,7 @@ class Orchestrator:
                 host = _extract_host(h)
                 if host and len(host) >= 4 and host.lower() in low:
                     return f"it names the engagement target ('{host}')"
-            for c in self.state.credentials:
+            for c in self.state.identities:
                 if c.secret and len(c.secret) >= 4 and c.secret.lower() in low:
                     return "it contains a discovered credential value"
                 u = (c.username or "").strip()
@@ -1068,7 +1071,7 @@ class Orchestrator:
         if not isinstance(text, str) or not self.state:
             return text
         protected = self._scope_strings()
-        for c in self.state.credentials:
+        for c in self.state.identities:
             s = c.secret
             if not (c.verified and s and len(s) >= 5 and s in text):
                 continue
@@ -1214,9 +1217,10 @@ class Orchestrator:
         # only the tool-less planning/reporting phases are excluded.
         if "register_surface" in agent.scope or phase not in ("planning", "reporting"):
             meta_defs.append(REGISTER_SURFACE_DEF)
-        # Any active phase can discover credentials and run background jobs.
+        # Any active phase can discover identities and run background jobs.
         if phase not in ("planning", "reporting"):
-            meta_defs.append(RECORD_CRED_DEF)
+            meta_defs.append(RECORD_IDENTITY_DEF)
+            meta_defs.append(MERGE_IDENTITY_DEF)
             meta_defs.append(RECORD_SERVICE_DEF)
             meta_defs.append(RECORD_FACT_DEF)
             meta_defs.append(CHECK_JOBS_DEF)
@@ -1516,8 +1520,19 @@ class Orchestrator:
                         })
                         continue
 
-                    if tb.name == "record_credential":
-                        result = self._handle_record_credential(tb.input, agent.name)
+                    if tb.name in ("record_identity", "record_credential"):
+                        result = self._handle_record_identity(tb.input, agent.name)
+                        if self.state:
+                            self.state.note_progress()
+                        tool_results.append({
+                            "type":        "tool_result",
+                            "tool_use_id": tb.id,
+                            "content":     json.dumps(result),
+                        })
+                        continue
+
+                    if tb.name == "merge_identity":
+                        result = self._handle_merge_identity(tb.input, agent.name)
                         if self.state:
                             self.state.note_progress()
                         tool_results.append({
@@ -1909,7 +1924,7 @@ class Orchestrator:
                             f"[Engine notice: {fail_streak} tool calls in a row have failed or "
                             "returned nothing useful. Re-running variations of the same approach is "
                             "not progress — you are likely on a dead end. STOP and step back: bank "
-                            "what you have already confirmed now (annotate_finding / record_credential "
+                            "what you have already confirmed now (annotate_finding / record_identity "
                             "/ record_flag), then either try a fundamentally different approach or "
                             "move on. Do not keep tweaking the same payload/script.]"
                         ),
@@ -1930,7 +1945,7 @@ class Orchestrator:
                                 "without banking a single new finding, credential, or flag. That is a "
                                 "no-progress grind — you are almost certainly repeating a dead end (e.g. "
                                 "retrying the same decryption or exploit with small tweaks). STOP: bank "
-                                "anything already proven (annotate_finding / record_credential / "
+                                "anything already proven (annotate_finding / record_identity / "
                                 "record_flag), then switch to a fundamentally different approach or move "
                                 "on. Tweaking the same thing again is not progress.]"
                             ),
@@ -1968,7 +1983,7 @@ class Orchestrator:
                                 "after builds on it, and this run can hit its turn cap mid-privesc with "
                                 "nothing recorded. Call annotate_finding for the code-execution/access NOW "
                                 "— verified=true, with the command and its output as evidence — before "
-                                "continuing. Put any credentials in record_credential, not the finding.]"
+                                "continuing. Put any credentials in record_identity, not the finding.]"
                             ),
                         })
 
@@ -1988,7 +2003,7 @@ class Orchestrator:
                                 "[Engine notice: you have CODE EXECUTION but have not pulled anything from it "
                                 "yet. Use the primitive you ALREADY have to grab immediate wins NOW — `id`/"
                                 "`sudo -l`, the user flag, readable creds/config, SUID/cron/writable-path "
-                                "privesc vectors — and record them (record_credential / record_flag / "
+                                "privesc vectors — and record them (record_identity / record_flag / "
                                 "annotate_finding). A one-shot/blind primitive is fine for this; you do NOT "
                                 "need a full shell to read files. Stabilize into a shell (reverse shell / SSH "
                                 "key) only if sustained interactive work needs it — and never break a working "
@@ -2328,26 +2343,27 @@ class Orchestrator:
             if name in ("hashcat_crack", "john") and self.state:
                 cracked_plains = {c.get("plaintext") for c in result.get("cracked", [])
                                   if c.get("plaintext")}
-                for existing in self.state.credentials:
+                for existing in self.state.identities:
                     emit = False
-                    if existing.cred_type == "hash" and existing.cleartext:
+                    if existing.secret_type == "hash" and existing.secret:
                         emit = True
-                    elif existing.cred_type == "password" and existing.secret in cracked_plains:
+                    elif existing.secret_type == "password" and existing.secret in cracked_plains:
                         emit = True
                     if emit:
                         self._emit("credential",
-                                   cred_type=existing.cred_type,
+                                   secret_type=existing.secret_type,
                                    username=existing.username or "",
                                    secret=existing.secret,
                                    secret_masked=existing.secret_masked,
                                    secret_format=existing.secret_format,
-                                   location=existing.location,
-                                   used_at=list(existing.used_at),
-                                   verified=existing.verified,
-                                   cleartext=existing.cleartext)
+                                   secret_hash=existing.secret_hash,
+                                   locations=list(existing.locations),
+                                   realm=existing.realm,
+                                   service=existing.service,
+                                   verified=existing.verified)
                         if self._store:
                             try:
-                                self._store.upsert_credential(existing)
+                                self._store.upsert_identity(existing)
                             except Exception:
                                 pass
 
@@ -2395,9 +2411,9 @@ class Orchestrator:
         surfs = tuple((g(s, "host"), g(s, "port"), g(s, "service")) for s in st.surfaces)
         os_i  = tuple(sorted(st.recon.os_info.items()))
         hns   = tuple(sorted(st.recon.host_names.items()))
-        creds = tuple((c.cred_type, c.username, c.location or c.service,
-                       c.secret_masked, tuple(c.used_at), c.verified)
-                      for c in st.credentials)
+        creds = tuple((c.secret_type, c.username, c.realm, c.service,
+                       c.secret_masked, tuple(c.locations), c.verified)
+                      for c in st.identities)
         ls = getattr(st, "lead_store", None)
         leads = tuple((l.id, l.status) for l in ls.leads) if ls else ()
         return (ports, surfs, os_i, hns, creds, leads)
@@ -2422,7 +2438,7 @@ class Orchestrator:
         self._last_ui_state_sig = sig
         self._emit("state_update",
                    recon=self.state.recon.model_dump(),
-                   credentials=[c.model_dump() for c in self.state.credentials],
+                   credentials=[c.model_dump() for c in self.state.identities],
                    surfaces=[s.model_dump() for s in self.state.surfaces],
                    leads=[l.model_dump() for l in getattr(getattr(self.state, "lead_store", None), "leads", []) if l.is_open])
 
@@ -2686,41 +2702,84 @@ class Orchestrator:
                 pass
         return {"recorded": True, "id": ioc.id, "ioc_type": ioc_type}
 
-    def _handle_record_credential(self, inputs: dict, source_agent: str) -> dict:
+    def _handle_record_identity(self, inputs: dict, source_agent: str) -> dict:
         if not self.state:
             return {"recorded": False, "error": "No engagement state attached"}
+        username = (inputs.get("username") or "").strip() or None
         secret = (inputs.get("secret") or "").strip()
-        if not secret:
-            return {"recorded": False, "error": "secret is required (the credential value)"}
+        secret_hash = (inputs.get("secret_hash") or "").strip()
 
-        cred = self.state.add_credential(
-            cred_type=inputs.get("type", "password") or "password",
+        # Support old record_credential calls: map 'type' to 'secret_type', 'secret' to hash fields
+        secret_type = inputs.get("secret_type") or inputs.get("type", "") or ""
+        if secret_type == "hash" and secret and not secret_hash:
+            secret_hash = secret
+            secret = ""
+
+        if not username and not secret and not secret_hash:
+            return {"recorded": False, "error": "at least username or secret/secret_hash is required"}
+
+        ident = self.state.add_identity(
+            username=username,
+            realm=inputs.get("realm", "") or "",
+            service=inputs.get("service", "") or "",
             secret=secret,
-            username=inputs.get("username") or None,
+            secret_hash=secret_hash,
+            secret_type=secret_type,
             secret_format=inputs.get("secret_format", "") or "",
             location=inputs.get("location", "") or "",
-            service=inputs.get("service", "") or "",
             port=inputs.get("port"),
             source_agent=source_agent,
             verified=bool(inputs.get("verified", False)),
+            notes=inputs.get("notes", "") or "",
         )
-        if cred is None:
-            return {"recorded": False, "error": "no credential value"}
+        if ident is None:
+            return {"recorded": False, "error": "no identity data provided"}
 
-        label = f"{cred.username + ':' if cred.username else ''}{cred.secret_masked}"
-        self._print(f"  [magenta][cred][/magenta] [{cred.cred_type}] {label}"
-                    + (f"  @ {cred.location}" if cred.location else ""))
+        label = f"{ident.username + ':' if ident.username else ''}{ident.secret_masked or '(no secret)'}"
+        realm_str = f" [{ident.realm}]" if ident.realm else ""
+        svc_str = f" ({ident.service})" if ident.service else ""
+        self._print(f"  [magenta][identity][/magenta]{svc_str}{realm_str} {label}"
+                    + (f"  @ {', '.join(ident.locations)}" if ident.locations else ""))
         self._emit("credential",
-                   cred_type=cred.cred_type, username=cred.username or "",
-                   secret=cred.secret, secret_masked=cred.secret_masked,
-                   secret_format=cred.secret_format, location=cred.location,
-                   used_at=list(cred.used_at), verified=cred.verified)
+                   username=ident.username or "", realm=ident.realm,
+                   service=ident.service, secret=ident.secret,
+                   secret_hash=ident.secret_hash, secret_masked=ident.secret_masked,
+                   secret_format=ident.secret_format, secret_type=ident.secret_type,
+                   locations=list(ident.locations), verified=ident.verified,
+                   notes=ident.notes)
         if self._store:
             try:
-                self._store.upsert_credential(cred)
+                self._store.upsert_identity(ident)
             except Exception:
                 pass
-        return {"recorded": True, "cred_type": cred.cred_type, "username": cred.username}
+        return {"recorded": True, "id": ident.id, "username": ident.username,
+                "service": ident.service, "realm": ident.realm}
+
+    # Backward-compat alias
+    _handle_record_credential = _handle_record_identity
+
+    def _handle_merge_identity(self, inputs: dict, source_agent: str) -> dict:
+        if not self.state:
+            return {"merged": False, "error": "No engagement state attached"}
+        source_id = (inputs.get("source_id") or "").strip()
+        target_id = (inputs.get("target_id") or "").strip()
+        if not source_id or not target_id:
+            return {"merged": False, "error": "both source_id and target_id are required"}
+
+        result = self.state.merge_identity(source_id, target_id)
+        if result.get("merged"):
+            target = next((i for i in self.state.identities if i.id == target_id), None)
+            self._print(f"  [magenta][merge][/magenta] {source_id} → {target_id}"
+                        + (f" ({target.username})" if target and target.username else ""))
+            self._emit("identity_merge", source_id=source_id, target_id=target_id,
+                       agent=source_agent)
+            if self._store and target:
+                try:
+                    self._store.upsert_identity(target)
+                    self._store.delete_identity(source_id)
+                except Exception:
+                    pass
+        return result
 
     def _handle_record_service(self, inputs: dict, source_agent: str) -> dict:
         if not self.state:

@@ -23,4 +23,4 @@ if it's web-served) per the foothold methodology.
 Default creds → admin console; older MinIO has info-disclosure CVEs leaking keys.
 
 ## Record
-`record_credential` keys/secrets in objects; a public or writable bucket = finding (critical if it holds creds).
+`record_identity` keys/secrets in objects; a public or writable bucket = finding (critical if it holds creds).

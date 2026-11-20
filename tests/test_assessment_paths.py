@@ -105,15 +105,15 @@ def test_run_script_writes_into_assessment_dir(tmp_path, monkeypatch, _restore_t
 
 # ── #2 remove any credential ──────────────────────────────────────────────────
 
-def test_remove_credential_pulls_any_cred():
+def test_remove_identity_pulls_any_cred():
     s = EngagementState(target="10.0.0.5")
     s.add_credential(secret="pw1", username="a", service="smb")
     s.add_credential(secret="pw2", username="b", service="ssh", verified=True)  # agent-found
-    assert len(s.credentials) == 2
+    assert len(s.identities) == 2
 
-    removed = s.remove_credential(1)                  # pull the agent-discovered one
+    removed = s.remove_identity(1)                    # pull the agent-discovered one
     assert removed is not None and removed.secret == "pw2"
-    assert len(s.credentials) == 1 and s.credentials[0].secret == "pw1"
+    assert len(s.identities) == 1 and s.identities[0].secret == "pw1"
 
-    assert s.remove_credential(9) is None             # out of range → no-op
-    assert s.remove_credential(-1) is None
+    assert s.remove_identity(9) is None               # out of range → no-op
+    assert s.remove_identity(-1) is None

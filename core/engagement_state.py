@@ -193,21 +193,26 @@ class ToolLogEntry(BaseModel):
     timestamp: datetime = Field(default_factory=lambda: now_local())
 
 
-class Credential(BaseModel):
+class Identity(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
-    cred_type: str = "password"     # password | hash | api_key | token | key
     username: Optional[str] = None
-    secret: str                     # the value: password, hash, key, or token
+    realm: str = ""                 # auth scope: domain (NORTH), host (192.168.56.23), URL, etc.
+    service: str = ""               # auth domain: AD, Local, Web, MSSQL, SSH, etc. (not protocol)
+    secret: str = ""                # best-known usable form: cleartext password, token, API key
+    secret_hash: str = ""           # original hash value preserved for PtH / pass-the-ticket
     secret_masked: str = ""         # operator-facing display form
-    secret_format: str = ""         # for hash/key/token: NTLM, NetNTLMv2, Kerberos-AS-REP, JWT, rsa, …
-    location: str = ""              # where the credential was FOUND
-    used_at: list[str] = []         # other locations where it was confirmed to WORK
-    service: str = ""               # protocol (smb, ssh, http, …)
+    secret_format: str = ""         # format of secret_hash: NTLM, NetNTLMv2, Kerberos-AS-REP, JWT, rsa, …
+    secret_type: str = ""           # password | hash | api_key | token | key
+    locations: list[str] = []       # all confirmed-working hosts/endpoints
     port: Optional[int] = None
     source_agent: str = ""
     verified: bool = False
-    cleartext: str = ""             # original plaintext when secret is a cracked hash
+    notes: str = ""                 # e.g. "Domain Admin", "Standard User", "Service Account"
     timestamp: datetime = Field(default_factory=lambda: now_local())
+
+
+# Backward-compat alias so existing imports/tests don't break during migration
+Credential = Identity
 
 
 class Flag(BaseModel):
@@ -244,18 +249,19 @@ class PersistenceItem(BaseModel):
 
 
 class IdentifiedUser(BaseModel):
+    """Deprecated — kept only for snapshot migration. Use Identity instead."""
     username: str
-    service: str = ""               # AD, SQL, Web, SSH, FTP, …
-    host: str = ""                  # host/IP/URL where the user was found
-    notes: str = ""                 # e.g. "Standard User", "Domain Admin"
+    service: str = ""
+    host: str = ""
+    notes: str = ""
     source_agent: str = ""
 
 class ReconData(BaseModel):
     open_ports: list[dict] = []     # {host, port, protocol, service, version}
     os_info: dict[str, str] = {}    # ip → best OS guess
     host_names: dict[str, str] = {} # ip → resolved/PTR/vhost hostname
-    users: list[str] = []
-    identified_users: list[IdentifiedUser] = []
+    users: list[str] = []           # legacy — kept for snapshot compat; not populated going forward
+    identified_users: list[IdentifiedUser] = []  # legacy — kept for snapshot compat
     groups: list[str] = []
     shares: list[dict] = []         # {name, comment, access}
 
@@ -264,7 +270,7 @@ class EngagementState(BaseModel):
     target: str
     tool_log: list[ToolLogEntry] = []
     scan_cache: dict[str, dict] = {}    # cache_key → {summary, result}
-    credentials: list[Credential] = []
+    identities: list[Identity] = []
     flags: list[Flag] = []          # CTF flags captured during the engagement
     auth_attempts: list[AuthAttempt] = []   # who/what was tried against which service
     persistence: list[PersistenceItem] = [] # footholds planted (for cleanup/report)
@@ -364,7 +370,7 @@ class EngagementState(BaseModel):
             self._exec_confirmed = True
             self._foothold_banked = False
             self._turns_since_exec = 0
-            self._creds_at_exec = len(self.credentials)
+            self._creds_at_exec = len(self.identities)
             self._flags_at_exec = len(self.flags)
 
     def note_foothold_banked(self) -> None:
@@ -410,7 +416,7 @@ class EngagementState(BaseModel):
         """Value has been pulled from the exec: a stable channel, planted persistence,
         or looted creds/flags. (Annotating the RCE finding alone doesn't count.)"""
         return (self._shell_confirmed or self._persistence_recorded
-                or len(self.credentials) > self._creds_at_exec
+                or len(self.identities) > self._creds_at_exec
                 or len(self.flags) > self._flags_at_exec)
 
     def capitalize_due(self, threshold: int, repeat_every: int = 0) -> int:
@@ -515,9 +521,6 @@ class EngagementState(BaseModel):
             if k not in self._port_keys:
                 self._port_keys.add(k)
                 self.recon.open_ports.append(dict(p))
-        for u in other.recon.users:
-            if u not in self.recon.users:
-                self.recon.users.append(u)
         for g in other.recon.groups:
             if g not in self.recon.groups:
                 self.recon.groups.append(g)
@@ -539,16 +542,18 @@ class EngagementState(BaseModel):
                 bind=svc.get("bind", ""),
                 source_agent=svc.get("source_agent", ""))
 
-        # credentials / flags (content-deduped)
-        for c in other.credentials:
-            merged = self.add_credential(
-                cred_type=c.cred_type, secret=c.secret, username=c.username,
-                service=c.service, port=c.port, secret_format=c.secret_format,
-                location=c.location, source_agent=c.source_agent, verified=c.verified)
+        # identities / flags (content-deduped)
+        for ident in other.identities:
+            merged = self.add_identity(
+                username=ident.username, realm=ident.realm, service=ident.service,
+                secret=ident.secret, secret_hash=ident.secret_hash,
+                secret_type=ident.secret_type, secret_format=ident.secret_format,
+                port=ident.port, source_agent=ident.source_agent,
+                verified=ident.verified, notes=ident.notes)
             if merged is not None:
-                for loc in c.used_at:
-                    if loc and loc not in merged.used_at:
-                        merged.used_at.append(loc)
+                for loc in ident.locations:
+                    if loc and loc not in merged.locations:
+                        merged.locations.append(loc)
         for f in other.flags:
             self.add_flag(f.value, location=f.location,
                           source_agent=f.source_agent, verified=f.verified)
@@ -955,12 +960,12 @@ class EngagementState(BaseModel):
         f_verified = sum(1 for f in findings if getattr(f, "verified", False)) if findings else 0
         return (
             len(self.recon.open_ports),
-            len(self.recon.users),
+            len(self.identities),
             len(self.recon.groups),
             len(self.recon.shares),
             len(self.services),
-            len(self.credentials),
-            sum(1 for c in self.credentials if c.verified),
+            sum(1 for i in self.identities if i.secret or i.secret_hash),
+            sum(1 for i in self.identities if i.verified),
             len(self.surfaces),
             f_total,
             f_verified,
@@ -1003,85 +1008,168 @@ class EngagementState(BaseModel):
             truncated_output=_clean_output_snippet(result) if result else "",
         ))
 
-    # ── credentials ───────────────────────────────────────────────────────────
+    # ── identities ────────────────────────────────────────────────────────────
 
+    def add_identity(self, username: str | None = None, realm: str = "",
+                     service: str = "", secret: str = "", secret_hash: str = "",
+                     secret_type: str = "", secret_format: str = "",
+                     port: int | None = None, location: str = "",
+                     source_agent: str = "", verified: bool = False,
+                     notes: str = "") -> "Identity | None":
+        """Record or update an identity. Dedup on (username, realm, service) when
+        username is present; orphan records (no username) are always new entries."""
+        username = (username or "").strip() or None
+        realm = (realm or "").strip()
+        service = (service or "").strip()
+        secret = (secret or "").strip()
+        secret_hash = (secret_hash or "").strip()
+
+        if not username and not secret and not secret_hash:
+            return None
+
+        # Dedup: match on (username, realm, service) when username is present
+        if username:
+            realm_lower = realm.lower()
+            svc_lower = service.lower()
+            for existing in self.identities:
+                if (existing.username == username
+                        and (existing.realm or "").lower() == realm_lower
+                        and (existing.service or "").lower() == svc_lower):
+                    # Backfill fields that the existing record lacks
+                    if secret and not existing.secret:
+                        existing.secret = secret
+                        existing.secret_masked = mask_secret(secret)
+                    if secret_hash and not existing.secret_hash:
+                        existing.secret_hash = secret_hash
+                    if secret_type and not existing.secret_type:
+                        existing.secret_type = secret_type
+                    if secret_format and not existing.secret_format:
+                        existing.secret_format = secret_format
+                    if verified:
+                        existing.verified = True
+                    if location and location not in existing.locations:
+                        existing.locations.append(location)
+                    if port and not existing.port:
+                        existing.port = port
+                    if notes and not existing.notes:
+                        existing.notes = notes
+                    if source_agent and not existing.source_agent:
+                        existing.source_agent = source_agent
+                    return existing
+
+        # Attribution: a NAMED identity whose secret matches an existing
+        # USERNAMELESS record — tie the orphan secret to a real user.
+        if username and (secret or secret_hash):
+            match_val = secret or secret_hash
+            for existing in self.identities:
+                if not existing.username and (
+                        (existing.secret and existing.secret == match_val)
+                        or (existing.secret_hash and existing.secret_hash == match_val)):
+                    existing.username = username
+                    if realm and not existing.realm:
+                        existing.realm = realm
+                    if service and not existing.service:
+                        existing.service = service
+                    existing.verified = existing.verified or verified
+                    if location and location not in existing.locations:
+                        existing.locations.append(location)
+                    if secret_format and not existing.secret_format:
+                        existing.secret_format = secret_format
+                    if notes and not existing.notes:
+                        existing.notes = notes
+                    if source_agent and not existing.source_agent:
+                        existing.source_agent = source_agent
+                    return existing
+
+        display_secret = secret or secret_hash
+        ident = Identity(
+            username=username, realm=realm, service=service,
+            secret=secret, secret_hash=secret_hash,
+            secret_masked=mask_secret(display_secret) if display_secret else "",
+            secret_format=secret_format, secret_type=secret_type or ("password" if secret else ("hash" if secret_hash else "")),
+            locations=[location] if location else [],
+            port=port, source_agent=source_agent, verified=verified, notes=notes,
+        )
+        self.identities.append(ident)
+        return ident
+
+    # Backward-compat shim — calls from old code path land here
     def add_credential(self, cred_type: str = "password", secret: str = "",
                        source_agent: str = "", username: str | None = None,
                        service: str = "", port: int | None = None,
                        secret_format: str = "", location: str = "",
-                       verified: bool = False):
-        if not secret:
-            return None
-        for existing in self.credentials:
-            if (existing.secret == secret and existing.username == username
-                    and existing.cred_type == cred_type):
-                if verified:
-                    existing.verified = True
-                if location and not existing.location:
-                    existing.location = location
-                elif (verified and location and location != existing.location
-                        and location not in existing.used_at):
-                    # Same credential confirmed working at a new location → track
-                    # where it is USED, distinct from where it was FOUND.
-                    existing.used_at.append(location)
-                if secret_format and not existing.secret_format:
-                    existing.secret_format = secret_format
-                return existing
-        # Attribution: a NAMED credential whose secret matches an existing
-        # USERNAMELESS record of the same type fills in that blank username (a
-        # password found with no known user, later tied to one) — updating the one
-        # line instead of adding a second. It only ever fills a BLANK: a different
-        # known username (password reuse across users) never matches here, so distinct
-        # users stay distinct records, and a different secret is untouched entirely.
-        # Never downgrades a verified record.
-        if username:
-            for existing in self.credentials:
-                if (existing.secret == secret and existing.cred_type == cred_type
-                        and not existing.username):
-                    existing.username = username
-                    existing.verified = existing.verified or verified
-                    if location and not existing.location:
-                        existing.location = location
-                    if secret_format and not existing.secret_format:
-                        existing.secret_format = secret_format
-                    if source_agent and not existing.source_agent:
-                        existing.source_agent = source_agent
-                    return existing
-        cred = Credential(
-            cred_type=cred_type, username=username, secret=secret,
-            secret_masked=mask_secret(secret), secret_format=secret_format,
-            location=location or service, service=service, port=port,
+                       verified: bool = False) -> "Identity | None":
+        secret_hash = ""
+        secret_val = secret
+        if cred_type == "hash":
+            secret_hash = secret
+            secret_val = ""
+        return self.add_identity(
+            username=username, service=service, secret=secret_val,
+            secret_hash=secret_hash, secret_type=cred_type,
+            secret_format=secret_format, port=port, location=location,
             source_agent=source_agent, verified=verified,
         )
-        self.credentials.append(cred)
-        return cred
 
-    def remove_credential(self, index: int) -> "Credential | None":
-        """Remove the credential at a 0-based index — ANY credential, operator-loaded
-        OR agent-discovered. Returns the removed credential, or None if out of range.
-        The operator is the authority on the board: a wrong/expired cred the agent
-        recorded can be pulled so it stops being reused in the context block."""
-        if 0 <= index < len(self.credentials):
-            return self.credentials.pop(index)
+    def merge_identity(self, source_id: str, target_id: str) -> dict:
+        """Atomically merge source identity into target — copy secret/location/metadata,
+        delete source. Returns status dict for the tool response."""
+        source = next((i for i in self.identities if i.id == source_id), None)
+        target = next((i for i in self.identities if i.id == target_id), None)
+        if not source:
+            return {"merged": False, "error": f"Source identity {source_id} not found"}
+        if not target:
+            return {"merged": False, "error": f"Target identity {target_id} not found"}
+        if source.id == target.id:
+            return {"merged": False, "error": "Cannot merge an identity into itself"}
+
+        # Backfill target from source: target's existing values win
+        if source.username and not target.username:
+            target.username = source.username
+        if source.realm and not target.realm:
+            target.realm = source.realm
+        if source.service and not target.service:
+            target.service = source.service
+        if source.secret and not target.secret:
+            target.secret = source.secret
+            target.secret_masked = source.secret_masked or mask_secret(source.secret)
+        if source.secret_hash and not target.secret_hash:
+            target.secret_hash = source.secret_hash
+        if source.secret_type and not target.secret_type:
+            target.secret_type = source.secret_type
+        if source.secret_format and not target.secret_format:
+            target.secret_format = source.secret_format
+        if source.verified:
+            target.verified = True
+        for loc in source.locations:
+            if loc and loc not in target.locations:
+                target.locations.append(loc)
+        if source.port and not target.port:
+            target.port = source.port
+        if source.notes and not target.notes:
+            target.notes = source.notes
+
+        # Delete the source
+        self.identities = [i for i in self.identities if i.id != source_id]
+        return {"merged": True, "target_id": target.id, "deleted_source_id": source_id}
+
+    def remove_identity(self, index: int) -> "Identity | None":
+        """Remove the identity at a 0-based index."""
+        if 0 <= index < len(self.identities):
+            return self.identities.pop(index)
         return None
+
+    # Backward-compat alias
+    remove_credential = remove_identity
 
     def add_identified_user(self, username: str, service: str = "",
                             host: str = "", notes: str = "",
-                            source_agent: str = "") -> "IdentifiedUser | None":
-        username = (username or "").strip()
-        if not username:
-            return None
-        svc_lower = (service or "").lower()
-        for existing in self.recon.identified_users:
-            if existing.username == username and existing.service.lower() == svc_lower \
-                    and existing.host == host:
-                if notes and not existing.notes:
-                    existing.notes = notes
-                return existing
-        iu = IdentifiedUser(username=username, service=service,
-                            host=host, notes=notes, source_agent=source_agent)
-        self.recon.identified_users.append(iu)
-        return iu
+                            source_agent: str = "") -> "Identity | None":
+        """Deprecated shim — routes to add_identity for backward compat."""
+        return self.add_identity(
+            username=username, service=service, location=f"{service} {host}".strip() if host else "",
+            notes=notes, source_agent=source_agent,
+        )
 
     # ── CTF flags ───────────────────────────────────────────────────────────────
 
@@ -1195,14 +1283,45 @@ class EngagementState(BaseModel):
         s = cls(target=snap.get("target", "") or "")
         s.scope_targets = list(snap.get("scope_targets") or ([s.target] if s.target else []))
         s.out_of_scope  = list(snap.get("out_of_scope") or [])
+        # New format: identities list
+        for ident in snap.get("identities", []) or []:
+            added = s.add_identity(
+                username=ident.get("username"), realm=ident.get("realm", ""),
+                service=ident.get("service", ""), secret=ident.get("secret", ""),
+                secret_hash=ident.get("secret_hash", ""),
+                secret_type=ident.get("secret_type", ""),
+                secret_format=ident.get("secret_format", ""),
+                port=ident.get("port"),
+                source_agent=ident.get("source_agent", "loaded"),
+                verified=bool(ident.get("verified")), notes=ident.get("notes", ""))
+            if added is not None:
+                for loc in ident.get("locations", []):
+                    if loc and loc not in added.locations:
+                        added.locations.append(loc)
+                if ident.get("secret_masked"):
+                    added.secret_masked = ident["secret_masked"]
+        # Old format migration: credentials list → identities
         for c in snap.get("credentials", []) or []:
-            cred = s.add_credential(
-                cred_type=c.get("cred_type", "password"), username=c.get("username"),
-                secret=c.get("secret_masked") or "(masked)", service=c.get("service", ""),
-                location=c.get("location", "") or c.get("service", ""),
-                source_agent=c.get("source_agent", "loaded"), verified=bool(c.get("verified")))
-            if cred is not None and c.get("secret_masked"):
-                cred.secret_masked = c["secret_masked"]      # keep the original masked form
+            secret_val = c.get("secret_masked") or "(masked)"
+            secret_hash = ""
+            cred_type = c.get("cred_type", "password")
+            if cred_type == "hash":
+                secret_hash = secret_val
+                secret_val = c.get("cleartext", "") or ""
+            location = c.get("location", "") or c.get("service", "")
+            added = s.add_identity(
+                username=c.get("username"), service=c.get("service", ""),
+                secret=secret_val, secret_hash=secret_hash,
+                secret_type=cred_type, secret_format=c.get("secret_format", ""),
+                port=c.get("port"), location=location,
+                source_agent=c.get("source_agent", "loaded"),
+                verified=bool(c.get("verified")))
+            if added is not None:
+                if c.get("secret_masked"):
+                    added.secret_masked = c["secret_masked"]
+                for loc in c.get("used_at", []):
+                    if loc and loc not in added.locations:
+                        added.locations.append(loc)
         for f in snap.get("flags", []) or []:
             try:
                 s.flags.append(Flag(**f))
@@ -1223,14 +1342,19 @@ class EngagementState(BaseModel):
         s.recon.os_info.update(recon.get("os_info", {}) or {})
         for p in recon.get("open_ports", []) or []:
             s.recon.open_ports.append(p)
-        for u in recon.get("users", []) or []:
-            if u and u not in s.recon.users:
-                s.recon.users.append(u)
+        # Old format migration: recon.users and identified_users → identities
         for iu in recon.get("identified_users", []) or []:
             try:
-                s.recon.identified_users.append(IdentifiedUser(**iu))
+                s.add_identity(
+                    username=iu.get("username", ""), service=iu.get("service", ""),
+                    location=f"{iu.get('service', '')} {iu.get('host', '')}".strip(),
+                    notes=iu.get("notes", ""), source_agent=iu.get("source_agent", ""))
             except Exception:
                 pass
+        migrated_users = {i.username for i in s.identities if i.username}
+        for u in recon.get("users", []) or []:
+            if u and u not in migrated_users:
+                s.add_identity(username=u)
         for g in recon.get("groups", []) or []:
             if g and g not in s.recon.groups:
                 s.recon.groups.append(g)
@@ -1249,25 +1373,23 @@ class EngagementState(BaseModel):
         an assessment so the TUI can reload its Hosts/Creds/Flags/change-ledger
         panels later. Secrets are NEVER written in cleartext — only the masked
         form is kept (a reloaded assessment is for review, not re-authentication)."""
-        creds = []
-        for c in self.credentials:
-            d = c.model_dump(mode="json")
+        idents = []
+        for i in self.identities:
+            d = i.model_dump(mode="json")
             d["secret"] = ""                                    # never persist cleartext
-            d["cleartext"] = ""                                   # ditto
-            d["secret_masked"] = c.secret_masked or mask_secret(c.secret)
-            creds.append(d)
+            d["secret_hash"] = ""                               # ditto for hashes
+            d["secret_masked"] = i.secret_masked or mask_secret(i.secret or i.secret_hash)
+            idents.append(d)
         return {
             "target":        self.target,
             "services":      [dict(s) for s in self.services],
-            "credentials":   creds,
+            "identities":    idents,
             "flags":         [f.model_dump(mode="json") for f in self.flags],
             "persistence":   [p.model_dump(mode="json") for p in self.persistence],
             "operational_facts": [f.model_dump(mode="json") for f in self.operational_facts],
             "recon":         {"os_info":    dict(self.recon.os_info),
                               "host_names": dict(self.recon.host_names),
                               "open_ports": list(self.recon.open_ports),
-                              "users":      list(self.recon.users),
-                              "identified_users": [u.model_dump(mode="json") for u in self.recon.identified_users],
                               "groups":     list(self.recon.groups),
                               "shares":     list(self.recon.shares)},
             "scope_targets": list(self.scope_targets),
@@ -1395,21 +1517,9 @@ class EngagementState(BaseModel):
                         evidence=result.get("spec", local), scope=foothold)
 
         elif tool_name in ("enum4linux_ng", "rpcclient", "ldapsearch_query"):
-            host = result.get("host") or result.get("target") or ""
-            for u in result.get("users", []):
-                if isinstance(u, str):
-                    name = u
-                    svc = "AD" if tool_name == "ldapsearch_query" else ""
-                    notes = ""
-                else:
-                    name = u.get("username", "")
-                    svc = u.get("service", "") or ("AD" if tool_name == "ldapsearch_query" else "")
-                    notes = u.get("notes", "")
-                if name and name not in self.recon.users:
-                    self.recon.users.append(name)
-                if name:
-                    self.add_identified_user(name, service=svc, host=host,
-                                             notes=notes, source_agent=source_agent)
+            # User extraction is handled by the LLM via record_identity — the agent
+            # has the context to assign realm, service, and notes accurately.
+            # Only structured data (groups, shares) is extracted code-side.
             for g in result.get("groups", []):
                 name = g if isinstance(g, str) else g.get("name", "")
                 if name and name not in self.recon.groups:
@@ -1419,15 +1529,13 @@ class EngagementState(BaseModel):
                     self.recon.shares.append(s)
 
         elif tool_name == "hydra":
-            # hydra.py returns found_credentials with "login" key (hydra's native field name)
             svc  = result.get("service", "")
             host = result.get("host") or result.get("target") or ""
             for cred in result.get("found_credentials", []):
-                self.add_credential(
-                    cred_type="password",
+                self.add_identity(
                     username=cred.get("login") or cred.get("username"),
                     secret=cred.get("password", ""),
-                    service=svc,
+                    service=svc, secret_type="password",
                     port=result.get("port"),
                     location=f"{svc} {host}".strip(),
                     source_agent=source_agent,
@@ -1438,11 +1546,10 @@ class EngagementState(BaseModel):
             if result.get("authenticated") and result.get("password"):
                 proto = result.get("protocol", "smb")
                 host  = result.get("host") or result.get("target") or ""
-                self.add_credential(
-                    cred_type="password",
+                self.add_identity(
                     username=result.get("username"),
                     secret=result.get("password", ""),
-                    service=proto,
+                    service=proto, secret_type="password",
                     location=f"{proto} {host}".strip(),
                     source_agent=source_agent,
                     verified=True,
@@ -1452,8 +1559,8 @@ class EngagementState(BaseModel):
                     self.recon.shares.append(s)
 
         elif tool_name in ("hashcat_crack", "john"):
-            # Back-fill cleartext on the original hash credential — no separate
-            # password row; the TUI shows cleartext when present on a hash cred.
+            # Back-fill cleartext on the original hash identity — the secret field
+            # gets the cracked plaintext, secret_hash keeps the original hash.
             for c in result.get("cracked", []):
                 plaintext = c.get("plaintext")
                 if not plaintext:
@@ -1461,24 +1568,23 @@ class EngagementState(BaseModel):
                 hash_val = c.get("hash", "")
                 matched = False
                 if hash_val:
-                    for existing in self.credentials:
-                        if existing.cred_type == "hash" and hash_val in existing.secret:
-                            existing.cleartext = plaintext
+                    for existing in self.identities:
+                        if existing.secret_hash and hash_val in existing.secret_hash:
+                            existing.secret = plaintext
+                            existing.secret_masked = mask_secret(plaintext)
+                            existing.secret_type = "password"
                             existing.verified = True
                             if c.get("username") and not existing.username:
                                 existing.username = c["username"]
-                            for loc in (existing.used_at or []):
-                                pass  # already tracked
                             matched = True
                 if not matched:
-                    # No hash cred to backfill — create a standalone password cred
-                    self.add_credential(
-                        cred_type="password",
+                    self.add_identity(
                         secret=plaintext,
                         username=c.get("username") or None,
                         location=c.get("location") or "cracked hash",
                         source_agent=source_agent,
                         verified=True,
+                        secret_type="password",
                     )
 
     # ── context block ─────────────────────────────────────────────────────────
@@ -1487,10 +1593,10 @@ class EngagementState(BaseModel):
         """True when there is anything worth handing to an agent — accumulated
         work OR operator-seeded intel. Gates whether build_context_block is
         injected into the prompt. Must fire on a COLD start that carries seeded
-        credentials or an operator brief, not just once tool_log is non-empty —
+        identities or an operator brief, not just once tool_log is non-empty —
         otherwise pre-loaded /cred entries never reach the first agent."""
         return bool(
-            self.tool_log or self.credentials or self.flags
+            self.tool_log or self.identities or self.flags
             or self.handoffs or self.persistence
             or self.recon.open_ports or self.recon.host_names
             or self.tech_context or self.focus_areas or self.out_of_scope
@@ -1569,27 +1675,33 @@ class EngagementState(BaseModel):
                         lines.append("      … (full output in artifacts — grep_artifact to query)")
             lines.append("")
 
-        # Credentials
-        if self.credentials:
+        # Identities (credentials + discovered users)
+        idents_with_secret = [i for i in self.identities if i.secret or i.secret_hash]
+        idents_no_secret = [i for i in self.identities if not i.secret and not i.secret_hash and i.username]
+        if idents_with_secret:
             lines.append("**Credentials found** (use these verbatim against applicable services):")
-            for c in self.credentials:
-                # The agent needs the real secret to authenticate — passed in full.
-                # The operator-facing UI masks it separately; this is the model's
-                # working copy, not a display.
-                bits = [f"type={c.cred_type}"]
-                if c.username:
-                    bits.append(f"user={c.username}")
-                bits.append(f"secret={c.secret}")
-                if c.secret_format:
-                    bits.append(f"format={c.secret_format}")
-                loc = c.location or c.service
-                if loc:
-                    bits.append(f"found@ {loc}")
-                if c.used_at:
-                    bits.append(f"works@ {', '.join(c.used_at)}")
-                if c.verified:
+            for i in idents_with_secret:
+                bits = []
+                if i.service:
+                    bits.append(f"service={i.service}")
+                if i.realm:
+                    bits.append(f"realm={i.realm}")
+                if i.username:
+                    bits.append(f"user={i.username}")
+                if i.secret:
+                    bits.append(f"secret={i.secret}")
+                if i.secret_hash:
+                    bits.append(f"hash={i.secret_hash}")
+                if i.secret_format:
+                    bits.append(f"format={i.secret_format}")
+                if i.locations:
+                    bits.append(f"works@ {', '.join(i.locations)}")
+                if i.verified:
                     bits.append("✓verified")
                 lines.append("  " + "  ".join(bits))
+            lines.append("")
+        if idents_no_secret:
+            lines.append(f"**Identified users:** {', '.join(i.username for i in idents_no_secret[:30])}")
             lines.append("")
 
         # Auth attempts already made — do not repeat these
@@ -1613,8 +1725,6 @@ class EngagementState(BaseModel):
                 )
             lines.append("")
 
-        if self.recon.users:
-            lines.append(f"**Users:** {', '.join(self.recon.users[:30])}")
         if self.recon.groups:
             lines.append(f"**Groups:** {', '.join(self.recon.groups[:15])}")
         if self.recon.shares:

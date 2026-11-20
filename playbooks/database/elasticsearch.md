@@ -30,5 +30,5 @@ Old Elasticsearch shipped a Groovy/MVEL scripting sandbox escape:
 look for: a 1.x version → pursue the matching CVE; modern versions → focus on data + auth.
 
 ## Record
-Unauthenticated access = critical. `record_credential` for any secrets in documents.
+Unauthenticated access = critical. `record_identity` for any secrets in documents.
 Note related services on the same host (Kibana → its own surface).

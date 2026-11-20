@@ -49,4 +49,4 @@ the verify step is what produces `OSError: [Errno 98] Address already in use` on
 look for: a coercion method that isn't patched, and a receiver ready **before** you trigger.
 
 ## Record
-A relayed DC certificate or RBCD edge = critical; `record_credential` any captured machine hashes.
+A relayed DC certificate or RBCD edge = critical; `record_identity` any captured machine hashes.

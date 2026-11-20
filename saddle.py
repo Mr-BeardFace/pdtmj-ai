@@ -285,7 +285,7 @@ def op_status(op: str | None) -> None:
             _console.print(f"opsec:     [{opsec_col}]{opsec}[/{opsec_col}]")
         _console.print(f"findings:  {len(store.load_findings())}")
         _console.print(f"leads:     {n_leads} notable open")
-        _console.print(f"creds:     {len(store.load_credentials())}")
+        _console.print(f"creds:     {len(store.load_identities())}")
         _console.print(f"surfaces:  {len(store.load_surfaces())}")
         _console.print(f"hosts:     {len(store.load_hosts())}")
         _console.print(f"beacons:   {len(store.load_beacons())}")
@@ -328,35 +328,45 @@ def op_findings(op: str | None, severity: str | None) -> None:
 @click.option("--op", default=None)
 @click.option("--reveal", is_flag=True, default=False)
 def op_creds(op: str | None, reveal: bool) -> None:
-    """List credentials."""
+    """List identities/credentials."""
     store, _ = _open_store(op)
     try:
-        rows = store.load_credentials()
+        rows = store.load_identities()
     finally:
         store.close()
     if not rows:
-        _console.print("[dim]no credentials[/dim]")
+        _console.print("[dim]no identities[/dim]")
         return
     t = Table(box=box.SIMPLE, show_header=True, header_style="bold")
-    t.add_column("Type",    width=10)
+    t.add_column("Type",     width=10)
     t.add_column("Username")
     t.add_column("Secret")
-    t.add_column("Service", width=8)
-    t.add_column("Source",  width=14)
+    t.add_column("Realm",    width=10)
+    t.add_column("Service",  width=8)
+    t.add_column("Locations", width=20)
     t.add_column("V", width=1)
     for r in rows:
-        cleartext = getattr(r, "cleartext", "") or ""
-        secret = cleartext if (r.cred_type == "hash" and cleartext) else (r.secret or "")
-        if reveal:
-            display = secret
+        if r.secret and r.secret_hash:
+            display_secret = r.secret
+            prefix = "🔓 "
+        elif r.secret:
+            display_secret = r.secret
+            prefix = ""
+        elif r.secret_hash:
+            display_secret = r.secret_hash
+            prefix = ""
         else:
-            display = secret[:2] + "***" if len(secret) > 3 else secret
-        if r.cred_type == "hash" and cleartext:
-            display = f"🔓 {display}"
-        verified = "[green]✓[/green]" if getattr(r, "verified", False) else ""
-        t.add_row(r.cred_type, r.username or "", display, r.service or "", r.location or "", verified)
+            display_secret = ""
+            prefix = ""
+        if not reveal and len(display_secret) > 3:
+            display_secret = display_secret[:2] + "***"
+        display_secret = prefix + display_secret
+        verified = "[green]✓[/green]" if r.verified else ""
+        locs = ", ".join(r.locations[:3])
+        t.add_row(r.secret_type or "", r.username or "", display_secret,
+                  r.realm or "", r.service or "", locs, verified)
     _console.print(t)
-    _console.print(f"[dim]{len(rows)} credential(s)[/dim]")
+    _console.print(f"[dim]{len(rows)} identity/ies[/dim]")
 
 
 @op.command("surfaces")

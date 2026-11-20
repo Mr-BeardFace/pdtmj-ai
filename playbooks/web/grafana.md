@@ -25,4 +25,4 @@ look for: a vulnerable 8.x version; the read returns file content → grab grafa
 Configured datasources (SQL, etc.) store credentials Grafana can decrypt → pivot to those DBs.
 
 ## Record
-File read / credential theft = high→critical; `record_credential` datasource creds and reuse them.
+File read / credential theft = high→critical; `record_identity` datasource creds and reuse them.

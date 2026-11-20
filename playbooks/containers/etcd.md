@@ -16,5 +16,5 @@ secrets. Use `local_exec`. The commands below are **examples** — compose your 
 look for: unauthenticated access (critical); service-account tokens and app secrets in the keyspace.
 
 ## Record
-`record_credential` every token/secret; a Kubernetes SA token → pivot the cluster
+`record_identity` every token/secret; a Kubernetes SA token → pivot the cluster
 (`load_playbook(["kubernetes"])`).

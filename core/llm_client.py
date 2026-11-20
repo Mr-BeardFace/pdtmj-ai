@@ -618,10 +618,7 @@ class LLMClient:
         # fail the whole run instead of retrying without it.
         if model in self._no_temperature_models:
             temperature = None
-        # Subscription / custom-transport providers never accept temperature — drop it
-        # unconditionally so we don't pay a failed round-trip waiting for a 400.
-        if self._spec.request_handler:
-            temperature = None
+        # ponytail: removed pre-strip for custom handlers; self-heal above handles it
         # Extended thinking requires temperature=1 on the Anthropic API.
         if thinking:
             temperature = 1.0

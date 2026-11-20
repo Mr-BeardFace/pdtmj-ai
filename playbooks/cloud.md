@@ -37,4 +37,4 @@ permissions, exposed data, and attack paths. Use the cloud-native clients (`awsc
   credentials.
 
 Annotate public buckets / overpermissive IAM / exposed secrets as high/critical the
-moment found; record credentials with `record_credential`.
+moment found; record credentials with `record_identity`.

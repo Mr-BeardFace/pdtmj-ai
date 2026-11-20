@@ -26,4 +26,4 @@ look for: deploy succeeds → RCE (prove with a benign command).
   CVE-2020-1938) arbitrary file read of `WEB-INF`.
 
 ## Record
-RCE = critical; `record_credential` for manager creds; `record_persistence` the deployed app.
+RCE = critical; `record_identity` for manager creds; `record_persistence` the deployed app.

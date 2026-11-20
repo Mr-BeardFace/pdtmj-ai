@@ -336,7 +336,7 @@ def pipeline(target, entry, objective, report, max_turns, allowed_phases, no_con
         console.print(
             f"\n[dim]Assessment: {assessment_path}  "
             f"surfaces: {len(state.surfaces)}  cycles: {driver.total_cycles}  "
-            f"creds: {len(state.credentials)}[/dim]"
+            f"creds: {len(state.identities)}[/dim]"
         )
 
     if report and completed_runs:

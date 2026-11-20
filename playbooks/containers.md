@@ -24,5 +24,5 @@ Non-destructive: read and prove; don't disrupt running workloads or replace prod
 - Docker → `docker`, Kubernetes → `kubernetes`, etcd → `etcd`, Consul → `consul`,
   Vault → `vault`, MinIO/S3 → `minio-s3`, container registries → `registries`.
 
-Record creds with `record_credential`; container/host code-exec = critical; a new
+Record creds with `record_identity`; container/host code-exec = critical; a new
 node/host → `queue_followup`.

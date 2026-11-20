@@ -37,7 +37,7 @@ Engines without a dedicated playbook yet — same shape (unauth/default first, a
 privilege and data exposure, record any code-exec primitive): CouchDB ("admin party"),
 Cassandra, Neo4j, and the rest.
 
-Record every credential with `record_credential`; crackable hashes → `hashcat_crack`.
+Record every credential with `record_identity`; crackable hashes → `hashcat_crack`.
 **Dumped a user/hash table? The salt and algorithm usually aren't in the table** — they
 live in the app's config (see the `web` playbook) or a sibling settings/config table in
 the same database. Grab the salt/scheme before cracking; a salted hash won't crack from

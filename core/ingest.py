@@ -164,16 +164,16 @@ def leads_from_recon(state, *, created_by: str = "ingest") -> list[Lead]:
 
 
 def leads_from_credentials(state, *, creds=None, created_by: str = "ingest") -> list[Lead]:
-    """An access lead per credential not yet proven to grant a session — 'use this
+    """An access lead per identity not yet proven to grant a session — 'use this
     against applicable services'. Reach is `user` (a login is local access). A
-    verified cred is a near-certain lead; an unverified one is worth a try.
+    verified identity is a near-certain lead; an unverified one is worth a try.
 
     `creds` overrides the source list (used to build leads from only the NEW
-    credentials a step produced); otherwise every credential in state is used."""
+    identities a step produced); otherwise every identity in state is used."""
     out: list[Lead] = []
-    for c in (creds if creds is not None else (getattr(state, "credentials", []) or [])):
+    for c in (creds if creds is not None else (getattr(state, "identities", []) or [])):
         user = c.username or "(unknown user)"
-        loc = c.location or c.service or ""
+        loc = ", ".join(c.locations) if c.locations else (c.service or "")
         verified = bool(c.verified)
         out.append(Lead(
             kind="cred",
@@ -185,7 +185,7 @@ def leads_from_credentials(state, *, creds=None, created_by: str = "ingest") -> 
             prior=0.8 if verified else 0.55,
             cost="cheap",
             created_by=created_by,
-            notes=f"used@ {', '.join(c.used_at)}" if c.used_at else "",
+            notes=f"locations: {', '.join(c.locations)}" if c.locations else "",
         ))
     return out
 

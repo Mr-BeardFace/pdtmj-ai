@@ -30,4 +30,4 @@ via the socket.
 Image layers, env vars, and volumes hold secrets — enumerate them.
 
 ## Record
-Host escape = critical; `record_persistence` anything planted; `record_credential` secrets from images/env.
+Host escape = critical; `record_persistence` anything planted; `record_identity` secrets from images/env.

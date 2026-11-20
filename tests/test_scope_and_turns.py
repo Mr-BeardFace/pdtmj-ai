@@ -46,7 +46,7 @@ def test_turns_set_via_config(monkeypatch):
     # Turn budget moved from /turns to /config agent_turns.
     store = {}
     monkeypatch.setattr(config, "set_value", lambda k, v: store.__setitem__(k, v))
-    monkeypatch.setattr(config, "get", lambda k, d=None: store.get(k, d))
+    monkeypatch.setattr(config, "get", lambda k, d=None, **_kw: store.get(k, d))
     from ui.commands import dispatch
     _, ok = dispatch("/config agent_turns 60")
     assert ok and store["agent_turns"] == 60
@@ -55,7 +55,7 @@ def test_turns_set_via_config(monkeypatch):
 def test_turns_zero_is_unlimited(monkeypatch):
     store = {}
     monkeypatch.setattr(config, "set_value", lambda k, v: store.__setitem__(k, v))
-    monkeypatch.setattr(config, "get", lambda k, d=None: store.get(k, d))
+    monkeypatch.setattr(config, "get", lambda k, d=None, **_kw: store.get(k, d))
     from ui.commands import dispatch
     _, ok = dispatch("/config agent_turns 0")   # 0 = unlimited
     assert ok and store["agent_turns"] == 0

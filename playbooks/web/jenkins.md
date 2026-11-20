@@ -29,4 +29,4 @@ Jenkins stores credentials (`credentials.xml`, job env, secrets) — decrypt wit
 key or via the script console, then reuse.
 
 ## Record
-RCE = critical; harvest and `record_credential` stored creds and reuse them.
+RCE = critical; harvest and `record_identity` stored creds and reuse them.

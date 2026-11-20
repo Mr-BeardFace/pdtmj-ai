@@ -34,4 +34,4 @@ ESC2/3 (any-purpose / enrollment-agent), ESC4 (writable template → turn it int
 (`EDITF_ATTRIBUTESUBJECTALTNAME2` on the CA), ESC7 (CA admin rights). `certipy find` names which apply.
 
 ## Record
-A certificate that authenticates as DA/DC = critical; `record_credential` the recovered hash/TGT.
+A certificate that authenticates as DA/DC = critical; `record_identity` the recovered hash/TGT.

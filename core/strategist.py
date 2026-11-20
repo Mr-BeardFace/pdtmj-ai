@@ -105,7 +105,7 @@ class Strategist:
         return (
             len(store.leads),
             store.current_frontier(),
-            len(getattr(state, "credentials", []) or []),
+            len(getattr(state, "identities", []) or []),
             len(getattr(state, "flags", []) or []),
             sum(1 for f in (findings or []) if getattr(f, "verified", False)),
         )
@@ -161,12 +161,13 @@ class Strategist:
         lines.append(f"Goals: {goals}")
         lines.append(f"Current frontier: {store.frontier_name()}")
         lines.append("")
-        creds = getattr(state, "credentials", []) or []
-        if creds:
-            lines.append("Credentials in hand:")
-            for c in creds[:12]:
-                lines.append(f"  - {c.cred_type} {c.username or '?'} "
-                             f"(found@ {c.location or c.service or '?'})"
+        idents = getattr(state, "identities", []) or []
+        if idents:
+            lines.append("Identities in hand:")
+            for c in idents[:12]:
+                locs = ", ".join(c.locations) if c.locations else (c.service or "?")
+                lines.append(f"  - {c.secret_type or 'identified'} {c.username or '?'} "
+                             f"[{c.realm}] (found@ {locs})"
                              + ("  ✓verified" if c.verified else ""))
         flags = getattr(state, "flags", []) or []
         if flags:

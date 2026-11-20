@@ -28,4 +28,4 @@ Any credential found here reuses widely — replay every discovered credential a
 other services.
 
 ## Record
-Anonymous or writable access = finding; `record_credential` for any creds and reuse them.
+Anonymous or writable access = finding; `record_identity` for any creds and reuse them.

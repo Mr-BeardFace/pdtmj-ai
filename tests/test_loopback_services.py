@@ -106,6 +106,7 @@ def test_loopback_service_wraps_port_in_hosts_table():
 
     async def _run():
         app = PentestApp()
+        app._active_persona = "pentest-ctf"
         async with app.run_test():
             app._host_name["10.129.47.187"] = "dc01.htb"
             app._add_host_row("10.129.47.187", {"port": 80, "protocol": "tcp",

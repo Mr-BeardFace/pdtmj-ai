@@ -6,7 +6,7 @@ scope:
   - web_search
   - read_artifact
   - annotate_finding
-  - record_credential
+  - record_identity
   - record_fact
 model: claude-sonnet-4-6
 triggers: []

@@ -72,6 +72,12 @@ class EngagementStore:
                 json            TEXT NOT NULL,
                 created_at      TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS identities (
+                id              TEXT PRIMARY KEY,
+                engagement_id   TEXT NOT NULL,
+                json            TEXT NOT NULL,
+                created_at      TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS credentials (
                 id              TEXT PRIMARY KEY,
                 engagement_id   TEXT NOT NULL,
@@ -323,14 +329,25 @@ class EngagementStore:
         )
         self._conn.commit()
 
-    def upsert_credential(self, cred) -> None:
-        """Insert or replace a Credential (by id). Stores full secret for ops reuse."""
+    def upsert_identity(self, ident) -> None:
+        """Insert or replace an Identity (by id). Stores full secret for ops reuse."""
         self._conn.execute(
-            "INSERT OR REPLACE INTO credentials (id, engagement_id, json, created_at)"
+            "INSERT OR REPLACE INTO identities (id, engagement_id, json, created_at)"
             " VALUES (?, ?, ?, ?)",
-            (cred.id, self.engagement_id, cred.model_dump_json(), _now()),
+            (ident.id, self.engagement_id, ident.model_dump_json(), _now()),
         )
         self._conn.commit()
+
+    def delete_identity(self, identity_id: str) -> None:
+        """Remove an identity record (used after merge)."""
+        self._conn.execute(
+            "DELETE FROM identities WHERE id = ? AND engagement_id = ?",
+            (identity_id, self.engagement_id),
+        )
+        self._conn.commit()
+
+    # Backward-compat alias
+    upsert_credential = upsert_identity
 
     def upsert_surface(self, surface) -> None:
         """Insert or replace a Surface (by id)."""
@@ -431,13 +448,56 @@ class EngagementStore:
         ).fetchall()
         return [Finding.model_validate_json(r["json"]) for r in rows]
 
-    def load_credentials(self) -> list:
-        from core.engagement_state import Credential
+    def load_identities(self) -> list:
+        from core.engagement_state import Identity
         rows = self._conn.execute(
-            "SELECT json FROM credentials WHERE engagement_id = ? ORDER BY created_at",
+            "SELECT json FROM identities WHERE engagement_id = ? ORDER BY created_at",
             (self.engagement_id,),
         ).fetchall()
-        return [Credential.model_validate_json(r["json"]) for r in rows]
+        result = [Identity.model_validate_json(r["json"]) for r in rows]
+        # Migrate old credentials table if identities is empty but credentials has data
+        if not result:
+            old_rows = self._conn.execute(
+                "SELECT json FROM credentials WHERE engagement_id = ? ORDER BY created_at",
+                (self.engagement_id,),
+            ).fetchall()
+            for r in old_rows:
+                try:
+                    d = json.loads(r["json"])
+                    # Reshape old Credential fields to Identity
+                    secret_val = d.get("secret", "")
+                    secret_hash = ""
+                    cred_type = d.get("cred_type", "password")
+                    if cred_type == "hash":
+                        secret_hash = secret_val
+                        secret_val = d.get("cleartext", "") or ""
+                    location = d.get("location", "")
+                    locations = [location] if location else []
+                    for loc in d.get("used_at", []):
+                        if loc and loc not in locations:
+                            locations.append(loc)
+                    ident = Identity(
+                        id=d.get("id", str(uuid.uuid4())[:8]),
+                        username=d.get("username"),
+                        service=d.get("service", ""),
+                        secret=secret_val,
+                        secret_hash=secret_hash,
+                        secret_masked=d.get("secret_masked", ""),
+                        secret_format=d.get("secret_format", ""),
+                        secret_type=cred_type,
+                        locations=locations,
+                        port=d.get("port"),
+                        source_agent=d.get("source_agent", ""),
+                        verified=d.get("verified", False),
+                    )
+                    result.append(ident)
+                    self.upsert_identity(ident)
+                except Exception:
+                    pass
+        return result
+
+    # Backward-compat alias
+    load_credentials = load_identities
 
     def load_surfaces(self) -> list:
         from core.models import Surface
@@ -497,23 +557,35 @@ class EngagementStore:
             f.type = technique
         self.upsert_finding(f)
 
-    def add_credential_from_analyst(
+    def add_identity_from_analyst(
         self, username: str = "", secret: str = "",
-        cred_type: str = "password", cred_format: str = "",
+        secret_type: str = "password", secret_format: str = "",
+        secret_hash: str = "", realm: str = "",
         location: str = "", service: str = "",
         source_host: str = "", added_by: str = "analyst",
+        notes: str = "", verified: bool = False,
     ) -> None:
-        from core.engagement_state import Credential
-        c = Credential(
-            cred_type=cred_type,
+        from core.engagement_state import Identity
+        from core.utils import mask_secret
+        display_secret = secret or secret_hash
+        ident = Identity(
             username=username or None,
-            secret=secret,
-            secret_format=cred_format,
-            location=location,
+            realm=realm,
             service=service,
+            secret=secret,
+            secret_hash=secret_hash,
+            secret_masked=mask_secret(display_secret) if display_secret else "",
+            secret_format=secret_format,
+            secret_type=secret_type,
+            locations=[location] if location else [],
             source_agent=added_by,
+            notes=notes,
+            verified=verified,
         )
-        self.upsert_credential(c)
+        self.upsert_identity(ident)
+
+    # Backward-compat alias
+    add_credential_from_analyst = add_identity_from_analyst
 
     def add_lead_from_analyst(
         self, description: str, reach_level: str = "vuln",

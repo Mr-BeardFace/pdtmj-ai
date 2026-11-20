@@ -24,4 +24,4 @@ look for: user accounts with a `servicePrincipalName` → TGS hash → `hashcat_
 Prefer RC4 tickets (crack faster); AES-only still cracks, just slower.
 
 ## Record
-`record_credential` cracked passwords and reuse them everywhere; roastable accounts themselves = finding (high).
+`record_identity` cracked passwords and reuse them everywhere; roastable accounts themselves = finding (high).

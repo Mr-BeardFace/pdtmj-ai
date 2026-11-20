@@ -12,21 +12,21 @@ def test_from_snapshot_roundtrips_masked_state():
     snap = s.state_snapshot()
 
     # the snapshot never carries cleartext
-    assert all(c["secret"] == "" for c in snap["credentials"])
+    assert all(c["secret"] == "" for c in snap["identities"])
 
     r = EngagementState.from_snapshot(snap)
     assert r.target == "10.0.0.5"
     assert "dc.htb" in r.scope_targets
     assert r.recon.host_names.get("10.0.0.5") == "dc.htb"
-    assert len(r.credentials) == 1
-    c = r.credentials[0]
+    assert len(r.identities) == 1
+    c = r.identities[0]
     assert c.username == "admin"
     assert c.secret != "Sup3rSecret!"            # never round-trips cleartext
-    assert c.secret_masked == snap["credentials"][0]["secret_masked"]
+    assert c.secret_masked == snap["identities"][0]["secret_masked"]
 
 
 def test_from_snapshot_tolerates_empty():
     r = EngagementState.from_snapshot({})
     assert r.target == ""
     assert r.scope_targets == []          # no target → no implicit scope
-    assert r.credentials == []
+    assert r.identities == []

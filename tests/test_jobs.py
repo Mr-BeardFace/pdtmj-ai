@@ -134,8 +134,8 @@ def test_hashcat_is_always_background_and_feeds_credential(tmp_path):
     orch.flush_jobs()
 
     # cracked plaintext became a verified credential
-    cred = next(c for c in state.credentials if c.secret == "Pwned123")
-    assert cred.verified and cred.username == "admin" and cred.location == "DC01"
+    cred = next(c for c in state.identities if c.secret == "Pwned123")
+    assert cred.verified and cred.username == "admin" and "DC01" in cred.locations
     assert any(e.get("type") == "credential" and e.get("secret") == "Pwned123"
                for e in creds_events)
 
@@ -204,5 +204,5 @@ def test_ingest_hashcat_records_credential():
     st.ingest_tool_result("hashcat_crack", {
         "cracked": [{"plaintext": "Pwned123", "username": "admin", "location": "DC01"}],
     })
-    c = st.credentials[0]
-    assert c.secret == "Pwned123" and c.verified and c.location == "DC01"
+    c = st.identities[0]
+    assert c.secret == "Pwned123" and c.verified and "DC01" in c.locations

@@ -31,4 +31,4 @@ look for: permission to create/exec pods → node takeover.
 A writable kubelet API runs commands in existing pods directly.
 
 ## Record
-Node/cluster takeover = critical; `record_credential` extracted SA tokens and reuse them.
+Node/cluster takeover = critical; `record_identity` extracted SA tokens and reuse them.

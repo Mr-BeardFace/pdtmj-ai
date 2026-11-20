@@ -26,4 +26,4 @@ look for: admin access to deploy an app.
 Splunk stores credentials (`passwords.conf`, forwarder keys) — extract and reuse.
 
 ## Record
-RCE = critical (benign proof); `record_credential` extracted creds and reuse them.
+RCE = critical (benign proof); `record_identity` extracted creds and reuse them.

@@ -44,5 +44,5 @@ benign marker, don't damage data.
   protocol's real client, not a brute tool, to open it.
 
 Annotate findings (`verified=false` until confirmed); record creds with
-`record_credential`; a new host/subnet → `queue_followup`. On code execution or a
+`record_identity`; a new host/subnet → `queue_followup`. On code execution or a
 caught session, switch to the foothold methodology.

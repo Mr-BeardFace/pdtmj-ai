@@ -1,4 +1,4 @@
-"""Structured credential capture via the record_credential meta-tool.
+"""Structured credential capture via the record_identity meta-tool.
 (Replaces the old regex scrape of finding text, which produced IPv6 false positives.)
 """
 from core.engagement_state import EngagementState
@@ -16,17 +16,17 @@ def test_record_password_credential(tmp_path):
     events = []
     state = EngagementState(target="x")
     o = _orch(tmp_path, state, events)
-    res = o._handle_record_credential({
+    res = o._handle_record_identity({
         "type": "password", "username": "admin", "secret": "S3cret!99",
         "service": "smb", "location": "SMB 10.0.0.5", "verified": True,
     }, "pentest/exploitation")
 
     assert res["recorded"] is True
-    c = state.credentials[0]
-    assert c.cred_type == "password"
+    c = state.identities[0]
+    assert c.secret_type == "password"
     assert c.username == "admin"
     assert c.secret == "S3cret!99"
-    assert c.location == "SMB 10.0.0.5"
+    assert "SMB 10.0.0.5" in c.locations
     assert c.verified is True
     # UI gets an immediate event with the real + masked value
     assert any(e["type"] == "credential" and e["secret"] == "S3cret!99" for e in events)
@@ -35,35 +35,40 @@ def test_record_password_credential(tmp_path):
 def test_record_hash_credential(tmp_path):
     state = EngagementState(target="x")
     o = _orch(tmp_path, state)
-    o._handle_record_credential({
+    o._handle_record_identity({
         "type": "hash", "username": "svc_sql",
         "secret": "aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0",
         "secret_format": "NTLM", "location": "DC01",
     }, "agent")
-    c = state.credentials[0]
-    assert c.cred_type == "hash"
+    c = state.identities[0]
+    assert c.secret_type == "hash"
     assert c.secret_format == "NTLM"
-    assert c.location == "DC01"
+    assert "DC01" in c.locations
 
 
 def test_record_api_key_no_username(tmp_path):
     state = EngagementState(target="x")
     o = _orch(tmp_path, state)
-    o._handle_record_credential({
+    o._handle_record_identity({
         "type": "api_key", "secret": "sk-live-abcdef123456", "location": "api.acme.com",
     }, "agent")
-    c = state.credentials[0]
-    assert c.cred_type == "api_key"
+    c = state.identities[0]
+    assert c.secret_type == "api_key"
     assert c.username is None
     assert c.secret == "sk-live-abcdef123456"
 
 
-def test_record_requires_secret(tmp_path):
+def test_record_requires_username_or_secret(tmp_path):
     state = EngagementState(target="x")
     o = _orch(tmp_path, state)
-    res = o._handle_record_credential({"type": "password", "username": "x"}, "agent")
+    # Neither username nor secret → rejected
+    res = o._handle_record_identity({"type": "password"}, "agent")
     assert res["recorded"] is False
-    assert state.credentials == []
+    assert state.identities == []
+    # Username-only (no secret) is a valid identity record
+    res2 = o._handle_record_identity({"username": "x"}, "agent")
+    assert res2["recorded"] is True
+    assert len(state.identities) == 1
 
 
 def test_context_block_has_real_secret_and_format():
@@ -75,11 +80,11 @@ def test_context_block_has_real_secret_and_format():
     assert "NTLM" in block
     assert "svc" in block
     # masked form is only for the operator UI, not this context
-    assert state.credentials[0].secret_masked != "31d6cfe0d16ae931b73c59d7e0c089c0"
+    assert state.identities[0].secret_masked != "31d6cfe0d16ae931b73c59d7e0c089c0"
 
 
 def test_cold_start_seeded_creds_reach_the_agent():
-    # A manually pre-loaded /cred add (or brief cred) lands in state.credentials
+    # A manually pre-loaded /cred add (or brief cred) lands in state.identities
     # BEFORE any tool has run, so tool_log is empty. has_context() must still fire
     # so the first agent's prompt carries the seeded credential — the old gate
     # keyed on tool_log alone, so the agent started blind to manual creds.
@@ -101,8 +106,9 @@ def test_cold_start_operator_brief_reaches_the_agent():
     assert "Flowise" in state.build_context_block()
 
 
-def test_record_credential_is_intercepted():
-    assert "record_credential" in _INTERCEPTED
+def test_record_identity_is_intercepted():
+    assert "record_identity" in _INTERCEPTED
+    assert "record_credential" in _INTERCEPTED  # backward compat
 
 
 def test_regex_scrape_removed(tmp_path):

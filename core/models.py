@@ -64,7 +64,7 @@ class OperationalFact(BaseModel):
     statement: str               # one-line established fact ("native DLL must be x64")
     evidence: str = ""           # command + observed line proving it (required at write)
     scope: str = ""              # host and/or principal it applies to
-    status: str = "active"       # active | superseded | disproven
+    status: str = "confirmed"    # confirmed | superseded | disproven
     timestamp: datetime = Field(default_factory=lambda: now_local())
 
 

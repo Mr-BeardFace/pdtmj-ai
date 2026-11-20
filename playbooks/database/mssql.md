@@ -86,6 +86,6 @@ look for: a NetNTLMv2 hash, or a cleartext SQL login in the responder capture.
 - Example (hunt stored secrets): `SELECT table_name, column_name FROM information_schema.columns WHERE column_name LIKE '%pass%';`
 - Example (file read, sysadmin): `SELECT * FROM OPENROWSET(BULK N'C:\path\file', SINGLE_CLOB) AS x;`
 
-`record_credential` every login/hash the moment you get it (crackable → `hashcat_crack`).
+`record_identity` every login/hash the moment you get it (crackable → `hashcat_crack`).
 `annotate_finding`: unauthenticated/weak access (critical); confirmed code execution
 (critical, benign proof); linked-server or coercion path to another host (high).

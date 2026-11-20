@@ -45,5 +45,5 @@ Newer Redis: point the target at a malicious master you control and serve a modu
 look for: the version supports it and the target can reach your host.
 
 ## Record
-`record_credential` for secrets pulled from keys. A confirmed file-write or code-exec is
+`record_identity` for secrets pulled from keys. A confirmed file-write or code-exec is
 a critical finding (prove with a benign payload). `record_persistence` anything planted.

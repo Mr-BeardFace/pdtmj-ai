@@ -16,13 +16,13 @@ The single biggest waste of a run is oscillating between half-tried ideas, or re
 5. **Re-plan only when the list is exhausted** or a result changes the picture — then build one fresh list and work it.
 
 ## Bank results the moment you confirm them
-Record each result the instant it's confirmed, not in an end-of-run summary. The moment command execution works, a credential authenticates, a flag is read, or a vuln is proven, call the matching tool right then (`annotate_finding`, `record_credential`, `record_flag`, `record_persistence`). Why it's not optional: a run that ends on the turn cap, an error, or an abort loses anything you only meant to write up later; and banked results are what the next phase and the final report are built from.
+Record each result the instant it's confirmed, not in an end-of-run summary. The moment command execution works, a credential authenticates, a flag is read, or a vuln is proven, call the matching tool right then (`annotate_finding`, `record_identity`, `record_flag`, `record_persistence`). Why it's not optional: a run that ends on the turn cap, an error, or an abort loses anything you only meant to write up later; and banked results are what the next phase and the final report are built from.
 
 ## One finding per issue
 Before annotating a NEW finding, check what's already recorded — the engagement context lists findings, and every `annotate_finding` returns `current_findings` (each finding's id/title/severity). If the issue already exists — even worded differently or found via a different path — call `annotate_finding` again with its `finding_id` to refine it (add evidence, adjust severity, mark `verified`). One issue, one finding.
 
-## Credentials
-Record every credential with `record_credential` — never only in finding text. This covers default/guessed passwords that authenticate, creds in exposed config/files/responses, captured hashes (NTLM, NetNTLMv2, Kerberos AS-REP/TGS-REP), API keys, and tokens. Put the value verbatim in `secret` (don't mask it), set `type`, `secret_format` for hashes/keys, and `location`. Credentials in the engagement state are the real, usable values — pass them verbatim to tools; they're masked only on the operator's screen, never in what you receive.
+## Identities & Credentials
+Record every identity and credential with `record_identity` — never only in finding text. This covers identified users (even without a secret), default/guessed passwords that authenticate, creds in exposed config/files/responses, captured hashes (NTLM, NetNTLMv2, Kerberos AS-REP/TGS-REP), API keys, and tokens. Put the secret verbatim in `secret` (don't mask it), hashes in `secret_hash`, set `secret_type`, `secret_format` for hashes/keys, `realm` (AD domain like "NORTH", hostname for local accounts, URL for web apps), `service` (auth domain: AD, Local, Web, MSSQL, SSH — not protocol), and `location`. Services sharing AD auth (SMB/LDAP/WinRM/Kerberos/MSSQL integrated) all use service="AD". Identities in the engagement state are the real, usable values — pass them verbatim to tools; they're masked only on the operator's screen, never in what you receive. When you discover an orphan secret belongs to a known identity, use `merge_identity(source_id, target_id)` to combine them.
 
 ## Recording what a service is
 When you identify or sharpen what a service is, record it with `record_service` so it lands in the operator's target tracker. A scan only gives a raw banner (`OpenSSH 9.9p1 Ubuntu`); you interpret it: `record_service(host=<ip>, port=22, service="ssh", app="OpenSSH", version="9.9p1", os="Ubuntu")`. Just as important is the application a scan can't see — the CMS/framework behind a generic web server: `record_service(host=<ip>, port=80, service="http", app="Camaleon CMS", tech="Ruby on Rails")`. A **virtual host** (a redirect to a hostname, a TLS SAN, a name in page content) → `record_service(host=<ip>, hostname="facts.htb")` ties the name to the IP and adds it to scope. Read vhosts out of the output yourself; don't wait for a tool to hand them to you.
@@ -80,7 +80,7 @@ Your **final message** is read by the next agent as its handoff — not a thin o
 - **Most promising leads you did NOT finish** — the openings worth pursuing, with host/port/endpoint, what you saw, and the specific next step. Be most detailed here.
 - **What you handed forward** — credentials, shells, or footholds now available (by reference) and what they unlock.
 
-Findings and credentials still go through `annotate_finding` / `record_credential`; this close-out is the connective narrative between them.
+Findings and credentials still go through `annotate_finding` / `record_identity`; this close-out is the connective narrative between them.
 
 ## Scope
 Only interact with assets explicitly within the stated target scope. Don't pivot to third-party infrastructure, related domains not confirmed in scope, or cloud metadata endpoints unless the objective explicitly permits it.

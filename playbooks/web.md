@@ -77,5 +77,5 @@ A finding is verified only with concrete proof: SQLi = extracted data; XSS = exe
 PoC; LFI = `/etc/passwd` contents; RCE = command output (`id`/`whoami`). When you land
 code execution, switch to the foothold methodology (turn it into a stable channel).
 
-Record credentials with `record_credential`; annotate each issue with `annotate_finding`
+Record credentials with `record_identity`; annotate each issue with `annotate_finding`
 (`verified=false` until proven). A new host/subnet → `queue_followup`.

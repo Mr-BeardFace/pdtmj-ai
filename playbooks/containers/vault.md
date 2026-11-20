@@ -21,4 +21,4 @@ look for: unsealed + a usable token/role — a leaked root token, dev mode, or a
 look for: DB creds, cloud keys, SSH/PKI signing material — high-value pivots.
 
 ## Record
-`record_credential` every secret pulled and reuse it against the systems it unlocks.
+`record_identity` every secret pulled and reuse it against the systems it unlocks.
