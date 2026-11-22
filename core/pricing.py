@@ -10,21 +10,17 @@ import sys
 
 # ── Anthropic direct rates (per 1M tokens) ──────────────────────────────────
 _ANTHROPIC_PER_MTOK: dict[str, dict[str, float]] = {
-    "claude-opus-4-7": {
-        "input": 15.00, "output": 75.00,
-        "cache_read": 1.50, "cache_write": 18.75,
+    "claude-opus-4-6": {
+        "input": 5.00, "output": 25.00,
+        "cache_read": 0.50, "cache_write": 6.25,
     },
     "claude-sonnet-4-6": {
         "input": 3.00, "output": 15.00,
         "cache_read": 0.30, "cache_write": 3.75,
     },
-    "claude-haiku-5-5": {
-        "input": 0.10, "output": 0.50,
-        "cache_read": 0.01, "cache_write": 0.0125,
-    },
-    "claude-haiku-4-5-20251001": {
-        "input": 0.80, "output": 4.00,
-        "cache_read": 0.08, "cache_write": 1.00,
+    "claude-haiku-4-5": {
+        "input": 1.00, "output": 5.00,
+        "cache_read": 0.10, "cache_write": 1.25,
     },
 }
 
