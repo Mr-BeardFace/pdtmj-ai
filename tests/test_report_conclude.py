@@ -29,11 +29,12 @@ def _msg(*blocks):
     return _Message(content=list(blocks), usage=_Usage(input_tokens=10, output_tokens=5))
 
 
-def _orch(tmp_path, llm, state):
+def _orch(tmp_path, llm, state, persona="pentest-ctf"):
     reg = ToolRegistry()
     reg.register(Tool(name="noop", description="", input_schema={"type": "object"}, func=lambda **k: {}))
     return Orchestrator(llm, reg, tmp_path, quiet=True,
-                        engagement_state=state, save_individual_runs=False)
+                        engagement_state=state, save_individual_runs=False,
+                        active_persona=persona)
 
 
 def _agent(name, phase):

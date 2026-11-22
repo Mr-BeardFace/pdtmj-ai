@@ -36,6 +36,7 @@ from tools.check_jobs import TOOL_DEFINITION as CHECK_JOBS_DEF
 from tools.wait import TOOL_DEFINITION as WAIT_DEF, wait as _wait_fn
 from tools.record_flag import TOOL_DEFINITION as RECORD_FLAG_DEF
 from tools.conclude_engagement import TOOL_DEFINITION as CONCLUDE_DEF
+from tools.record_achievement import TOOL_DEFINITION as RECORD_ACHIEVEMENT_DEF
 from tools.start_listener import TOOL_DEFINITION as START_LISTENER_DEF
 from tools.shell_exec import TOOL_DEFINITION as SHELL_EXEC_DEF
 from tools.list_shells import TOOL_DEFINITION as LIST_SHELLS_DEF
@@ -59,7 +60,7 @@ SEV_COLOR = {
 _INTERCEPTED = {"annotate_finding", "queue_followup", "record_plan", "register_surface",
                 "record_identity", "merge_identity", "record_credential",
                 "record_service", "record_fact", "record_flag", "record_ioc",
-                "conclude_engagement", "grep_artifact", "read_artifact", "check_jobs", "list_scripts",
+                "conclude_engagement", "record_achievement", "grep_artifact", "read_artifact", "check_jobs", "list_scripts",
                 "start_listener", "shell_exec", "list_shells", "record_persistence", "wait",
                 "load_playbook", "write_report"}
 
@@ -1237,6 +1238,9 @@ class Orchestrator:
             # IOC tracking — redteam and pentest personas.
             if self._active_persona in ("redteam", "pentest"):
                 meta_defs.append(RECORD_IOC_DEF)
+            # Achievement tracking — pentest and redteam record milestones without halting.
+            if self._active_persona in ("redteam", "pentest"):
+                meta_defs.append(RECORD_ACHIEVEMENT_DEF)
         tool_schemas = [t.to_api_format() for t in available_tools] + meta_defs
 
         # Planning does not annotate findings — it only records a plan.
@@ -1372,12 +1376,11 @@ class Orchestrator:
                     if self.state:                # a caught shell is confirmed exec
                         self.state.note_exec_confirmed()
 
-                # Objective declared achieved — stop this agent's loop. EXCEPT the
-                # reporting agent: it runs AFTER the engagement is concluded, to write
-                # the deliverable. A concluded state must not short-circuit it, or the
-                # report agent returns instantly with no LLM call and the report falls
-                # back to the un-synthesized DRAFT (no executive summary, missing detail).
-                if self.state and self.state.concluded and phase != "reporting":
+                # Objective declared achieved — CTF stops this agent's loop. Pentest/
+                # redteam don't halt on concluded (it's converted to an achievement).
+                # EXCEPT the reporting agent: it runs AFTER the engagement is concluded.
+                if self.state and self.state.concluded and phase != "reporting" \
+                        and self._active_persona == "pentest-ctf":
                     self._print(f"[green]■ Stopping — {self.state.concluded}[/green]")
                     run.status = "concluded"
                     break
@@ -1592,6 +1595,24 @@ class Orchestrator:
 
                     if tb.name == "conclude_engagement":
                         reason = (tb.input.get("reason") or "objective achieved").strip()
+                        # pentest/redteam: auto-convert to achievement, don't halt
+                        if self._active_persona in ("redteam", "pentest"):
+                            ach_result = self._handle_record_achievement(
+                                {"capability": "objective", "description": reason,
+                                 "scope": tb.input.get("scope", ""),
+                                 "finding_ids": tb.input.get("finding_ids", [])},
+                                agent.name)
+                            tool_results.append({
+                                "type":        "tool_result",
+                                "tool_use_id": tb.id,
+                                "content":     json.dumps({
+                                    "concluded": False,
+                                    "converted_to_achievement": True,
+                                    "achievement": ach_result,
+                                    "note": "Achievement recorded. Engagement continues — cover remaining attack surface.",
+                                }),
+                            })
+                            continue
                         if self.state:
                             self.state.concluded = reason
                         self._print(f"\n[bold green]■ Engagement concluded:[/bold green] {reason}")
@@ -1600,6 +1621,17 @@ class Orchestrator:
                             "type":        "tool_result",
                             "tool_use_id": tb.id,
                             "content":     json.dumps({"concluded": True, "reason": reason}),
+                        })
+                        continue
+
+                    if tb.name == "record_achievement":
+                        result = self._handle_record_achievement(tb.input, agent.name)
+                        if self.state:
+                            self.state.note_progress()
+                        tool_results.append({
+                            "type":        "tool_result",
+                            "tool_use_id": tb.id,
+                            "content":     json.dumps(result),
                         })
                         continue
 
@@ -2757,6 +2789,32 @@ class Orchestrator:
 
     # Backward-compat alias
     _handle_record_credential = _handle_record_identity
+
+    def _handle_record_achievement(self, inputs: dict, source_agent: str) -> dict:
+        if not self.state:
+            return {"recorded": False, "error": "No engagement state attached"}
+        capability = (inputs.get("capability") or "").strip()
+        description = (inputs.get("description") or "").strip()
+        if not capability or not description:
+            return {"recorded": False, "error": "capability and description are required"}
+        scope = (inputs.get("scope") or "").strip()
+        finding_ids = inputs.get("finding_ids") or []
+        surface_id = (inputs.get("surface_id") or "").strip()
+
+        ach = self.state.add_achievement(
+            capability=capability, description=description, scope=scope,
+            finding_ids=finding_ids, surface_id=surface_id, agent=source_agent)
+
+        self._print(f"  [bold magenta][achievement][/bold magenta] {capability}"
+                    + (f" @ {scope}" if scope else "") + f" — {description}")
+        self._emit("achievement", capability=capability, description=description,
+                   scope=scope, agent=source_agent, id=ach.id)
+        if self._store:
+            try:
+                self._store.upsert_achievement(ach)
+            except Exception:
+                pass
+        return {"recorded": True, "id": ach.id, "capability": capability, "scope": scope}
 
     def _handle_merge_identity(self, inputs: dict, source_agent: str) -> dict:
         if not self.state:

@@ -141,6 +141,12 @@ class EngagementStore:
                 json            TEXT NOT NULL,
                 created_at      TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS achievements (
+                id              TEXT PRIMARY KEY,
+                engagement_id   TEXT NOT NULL,
+                json            TEXT NOT NULL,
+                created_at      TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS activity_log (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 engagement_id   TEXT NOT NULL,
@@ -401,6 +407,23 @@ class EngagementStore:
             (self.engagement_id,),
         ).fetchall()
         return [IOC.model_validate_json(r["json"]) for r in rows]
+
+    def upsert_achievement(self, achievement) -> None:
+        """Insert or replace an Achievement (by id)."""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO achievements (id, engagement_id, json, created_at)"
+            " VALUES (?, ?, ?, ?)",
+            (achievement.id, self.engagement_id, achievement.model_dump_json(), _now()),
+        )
+        self._conn.commit()
+
+    def load_achievements(self) -> list:
+        from core.models import Achievement
+        rows = self._conn.execute(
+            "SELECT json FROM achievements WHERE engagement_id = ? ORDER BY created_at",
+            (self.engagement_id,),
+        ).fetchall()
+        return [Achievement.model_validate_json(r["json"]) for r in rows]
 
     def add_activity(self, ts: str, message: str, notable: bool = False) -> int:
         cur = self._conn.execute(

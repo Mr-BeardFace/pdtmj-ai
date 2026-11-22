@@ -68,6 +68,20 @@ class OperationalFact(BaseModel):
     timestamp: datetime = Field(default_factory=lambda: now_local())
 
 
+class Achievement(BaseModel):
+    """A proven capability — changes what subsequent agents need to demonstrate.
+    RCE on a host, DA on a domain, forest compromise. Agents see these in their
+    objective and skip re-proving the same endpoint via a different path."""
+    id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
+    capability: str              # rce, domain_admin, forest_compromise, foothold, privesc, user_access
+    description: str             # "DA via Kerberoasting svc_sql → DCSync"
+    scope: str = ""              # host, domain, or surface it applies to
+    finding_ids: list[str] = []  # the findings that proved it
+    surface_id: str = ""
+    agent: str = ""
+    timestamp: datetime = Field(default_factory=lambda: now_local())
+
+
 class EngagementRun(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[:12])
     agent: str

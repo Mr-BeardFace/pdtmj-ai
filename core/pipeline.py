@@ -271,10 +271,11 @@ class EngagementDriver:
         repeat until exhausted or a backstop trips. ParallelDriver overrides this
         to work several independent surfaces at once."""
         while True:
-            # Objective achieved (root/RCE/flag) — stop opening new work.
+            # Objective achieved — CTF halts, pentest/redteam continue.
             if self.state and getattr(self.state, "concluded", None):
-                self._activity(f"■ Objective achieved — {self.state.concluded}. Concluding.")
-                break
+                if getattr(self.orch, "_active_persona", "pentest-ctf") == "pentest-ctf":
+                    self._activity(f"■ Objective achieved — {self.state.concluded}. Concluding.")
+                    break
             ctrl = self._check_control()
             if ctrl == "stop":
                 self._stopped = True
@@ -312,7 +313,8 @@ class EngagementDriver:
         if self._check_control() != "continue":
             surface.cycles += 1
             return
-        if self.state and getattr(self.state, "concluded", None):
+        _ctf = getattr(self.orch, "_active_persona", "pentest-ctf") == "pentest-ctf"
+        if _ctf and self.state and getattr(self.state, "concluded", None):
             surface.cycles += 1
             return
 
@@ -322,12 +324,12 @@ class EngagementDriver:
         # this is an assessment-only run: enumerate each surface and report.
         if self.brief.exploitation_allowed:
             if PLAN_AGENT in self.agents and self._check_control() == "continue" \
-                    and not (self.state and getattr(self.state, "concluded", None)):
+                    and not (_ctf and self.state and getattr(self.state, "concluded", None)):
                 self._banner(f"Planning — {surface.label}")
                 self._run_agent(PLAN_AGENT, surface.host, self._plan_objective(surface))
 
             if self._check_control() == "continue" \
-                    and not (self.state and getattr(self.state, "concluded", None)) \
+                    and not (_ctf and self.state and getattr(self.state, "concluded", None)) \
                     and self._approve_exploitation(surface):
                 self._run_exploit(surface)
 
@@ -721,9 +723,24 @@ class EngagementDriver:
             "Order items by likelihood and impact."
         )
 
+    def _achievement_context(self, surface: Surface) -> str:
+        """One-paragraph summary of what's already proven, scoped to relevance."""
+        if not self.state or not self.state.achievements:
+            return ""
+        lines = []
+        for a in self.state.achievements:
+            sc = f" @ {a.scope}" if a.scope else ""
+            lines.append(f"  ★ {a.capability}{sc} — {a.description}")
+        return (
+            "\n\n**Already proven** (document alternate paths to the same endpoint but don't "
+            "re-execute the proven chain — pursue remaining vuln classes instead):\n"
+            + "\n".join(lines)
+        )
+
     def _exploit_objective(self, surface: Surface, plan) -> str:
         hint = self._tool_hint_for(surface)
         hint_line = f"\n\nTool note: {hint}" if hint else ""
+        ach_block = self._achievement_context(surface)
         head = (
             f"Exploit surface {surface.label} (host {surface.host}). 'Exploit' means anything "
             "that lets a tester do something they should not be able to — misconfigurations, "
@@ -737,7 +754,7 @@ class EngagementDriver:
             "(3) known CVEs and misconfigurations (IDOR, auth bypass, SSRF, injection); "
             "(4) password brute-forcing / spraying — LAST RESORT only, once the above are "
             "genuinely exhausted. Do not open with hydra/brute-force."
-            f"{hint_line}"
+            f"{hint_line}{ach_block}"
         )
         if plan and plan.items:
             lines = [head, "", "Work from this vetted plan:"]

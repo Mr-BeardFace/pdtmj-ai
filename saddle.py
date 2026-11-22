@@ -288,6 +288,9 @@ def op_status(op: str | None) -> None:
         _console.print(f"creds:     {len(store.load_identities())}")
         _console.print(f"surfaces:  {len(store.load_surfaces())}")
         _console.print(f"hosts:     {len(store.load_hosts())}")
+        n_ach = len(store.load_achievements())
+        if n_ach:
+            _console.print(f"achieved:  {n_ach}")
         _console.print(f"beacons:   {len(store.load_beacons())}")
         if totals["cost_usd"]:
             cache = f" {totals.get('cache_read', 0):,}⚡" if totals.get("cache_read") else ""
@@ -445,6 +448,23 @@ def op_iocs(op: str | None, ioc_type: str | None) -> None:
     for r in rows:
         t.add_row(r.ioc_type, r.value, r.context or "")
     _console.print(t)
+
+
+@op.command("achievements")
+@click.option("--op", default=None)
+def op_achievements(op: str | None) -> None:
+    """List proven capability milestones."""
+    store, _ = _open_store(op)
+    try:
+        rows = store.load_achievements()
+    finally:
+        store.close()
+    if not rows:
+        _console.print("[dim]no achievements[/dim]")
+        return
+    for r in rows:
+        scope = f" [dim]@ {r.scope}[/dim]" if r.scope else ""
+        _console.print(f"  [bold magenta]{r.capability}[/bold magenta]{scope} — {r.description}")
 
 
 @op.command("leads")

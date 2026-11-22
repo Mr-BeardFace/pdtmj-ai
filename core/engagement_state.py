@@ -12,7 +12,7 @@ from typing import ClassVar, Optional
 
 from pydantic import BaseModel, Field, PrivateAttr
 
-from core.models import Surface, TestPlan, OperationalFact
+from core.models import Achievement, Surface, TestPlan, OperationalFact
 from core.utils import mask_secret
 
 # Tools whose results should not be cached (side effects or stateful)
@@ -275,6 +275,7 @@ class EngagementState(BaseModel):
     auth_attempts: list[AuthAttempt] = []   # who/what was tried against which service
     persistence: list[PersistenceItem] = [] # footholds planted (for cleanup/report)
     operational_facts: list[OperationalFact] = []  # confirmed act-on-this scaffolding (target/channel), NOT reported
+    achievements: list["Achievement"] = []  # proven capabilities — changes what subsequent agents must demonstrate
     services: list[dict] = []        # agent-annotated service detail: {host,port,service,app,version,tech,os}
     scripts: list[dict] = []         # ad-hoc run_script library: {purpose,path,language,timestamp}
     handoffs: list[dict] = []        # per-agent close-out notes for the next agent: {agent,summary}
@@ -496,6 +497,7 @@ class EngagementState(BaseModel):
             "tool_log": len(self.tool_log),
             "persistence": len(self.persistence),
             "operational_facts": len(self.operational_facts),
+            "achievements": len(self.achievements),
             "handoffs": len(self.handoffs),
             "_eng_script_calls": self._eng_script_calls,
             "_scripts_since_progress": self._scripts_since_progress,
@@ -603,6 +605,9 @@ class EngagementState(BaseModel):
         # state's dedup/supersede/cap apply (not a blind extend that could dupe or overflow).
         for f in other.operational_facts[marks.get("operational_facts", 0):]:
             self.record_fact(f.kind, f.statement, f.evidence, f.scope)
+        for a in other.achievements[marks.get("achievements", 0):]:
+            self.add_achievement(a.capability, a.description, a.scope,
+                                a.finding_ids, a.surface_id, a.agent)
         self.handoffs.extend(other.handoffs[marks.get("handoffs", 0):])
         if len(self.handoffs) > self._HANDOFF_KEEP:
             self.handoffs = self.handoffs[-self._HANDOFF_KEEP:]
@@ -948,6 +953,26 @@ class EngagementState(BaseModel):
         inval     = inval[-self._FACT_INVAL_KEEP:]
         keep = {id(f) for f in confirmed} | {id(f) for f in inval}
         self.operational_facts = [f for f in self.operational_facts if id(f) in keep]
+
+    def add_achievement(self, capability: str, description: str, scope: str = "",
+                        finding_ids: list | None = None, surface_id: str = "",
+                        agent: str = "") -> Achievement:
+        """Record a proven capability. Deduplicates on (capability, scope)."""
+        norm_cap = (capability or "").strip().lower()
+        norm_scope = (scope or "").strip().lower()
+        for a in self.achievements:
+            if a.capability.lower() == norm_cap and a.scope.lower() == norm_scope:
+                if description:
+                    a.description = description
+                for fid in (finding_ids or []):
+                    if fid not in a.finding_ids:
+                        a.finding_ids.append(fid)
+                return a
+        ach = Achievement(capability=capability, description=description,
+                          scope=scope, finding_ids=finding_ids or [],
+                          surface_id=surface_id, agent=agent)
+        self.achievements.append(ach)
+        return ach
 
     def intel_signature(self, findings: list | None = None) -> tuple:
         """A coarse fingerprint of accumulated intel. If this is unchanged after a
@@ -1337,6 +1362,11 @@ class EngagementState(BaseModel):
                 s.operational_facts.append(OperationalFact(**of))
             except Exception:
                 pass
+        for ach in snap.get("achievements", []) or []:
+            try:
+                s.achievements.append(Achievement(**ach))
+            except Exception:
+                pass
         recon = snap.get("recon", {}) or {}
         s.recon.host_names.update(recon.get("host_names", {}) or {})
         s.recon.os_info.update(recon.get("os_info", {}) or {})
@@ -1387,6 +1417,7 @@ class EngagementState(BaseModel):
             "flags":         [f.model_dump(mode="json") for f in self.flags],
             "persistence":   [p.model_dump(mode="json") for p in self.persistence],
             "operational_facts": [f.model_dump(mode="json") for f in self.operational_facts],
+            "achievements": [a.model_dump(mode="json") for a in self.achievements],
             "recon":         {"os_info":    dict(self.recon.os_info),
                               "host_names": dict(self.recon.host_names),
                               "open_ports": list(self.recon.open_ports),
@@ -1597,7 +1628,7 @@ class EngagementState(BaseModel):
         otherwise pre-loaded /cred entries never reach the first agent."""
         return bool(
             self.tool_log or self.identities or self.flags
-            or self.handoffs or self.persistence
+            or self.handoffs or self.persistence or self.achievements
             or self.recon.open_ports or self.recon.host_names
             or self.tech_context or self.focus_areas or self.out_of_scope
         )
@@ -1649,6 +1680,16 @@ class EngagementState(BaseModel):
                 for f in inval[-self._FACT_INVAL_KEEP:]:
                     lines.append(f"  ✗ CORRECTED (was wrong): {f.statement}")
                 lines.append("")
+
+        # Proven achievements — capabilities already demonstrated. Agents should
+        # pursue remaining attack surface and alternate paths, not re-prove these.
+        if self.achievements:
+            lines.append("**Proven capabilities** (already demonstrated — pursue remaining "
+                         "attack surface, don't re-execute these endpoints):")
+            for a in self.achievements:
+                sc = f" @ {a.scope}" if a.scope else ""
+                lines.append(f"  ★ {a.capability}{sc} — {a.description}")
+            lines.append("")
 
         # Tool log — last 30 entries. The most recent few also carry their actual
         # output snippet (not just the one-line summary) so the next agent inherits

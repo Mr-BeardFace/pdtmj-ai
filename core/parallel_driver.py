@@ -107,8 +107,9 @@ class ParallelDriver(EngagementDriver):
         self._resolve_exploit_approval()
         while True:
             if self.state and getattr(self.state, "concluded", None):
-                self._activity(f"■ Objective achieved — {self.state.concluded}. Concluding.")
-                break
+                if getattr(self.orch, "_active_persona", "pentest-ctf") == "pentest-ctf":
+                    self._activity(f"■ Objective achieved — {self.state.concluded}. Concluding.")
+                    break
             ctrl = self._check_control()
             if ctrl == "stop":
                 self._stopped = True
@@ -166,7 +167,9 @@ class ParallelDriver(EngagementDriver):
             children.append(child)
             jobs.append(job)
 
-        res = fan_out(jobs, is_solve=lambda c: bool(c.state.concluded))
+        _ctf = getattr(self.orch, "_active_persona", "pentest-ctf") == "pentest-ctf"
+        # CTF: cancel sibling surfaces on solve. Pentest/redteam: let all surfaces finish.
+        res = fan_out(jobs, is_solve=(lambda c: bool(c.state.concluded)) if _ctf else None)
         self._report_worker_errors(res)
         self._merge_children(res.results, marks)
         self.total_cycles += len(batch)
