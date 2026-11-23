@@ -117,12 +117,10 @@ COMMANDS: list[Command] = [
         Sub("set",  "Set the engagement persona", "<persona-name>", _PERSONA_COMPLETIONS),
         Sub("list", "List available personas"),
     )),
-    Command("/agent", "Inspect and override per-agent models and temperatures", (
+    Command("/agent", "Inspect and override per-agent models", (
         Sub("set model", "Override the model for one agent (or 'global')",
             "<name|global> <model-id>", ("global",)),
-        Sub("set temp", "Override the sampling temperature for one agent (or 'global')",
-            "<name|global> <0.0-1.0|default>", ("global",)),
-        Sub("list", "List all agents with their current model and temperature"),
+        Sub("list", "List all agents with their current model"),
     )),
     # ── Op data (all personas) ────────────────────────────────────────────────
     Command("/cred", "Pre-load or manage engagement credentials", (
@@ -565,15 +563,12 @@ def handle_agent_list() -> tuple[list[str], bool]:
         from pathlib import Path
         from core.config import load_config
 
-        from core.config import get_temperature_for_agent
-
         agents_dir = Path(__file__).parent.parent / "agents"
         cfg = load_config()
         overrides: dict = cfg.get("agent_models", {})
-        temps: dict = cfg.get("agent_temperatures", {}) or {}
         global_model = overrides.get("global", "—")
 
-        lines = [f"{'Agent':<34} {'Model override':<28} {'Temp':<6} Source", ""]
+        lines = [f"{'Agent':<34} {'Model override':<28}", ""]
         for af in sorted(agents_dir.rglob("*.md")):
             if af.name == "base-instructions.md":
                 continue
@@ -586,20 +581,11 @@ def handle_agent_list() -> tuple[list[str], bool]:
                 name    = meta.get("name", af.stem)
                 override = overrides.get(name, "")
                 model_str = f"→ {override}" if override else f"({meta.get('model', '—')})"
-                eff = get_temperature_for_agent(name)
-                temp_str = "default" if eff is None else f"{eff:g}"
-                src = "override" if name in temps else "default"
-                lines.append(f"  {name:<32} {model_str:<28} {temp_str:<6} {src}")
+                lines.append(f"  {name:<32} {model_str:<28}")
             except Exception:
                 pass
 
-        td = cfg.get("temp")
-        lines += [
-            "",
-            f"  global model override:  {global_model}",
-            f"  temp:    {'provider default' if td is None else td}"
-            "   (/agent set temp <name|global> <0.0-1.0>)",
-        ]
+        lines += ["", f"  global model override:  {global_model}"]
         return lines, True
     except Exception as e:
         return [f"Error: {e}"], False
@@ -645,67 +631,6 @@ def handle_agent_set_model(args: list[str]) -> tuple[list[str], bool]:
     except Exception as e:
         return [f"Error writing config: {e}"], False
 
-
-def handle_agent_set_temp(args: list[str]) -> tuple[list[str], bool]:
-    """
-    Args: [<agent_name|global>, <0.0-1.0 | default>]
-
-    Per-agent override, or 'global' to set the baseline (temp).
-    'default' clears: a per-agent override falls back to the baseline; 'global default'
-    falls back to the provider default (no temperature sent).
-    """
-    if len(args) < 2:
-        return [
-            "Usage: /agent set temp <agent-name|global> <0.0-1.0|default>",
-            "",
-            "Examples:",
-            "  /agent set temp global 0.4                  (baseline for all agents)",
-            "  /agent set temp pentest/rce 0.5             (override one agent)",
-            "  /agent set temp pentest/report 0.2",
-            "  /agent set temp pentest/rce default         (clear the override)",
-            "",
-            "Lower = focused/deterministic (tool-heavy work, reports); higher = more "
-            "exploratory (helps an agent break out of a rut).",
-        ], False
-
-    agent_name, val = args[0], args[1].lower()
-    clearing = val in ("default", "off", "none", "clear")
-
-    t = None
-    if not clearing:
-        try:
-            t = float(val)
-        except ValueError:
-            return ["Temperature must be a number between 0.0 and 1.0 (or 'default' to clear).",
-                    "Example: /agent set temp pentest/rce 0.5"], False
-        if not (0.0 <= t <= 1.0):
-            return [f"Temperature must be between 0.0 and 1.0 (got {t})."], False
-
-    try:
-        from core.config import load_config, save_config
-        cfg = load_config()
-        temps: dict = cfg.setdefault("agent_temperatures", {})
-
-        if agent_name == "global":
-            cfg["temp"] = None if clearing else t
-            save_config(cfg)
-            if clearing:
-                return ["Baseline temperature cleared — agents now use the provider default "
-                        "(1.0) unless individually overridden."], True
-            return [f"Baseline temperature set to {t} (every agent without its own override)."], True
-
-        if clearing:
-            temps.pop(agent_name, None)
-            save_config(cfg)
-            td = cfg.get("temp")
-            return [f"Temperature override for '{agent_name}' cleared — it now uses the baseline "
-                    f"({'provider default' if td is None else td})."], True
-
-        temps[agent_name] = t
-        save_config(cfg)
-        return [f"Temperature for '{agent_name}' set to {t}."], True
-    except Exception as e:
-        return [f"Error writing config: {e}"], False
 
 
 def _active_persona() -> str:
@@ -1674,8 +1599,6 @@ def dispatch(text: str) -> tuple[list[str], bool] | None:
         return handle_agent_list()
     if cmd == "/agent set model":
         return handle_agent_set_model(args)
-    if cmd == "/agent set temp":
-        return handle_agent_set_temp(args)
     if cmd == "/cred add":
         # Cred injection requires app state — dispatch() only returns the message.
         lines, ok, _cred = handle_cred_add(args)

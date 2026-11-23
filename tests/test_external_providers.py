@@ -26,7 +26,7 @@ def _write_module(tmp_path) -> str:
                     return ["visit https://example/auth then paste the code"], True
                 return [f"logged in with code {args[0]}"], True
 
-            def _handler(client, model, system, messages, tools, max_tokens, temperature):
+            def _handler(client, model, system, messages, tools, max_tokens):
                 return api.Message(
                     stop_reason="end_turn",
                     content=[api.TextBlock(type="text", text="from-external")],

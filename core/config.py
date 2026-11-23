@@ -45,18 +45,6 @@ _DEFAULTS: dict[str, Any] = {
     # in — it just runs into this cap. Raise it if enum keeps stopping short.
     "enum_turns": 20,
     "agent_models": {},
-    # ── Sampling temperature (0 = focused/deterministic, 1 = the provider default,
-    # more varied/creative) ───────────────────────────────────────────────────────
-    # Lower suits methodical, tool-heavy work and reproducibility; a little higher
-    # helps an agent break out of a rut. `temp` applies to every agent unless overridden
-    # in `agent_temperatures` (by exact agent name, or "global" for all). null anywhere →
-    # fall through to the provider default. Some models (newer Opus) reject temperature —
-    # it's detected and dropped automatically for those (see llm_client).
-    "temp": 0.4,
-    "agent_temperatures": {
-        "pentest/report": 0.2,   # write-ups: consistent, factual, minimal drift
-        # rce + everything else use the `temp` baseline (0.4)
-    },
     "active_provider": "anthropic",  # "anthropic" | "openrouter" | "nvidia"
     # ── Analyst scope (helps distinguish op vs local commands) ────────────────
     "scope_targets": [],       # e.g. ["10.10.10.1", "192.168.1.0/24", "target.htb"]
@@ -243,7 +231,6 @@ _KEY_ALIASES: dict[str, str] = {
     "run_script_volume_nudge": "reuse_nudge",
     "grind_nudge_after_scripts": "grind_nudge",
     "debug_capture": "debug",
-    "temperature_default": "temp",
 }
 
 # Mtime-based cache — avoids a YAML parse on every get() call.
@@ -437,14 +424,3 @@ def get_time_limit_seconds() -> int | None:
     return parse_duration(load_config().get("time_limit"))
 
 
-def get_temperature_for_agent(agent_name: str) -> float | None:
-    """Resolve the sampling temperature for an agent: an exact per-agent override in
-    `agent_temperatures`, else a `global` override there, else the `temp` baseline.
-    Returns None to mean 'use the provider default' (no temperature sent)."""
-    cfg = load_config()
-    per: dict = cfg.get("agent_temperatures", {}) or {}
-    if agent_name in per:
-        return per[agent_name]
-    if "global" in per:
-        return per["global"]
-    return cfg.get("temp")

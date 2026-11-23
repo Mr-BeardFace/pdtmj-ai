@@ -1190,15 +1190,13 @@ class Orchestrator:
         self._emit("agent_start", agent=agent.name, target=target, run_id=run.id)
 
         from core.config import (get_model_for_agent, get_global_model,
-                                  get_temperature_for_agent, get as _config_get)
+                                  get as _config_get)
         # Full-transcript debug capture (off unless /debug on). Re-read per agent so a
         # mid-engagement toggle takes effect on the next agent; appended to one file.
         from core import debug_capture
         debug_capture.configure(self.results_dir / "llm_debug.log",
                                 bool(_config_get("debug", False)))
         effective_model = get_model_for_agent(agent.name) or get_global_model() or agent.model
-        # Per-agent sampling temperature (None → provider default). Resolved once per run.
-        effective_temperature = get_temperature_for_agent(agent.name)
 
         available_tools = self.tools.get_by_scope(agent.scope)
         phase = agent.metadata.get("phase", "assessment")
@@ -1404,7 +1402,6 @@ class Orchestrator:
                         system=system,
                         messages=messages,
                         tools=tool_schemas,
-                        temperature=effective_temperature,
                     )
                 except Exception as e:
                     # Capture the failed call for debug, then re-raise so the normal

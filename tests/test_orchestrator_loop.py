@@ -16,7 +16,7 @@ class FakeLLM:
         self._responses = list(responses)
         self.calls = 0
 
-    def run(self, model, system, messages, tools, max_tokens=8192, temperature=None):
+    def run(self, model, system, messages, tools, max_tokens=8192):
         self.calls += 1
         return self._responses.pop(0)
 
@@ -163,28 +163,6 @@ def test_scan_cache_prevents_second_execution(tmp_path):
     assert cached["result"] == {"host_count": 1, "hosts": []}
 
 
-def test_temperature_resolution_per_agent():
-    from core.config import get_temperature_for_agent
-    assert get_temperature_for_agent("pentest/report") == 0.2          # explicit override
-    assert get_temperature_for_agent("pentest/rce") == 0.4             # falls to default
-    assert get_temperature_for_agent("pentest/enumeration") == 0.4     # falls to default
-
-
-def test_resolved_temperature_passed_to_llm(tmp_path):
-    from core.config import get_temperature_for_agent
-    captured = {}
-
-    class TempLLM(FakeLLM):
-        def run(self, model, system, messages, tools, max_tokens=8192, temperature=None):
-            captured["t"] = temperature
-            return super().run(model, system, messages, tools, max_tokens, temperature)
-
-    llm = TempLLM([_msg(_TextBlock(text="done"))])
-    orch = _orchestrator(tmp_path, llm, _registry(lambda **kw: {}))
-    orch.run(_agent([]), "10.10.10.5", max_turns=3)
-    assert captured["t"] == get_temperature_for_agent("test/agent") == 0.4
-
-
 def test_max_turns_status(tmp_path):
     llm = FakeLLM([
         _msg(_ToolUseBlock(id=f"t{i}", name="fake_tool", input={"n": i}))
@@ -267,7 +245,7 @@ def test_live_shells_surfaced_in_opening_context(tmp_path):
     captured = {}
 
     class CapLLM(FakeLLM):
-        def run(self, model, system, messages, tools, max_tokens=8192, temperature=None):
+        def run(self, model, system, messages, tools, max_tokens=8192):
             captured.setdefault("user", messages[0]["content"])
             return super().run(model, system, messages, tools, max_tokens)
 
@@ -297,7 +275,7 @@ class NudgeWatchLLM(FakeLLM):
         super().__init__(responses)
         self.saw_nudge = False
 
-    def run(self, model, system, messages, tools, max_tokens=8192, temperature=None):
+    def run(self, model, system, messages, tools, max_tokens=8192):
         for m in messages:
             c = m.get("content")
             if isinstance(c, list):
@@ -341,7 +319,7 @@ class NoticeWatchLLM(FakeLLM):
         super().__init__(responses)
         self.notices = []
 
-    def run(self, model, system, messages, tools, max_tokens=8192, temperature=None):
+    def run(self, model, system, messages, tools, max_tokens=8192):
         for m in messages:
             if m.get("role") == "user" and isinstance(m.get("content"), list):
                 for b in m["content"]:
@@ -526,7 +504,7 @@ def test_run_skips_agent_when_aborted(tmp_path):
     # Operator aborts mid-run: the first turn's call queues abort+skip (as a stand-in
     # for the UI doing it), so the NEXT boundary parks the agent and skips it.
     class AbortingLLM(FakeLLM):
-        def run(self, model, system, messages, tools, max_tokens=8192, temperature=None):
+        def run(self, model, system, messages, tools, max_tokens=8192):
             if self.calls == 0:                    # mid-run /abort then /skip
                 orch.control_queue.put("abort")
                 orch.control_queue.put("skip")

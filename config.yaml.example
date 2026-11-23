@@ -5,9 +5,6 @@ agent_turns: 60
 sliding_turns: true
 turn_ceiling_factor: 5
 agent_models: {}
-temp: 0.4
-agent_temperatures:
-  pentest/report: 0.2
 active_provider: anthropic
 # Base URL for the `local` provider (Ollama, LM Studio, llama.cpp, vLLM — anything
 # OpenAI-compatible). Set it with `/provider set local <url>` or here directly.

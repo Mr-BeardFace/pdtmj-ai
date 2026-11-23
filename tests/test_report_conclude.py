@@ -20,7 +20,7 @@ class FakeLLM:
         self._responses = list(responses)
         self.calls = 0
 
-    def run(self, model, system, messages, tools, max_tokens=8192, temperature=None):
+    def run(self, model, system, messages, tools, max_tokens=8192):
         self.calls += 1
         return self._responses.pop(0)
 

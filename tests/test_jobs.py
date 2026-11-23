@@ -70,7 +70,7 @@ class FakeLLM:
     def __init__(self, responses):
         self._responses = list(responses)
 
-    def run(self, model, system, messages, tools, max_tokens=8192, temperature=None):
+    def run(self, model, system, messages, tools, max_tokens=8192):
         return self._responses.pop(0)
 
 

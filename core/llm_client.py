@@ -51,15 +51,6 @@ def _is_quota_exhaustion(msg: str) -> bool:
     return any(kw in lower for kw in _QUOTA_KEYWORDS)
 
 
-def _is_temperature_rejected(msg: str) -> bool:
-    """A 400 caused by the model not accepting `temperature` (newer Opus models
-    deprecate it). Matched so we can drop the param and retry instead of crashing."""
-    lower = msg.lower()
-    return "temperature" in lower and any(
-        kw in lower for kw in ("deprecat", "not support", "unsupported",
-                               "not allowed", "cannot", "invalid")
-    )
-
 
 # OS keyring service name. Deliberately kept as "pentest-ai" through the PDTMJ-AI
 # rebrand: it is the lookup key for already-stored API keys, so renaming it would
@@ -227,7 +218,7 @@ def _bedrock_resolve_model(session, region: str, model: str) -> str:
     return resolved
 
 
-def _bedrock_request_handler(client, model, system, messages, tools, max_tokens, temperature):
+def _bedrock_request_handler(client, model, system, messages, tools, max_tokens):
     """Transport for AWS Bedrock — uses boto3 Converse API (provider-agnostic)."""
     import boto3
     from core.config import get
@@ -256,8 +247,6 @@ def _bedrock_request_handler(client, model, system, messages, tools, max_tokens,
             "system": [{"text": system}] if system else [],
             "inferenceConfig": {"maxTokens": max_tokens},
         }
-        if temperature is not None:
-            kwargs["inferenceConfig"]["temperature"] = temperature
         if tools:
             kwargs["toolConfig"] = _bedrock_converse_tools(tools)
 
@@ -597,11 +586,6 @@ class LLMClient:
             self._anthropic_client = None
             self._oai_key          = resolve_provider_key(self._spec)
 
-        # Models that have rejected the `temperature` parameter this session
-        # (newer Opus models deprecate it). Once a model 400s on temperature we
-        # stop sending it, so we pay the failed round-trip at most once.
-        self._no_temperature_models: set[str] = set()
-
     def run(
         self,
         model:      str,
@@ -609,34 +593,17 @@ class LLMClient:
         messages:   list[dict],
         tools:      list[dict],
         max_tokens: int = 8192,
-        temperature: float | None = None,
         thinking: dict | None = None,
     ):
-        # Temperature self-heal at the top level, so it also covers a provider's custom
-        # request_handler (e.g. the subscription path) — not just the built-in backends.
-        # A model that rejects `temperature` (newer Opus/Sonnet) would otherwise 400 and
-        # fail the whole run instead of retrying without it.
-        if model in self._no_temperature_models:
-            temperature = None
-        # ponytail: removed pre-strip for custom handlers; self-heal above handles it
-        # Extended thinking requires temperature=1 on the Anthropic API.
-        if thinking:
-            temperature = 1.0
-        try:
-            return self._dispatch(model, system, messages, tools, max_tokens, temperature, thinking)
-        except Exception as e:  # noqa: BLE001 — only the temperature 400 is swallowed
-            if temperature is not None and _is_temperature_rejected(str(e)):
-                self._no_temperature_models.add(model)
-                return self._dispatch(model, system, messages, tools, max_tokens, None, thinking)
-            raise
+        return self._dispatch(model, system, messages, tools, max_tokens, thinking)
 
-    def _dispatch(self, model, system, messages, tools, max_tokens, temperature, thinking=None):
+    def _dispatch(self, model, system, messages, tools, max_tokens, thinking=None):
         if self._spec.request_handler:
             return self._spec.request_handler(
-                self, model, system, messages, tools, max_tokens, temperature)
+                self, model, system, messages, tools, max_tokens)
         if not self._spec.native:
-            return self._run_openai_compat(model, system, messages, tools, max_tokens, temperature)
-        return self._run_anthropic(model, system, messages, tools, max_tokens, temperature, thinking)
+            return self._run_openai_compat(model, system, messages, tools, max_tokens)
+        return self._run_anthropic(model, system, messages, tools, max_tokens, thinking)
 
     # ── Anthropic backend ─────────────────────────────────────────────────────
 
@@ -666,7 +633,7 @@ class LLMClient:
             return messages
         return messages[:-1] + [{**last, "content": new_content}]
 
-    def _run_anthropic(self, model, system, messages, tools, max_tokens, temperature=None, thinking=None):
+    def _run_anthropic(self, model, system, messages, tools, max_tokens, thinking=None):
         system_block = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
 
         cached_tools = None
@@ -684,9 +651,6 @@ class LLMClient:
         }
         if thinking:
             kwargs["thinking"] = thinking
-            kwargs["temperature"] = 1  # required by Anthropic when thinking is enabled
-        elif temperature is not None and model not in self._no_temperature_models:
-            kwargs["temperature"] = temperature
         if cached_tools:
             kwargs["tools"] = cached_tools
 
@@ -735,19 +699,13 @@ class LLMClient:
             except anthropic.BadRequestError as e:
                 if _is_quota_exhaustion(str(e)):
                     raise APIAccountLimitError("Account limit reached") from e
-                # Model rejected `temperature` — drop it, remember the model, and
-                # retry this call so the agent doesn't hard-fail.
-                if "temperature" in kwargs and _is_temperature_rejected(str(e)):
-                    self._no_temperature_models.add(model)
-                    kwargs.pop("temperature", None)
-                    continue
                 raise
 
         raise RuntimeError("LLMClient retry loop exited unexpectedly")
 
     # ── OpenAI-compatible backend (OpenRouter / NVIDIA) ─────────────────────────
 
-    def _run_openai_compat(self, model, system, messages, tools, max_tokens, temperature=None):
+    def _run_openai_compat(self, model, system, messages, tools, max_tokens):
         import httpx
 
         spec  = self._spec
@@ -763,8 +721,6 @@ class LLMClient:
         openai_tools    = _to_openai_tools(tools) if tools else None
 
         payload: dict = {"model": model, "messages": openai_messages, "max_tokens": max_tokens}
-        if temperature is not None and model not in self._no_temperature_models:
-            payload["temperature"] = temperature
         if openai_tools:
             payload["tools"]       = openai_tools
             payload["tool_choice"] = "auto"
@@ -817,12 +773,6 @@ class LLMClient:
                     self._notify_retry(attempt + 1, wait, "Server error")
                     time.sleep(wait)
                     wait = min(wait * 2, 60)
-                elif (resp.status_code == 400 and "temperature" in payload
-                      and _is_temperature_rejected(err_msg)):
-                    # Model rejected `temperature` — drop it, remember, and retry.
-                    self._no_temperature_models.add(model)
-                    payload.pop("temperature", None)
-                    continue
                 else:
                     raise RuntimeError(f"{label} error {resp.status_code}: {err_msg}")
 

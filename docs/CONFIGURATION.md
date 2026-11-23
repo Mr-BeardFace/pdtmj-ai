@@ -19,7 +19,7 @@ All settings are runtime-tunable via `/config <key> <value>` in the TUI or `sadd
 | `package_install` | bool | pentest | Let agents pip/apt-install missing tooling on the fly. |
 | `reporting` | bool | pentest-ctf | Run the report-writer agent automatically at pipeline end. |
 | `web_search` | bool | pentest-ctf | Allow the `web_search` + `fetch_url` tools (for researching CVEs, techniques, etc.). |
-| `temp` | float | all | Sampling temperature baseline (0.0–2.0). Null = provider default. Per-agent overrides via `/agent set temp`. |
+
 
 ## Parallelism
 

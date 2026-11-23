@@ -10,7 +10,7 @@ Defaults are NOT duplicated — they're read from core.config._DEFAULTS, the sin
 source of truth, so this table can never drift from the real default.
 
 Out of scope on purpose (owned by their own commands or not a flat scalar):
-  - models + PER-AGENT temperatures (global_model, agent_models, agent_temperatures) → /agent
+  - models (global_model, agent_models) → /agent
     (the global `temp` baseline IS here, as a flat scalar)
   - provider / base URL (active_provider, local_base_url) → /provider
   - list-valued keys (nudge_exempt_tools, kill_exempt_tools) → config file
@@ -93,12 +93,6 @@ SETTINGS: tuple[Setting, ...] = (
             "Lab / training-range anti-cheat: block writeup/walkthrough searches",
             personas=_PENTEST_CTF),
     # Engagement — all personas
-    Setting("temp", "Temperature", "Engagement", "float",
-            "Sampling temperature baseline, 0=focused … 1=varied (null=provider default; "
-            "some models e.g. newer Opus reject it and it's dropped automatically). "
-            "Per-agent overrides live in /agent set temp.",
-            minimum=0.0, maximum=2.0, allow_null=True),
-
     # Parallelism — pentest + ctf
     Setting("parallel",          "Parallel",               "Parallelism", "bool",
             "Work independent surfaces + hypotheses concurrently", personas=_PENTEST_CTF),
