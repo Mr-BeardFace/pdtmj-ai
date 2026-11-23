@@ -2769,7 +2769,9 @@ class Orchestrator:
         svc_str = f" ({ident.service})" if ident.service else ""
         self._print(f"  [magenta][identity][/magenta]{svc_str}{realm_str} {label}"
                     + (f"  @ {', '.join(ident.locations)}" if ident.locations else ""))
-        self._emit("credential",
+        has_secret = bool(ident.secret or ident.secret_hash)
+        evt = "credential" if has_secret else "identity"
+        self._emit(evt,
                    username=ident.username or "", realm=ident.realm,
                    service=ident.service, secret=ident.secret,
                    secret_hash=ident.secret_hash, secret_masked=ident.secret_masked,

@@ -3829,7 +3829,7 @@ class PentestApp(App):
                     f"  [bold green]⚡ shell[/bold green] connected {addr}  [dim]id={sid}[/dim]"
                 ))
             elif t == "credential":
-                # record_identity fired — update the Creds tab immediately
+                # record_identity fired with a secret — update Creds + Identities tabs
                 self.post_message(PentestApp.Cred(
                     secret_type=ev.get("secret_type", ""),
                     username=ev.get("username", "") or "",
@@ -3843,7 +3843,6 @@ class PentestApp(App):
                     verified=ev.get("verified", False),
                 ))
                 # Surface the source line + context that this secret came from — MASKED
-                # (we now know the secret, so the evidence renders masked, not clear).
                 secret = ev.get("secret", "")
                 masked = ev.get("secret_masked", "") or "***"
                 if secret:
@@ -3859,11 +3858,23 @@ class PentestApp(App):
                             break
                 _u = ev.get("username", "")
                 _tag = "✓" if ev.get("verified") else "?"
+                _stype = ev.get("secret_type") or ev.get("cred_type") or "password"
                 self.post_message(PentestApp.Activity(
-                    f"  [magenta]🔑 cred[/magenta] [{ev.get('cred_type', 'password')}] "
+                    f"  [magenta]🔑 cred[/magenta] \\[{_stype}] "
                     f"{(_u + ':') if _u else ''}{ev.get('secret_masked', '')} {_tag}"
                     + (f"  [dim]@ {ev.get('location')}[/dim]" if ev.get("location") else "")
                 ))
+            elif t == "identity":
+                # Username discovered without a secret — Identities tab only
+                _u = ev.get("username", "")
+                _svc = ev.get("service", "")
+                _realm = ev.get("realm", "")
+                _svc_str = f" ({_svc})" if _svc else ""
+                _realm_str = f" \\[{_realm}]" if _realm else ""
+                self.post_message(PentestApp.Activity(
+                    f"  [magenta]👤 identity[/magenta]{_svc_str}{_realm_str} {_u}"
+                ))
+                self._add_identity(ev)
             elif t == "service":
                 self.post_message(PentestApp.Service(
                     host=ev.get("host", ""), port=ev.get("port"),
