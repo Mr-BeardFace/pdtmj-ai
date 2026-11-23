@@ -209,10 +209,11 @@ def _bedrock_resolve_model(session, region: str, model: str) -> str:
     except Exception:
         pass
 
-    # Prepend regional prefix for cross-region inference profile
-    prefix = region.split("-")[0]
-    if not resolved.startswith(f"{prefix}."):
-        resolved = f"{prefix}.{resolved}"
+    # Prepend regional prefix for cross-region inference profiles (Anthropic only)
+    if resolved.startswith("anthropic.") or resolved.startswith("claude"):
+        prefix = region.split("-")[0]
+        if not resolved.startswith(f"{prefix}."):
+            resolved = f"{prefix}.{resolved}"
 
     _bedrock_model_cache[model] = resolved
     return resolved
