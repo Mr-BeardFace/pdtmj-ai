@@ -198,6 +198,7 @@ def _bedrock_resolve_model(session, region: str, model: str) -> str:
         return _bedrock_model_cache[model]
 
     resolved = model
+    found_as_foundation = False
     try:
         br = session.client("bedrock", region_name=region)
         summaries = br.list_foundation_models().get("modelSummaries", [])
@@ -205,15 +206,17 @@ def _bedrock_resolve_model(session, region: str, model: str) -> str:
             mid = m.get("modelId", "")
             if model in mid:
                 resolved = mid
+                found_as_foundation = True
                 break
     except Exception:
         pass
 
-    # Prepend regional prefix for cross-region inference profiles (Anthropic only)
-    if resolved.startswith("anthropic.") or resolved.startswith("claude"):
-        prefix = region.split("-")[0]
-        if not resolved.startswith(f"{prefix}."):
-            resolved = f"{prefix}.{resolved}"
+    # Models not found as bare foundation models need a cross-region inference
+    # profile prefix (us./eu./ap.). Applies to Anthropic and any other provider
+    # (e.g. moonshotai, meta) that Bedrock serves via inference profiles only.
+    prefix = region.split("-")[0]
+    if not found_as_foundation and not resolved.startswith(f"{prefix}."):
+        resolved = f"{prefix}.{resolved}"
 
     _bedrock_model_cache[model] = resolved
     return resolved
