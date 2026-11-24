@@ -198,7 +198,7 @@ def _bedrock_resolve_model(session, region: str, model: str) -> str:
         return _bedrock_model_cache[model]
 
     resolved = model
-    found_as_foundation = False
+    needs_profile = True
     try:
         br = session.client("bedrock", region_name=region)
         summaries = br.list_foundation_models().get("modelSummaries", [])
@@ -206,16 +206,18 @@ def _bedrock_resolve_model(session, region: str, model: str) -> str:
             mid = m.get("modelId", "")
             if model in mid:
                 resolved = mid
-                found_as_foundation = True
+                # ON_DEMAND means directly invokable; anything else
+                # (INFERENCE_PROFILE only) needs the regional prefix.
+                inference_types = m.get("inferenceTypesSupported", [])
+                needs_profile = "ON_DEMAND" not in inference_types
                 break
     except Exception:
         pass
 
-    # Models not found as bare foundation models need a cross-region inference
-    # profile prefix (us./eu./ap.). Applies to Anthropic and any other provider
-    # (e.g. moonshotai, meta) that Bedrock serves via inference profiles only.
+    # Apply regional prefix for models that require an inference profile
+    # (not directly invokable on-demand).
     prefix = region.split("-")[0]
-    if not found_as_foundation and not resolved.startswith(f"{prefix}."):
+    if needs_profile and not resolved.startswith(f"{prefix}."):
         resolved = f"{prefix}.{resolved}"
 
     _bedrock_model_cache[model] = resolved
