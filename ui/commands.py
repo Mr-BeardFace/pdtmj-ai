@@ -585,7 +585,9 @@ def handle_agent_list() -> tuple[list[str], bool]:
             except Exception:
                 pass
 
-        lines += ["", f"  global model override:  {global_model}"]
+        fast_model = cfg.get("fast_model") or "—"
+        lines += ["", f"  global model override:  {global_model}",
+                      f"  fast model:             {fast_model}"]
         return lines, True
     except Exception as e:
         return [f"Error: {e}"], False
@@ -597,10 +599,11 @@ def handle_agent_set_model(args: list[str]) -> tuple[list[str], bool]:
     """
     if len(args) < 2:
         return [
-            "Usage: /agent set model <agent-name|global> <model-id>",
+            "Usage: /agent set model <agent-name|global|fast> <model-id>",
             "",
             "Examples:",
             "  /agent set model global claude-sonnet-4-6",
+            "  /agent set model fast claude-haiku-4-5-20251001",
             "  /agent set model pentest/exploitation claude-opus-4-7",
             "  /agent set model pentest/enumeration claude-haiku-4-5-20251001",
         ], False
@@ -610,6 +613,12 @@ def handle_agent_set_model(args: list[str]) -> tuple[list[str], bool]:
     try:
         from core.config import load_config, save_config, get
         cfg = load_config()
+
+        if agent_name == "fast":
+            cfg["fast_model"] = model_id
+            save_config(cfg)
+            return [f"Fast model set to: {model_id}"], True
+
         overrides: dict = cfg.setdefault("agent_models", {})
         overrides[agent_name] = model_id
         save_config(cfg)

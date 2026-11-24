@@ -251,7 +251,21 @@ def _bedrock_request_handler(client, model, system, messages, tools, max_tokens)
         if tools:
             kwargs["toolConfig"] = _bedrock_converse_tools(tools)
 
-        resp = br.converse(**kwargs)
+        try:
+            resp = br.converse(**kwargs)
+        except br.exceptions.ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            msg = str(exc)
+            if code == "ValidationException" and "maxTokens" in msg:
+                import re
+                m = re.search(r"(?:max|maximum)[^\d]*(\d+)", msg, re.IGNORECASE)
+                if m:
+                    kwargs["inferenceConfig"]["maxTokens"] = int(m.group(1))
+                    resp = br.converse(**kwargs)
+                else:
+                    raise
+            else:
+                raise
         return _bedrock_converse_response(resp)
     finally:
         if ak:
