@@ -194,6 +194,15 @@ class FrontierDriver(ParallelDriver):
         outcome = controller.run()
         self._announce_outcome(outcome)
 
+        # CTF objective met — kill all running jobs immediately (no point
+        # waiting for scans/cracks when both flags are captured).
+        if outcome.halted_on_objective:
+            jobs_mgr = getattr(self.orch, "_jobs", None)
+            if jobs_mgr:
+                result = jobs_mgr.kill_all()
+                if result.get("jobs", 0):
+                    self._activity(f"⊠ Killed {result['jobs']} running job(s) — objective met.")
+
         # Fold in any still-running background jobs before reporting.
         flush = getattr(self.orch, "flush_jobs", None)
         if callable(flush):
