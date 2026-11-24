@@ -53,8 +53,12 @@ def local_exec(command: str, timeout: int = 120) -> dict:
     if clock:
         return {"error": f"{clock} modifies the system clock — running it mid-engagement "
                 "corrupts every subsequent timestamp in logs, state, and reports. "
-                "If you need the target's time, read it remotely (e.g. nmap scripts, "
-                "net time, or rpcclient)."}
+                "If you need Kerberos time sync, use faketime instead: "
+                "`faketime \"$(rpcclient -U '' -N <ip> -c 'gettime' | awk '/Time:/ {{print $NF}}')\" <impacket-cmd>` "
+                "or `faketime -f '<offset>' <cmd>` — this offsets time for one process only, "
+                "leaving the system clock intact. "
+                "To read the target's time without changing anything: nmap --script smb2-time, "
+                "rpcclient gettime, or net time."}
     daemon = _daemon_in(command)
     if daemon:
         return {"error": f"{daemon} is a long-running daemon — local_exec waits for the "

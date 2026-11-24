@@ -194,22 +194,30 @@ class FrontierDriver(ParallelDriver):
         outcome = controller.run()
         self._announce_outcome(outcome)
 
-        # CTF objective met — kill all running jobs immediately (no point
-        # waiting for scans/cracks when both flags are captured).
+        # CTF objective met — kill all running jobs and skip the flush wait
+        # (no point blocking 180s for scans/cracks when both flags are in).
         if outcome.halted_on_objective:
             jobs_mgr = getattr(self.orch, "_jobs", None)
             if jobs_mgr:
                 result = jobs_mgr.kill_all()
                 if result.get("jobs", 0):
                     self._activity(f"⊠ Killed {result['jobs']} running job(s) — objective met.")
-
-        # Fold in any still-running background jobs before reporting.
-        flush = getattr(self.orch, "flush_jobs", None)
-        if callable(flush):
-            try:
-                flush()
-            except Exception:
-                pass
+                # Brief grace for threads to exit, then collect whatever finished
+                import time
+                time.sleep(2)
+                for job in jobs_mgr.poll_completed():
+                    try:
+                        self.orch._ingest_job(job, "background", None)
+                    except Exception:
+                        pass
+        else:
+            # Normal path: wait for background jobs before reporting.
+            flush = getattr(self.orch, "flush_jobs", None)
+            if callable(flush):
+                try:
+                    flush()
+                except Exception:
+                    pass
 
         # A /pause is a TEMPORARY halt — resume later with /continue. The write-up
         # belongs to /end or a natural finish, not a pause, so don't synthesize a
