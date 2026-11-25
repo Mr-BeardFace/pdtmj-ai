@@ -1579,14 +1579,27 @@ def dispatch(text: str) -> tuple[list[str], bool] | None:
             outer = active.split(".")[0]
             bp    = args[0] if args else None
         if outer == "bedrock" and bp:
-            summaries, err = _bedrock_fetch(bp)
+            # Resolve bp against actual providerName values (case-insensitive,
+            # partial match) so "moonshotai" finds "Moonshot AI", etc.
+            all_summaries, err = _bedrock_fetch()
+            if err:
+                return [f"Bedrock error: {err}", "  Check credentials: /key set bedrock <ABSKQ...>"], False
+            provider_names = sorted(set(m.get("providerName", "") for m in all_summaries if m.get("providerName")))
+            bp_lower = bp.lower().replace(" ", "").replace("-", "").replace("_", "")
+            matched = next((p for p in provider_names
+                            if bp_lower in p.lower().replace(" ", "").replace("-", "").replace("_", "")), None)
+            if not matched:
+                close = [p for p in provider_names if p.lower().startswith(bp_lower[:3])]
+                hint = f"  Did you mean: {', '.join(close)}" if close else f"  Known providers: {', '.join(provider_names)}"
+                return [f"No Bedrock provider matching {bp!r}.", hint], False
+            summaries, err = _bedrock_fetch(matched)
             if err:
                 return [f"Bedrock error: {err}", "  Check credentials: /key set bedrock <ABSKQ...>"], False
             models = [{"id": m["modelId"], "name": m.get("modelName", "")}
                       for m in summaries if m.get("modelId")]
             if not models:
-                return [f"No Bedrock models for provider {bp!r} — check credentials"], False
-            lines = [f"AWS Bedrock — {bp} ({len(models)} models)", ""]
+                return [f"No Bedrock models for provider {matched!r} — check credentials"], False
+            lines = [f"AWS Bedrock — {matched} ({len(models)} models)", ""]
             for m in sorted(models, key=lambda x: x.get("id", "")):
                 lines.append(f"  {m['id']}")
             lines += ["", "  Set: /agent set model global <model-id>"]

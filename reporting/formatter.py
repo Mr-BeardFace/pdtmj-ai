@@ -395,7 +395,7 @@ def _render(run: EngagementRun, fmt: str, output_dir: Path,
         is_ops_report=persona in ("pentest", "redteam"),
         op_name=op_name,
         iocs=iocs or [],
-        hosts=hosts or [],
+        hosts=[] if persona == "pentest-ctf" else (hosts or []),
         attack_path=attack_path,
         show_usage=show_usage,
     )
